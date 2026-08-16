@@ -4,6 +4,7 @@
  * VM already runs official Claude Code — do not inject billing/identity.
  * Foreign 人设 (Pi / Codex / ChatGPT) is rewritten into official system
  * text blocks and appended. Fields `claude -p` cannot take are dropped.
+ * Official Claude Code's own agent system is stripped (VM already has it).
  */
 
 const UNOFFICIAL_TOP = new Set([
@@ -37,6 +38,7 @@ const OFFICIAL_IDENTITY = [
   /^you are claude code, anthropic's official cli for claude, running within the claude agent sdk/i,
   /^you are a file search specialist for claude code/i,
   /^you are a security monitor for autonomous ai coding agents/i,
+  /^you are an interactive agent that helps users with software engineering tasks/i,
 ]
 
 const OFFICIAL_CWD = /^cwd:\s.+\ndate:\s\d{4}-\d{2}-\d{2}\s*$/i
@@ -124,6 +126,7 @@ export function extractCwd(text) {
     /^CWD:\s*(.+)$/im,
     /<cwd>\s*([^<]+)\s*<\/cwd>/i,
     /working directory is\s+([^\n]+)/i,
+    /Primary working directory:\s*(.+)/i,
   ]
   for (const re of patterns) {
     const m = t.match(re)
@@ -135,6 +138,7 @@ export function extractCwd(text) {
 function stripCwdLines(text) {
   return String(text || '')
     .replace(/^\s*Current working directory:\s*.+$/im, '')
+    .replace(/^\s*Primary working directory:\s*.+$/im, '')
     .replace(/^\s*CWD:\s*.+$/im, '')
     .replace(/^\s*Date:\s*\d{4}-\d{2}-\d{2}\s*$/im, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -183,6 +187,8 @@ export function prepareForVmClaude(body) {
 
   for (const b of blocks) {
     const text = String(b.text || '')
+    const found = extractCwd(text)
+    if (found && !cwd) cwd = found
     const kind = classifySystemText(text)
 
     if (kind === 'official') {
@@ -191,15 +197,11 @@ export function prepareForVmClaude(body) {
     }
 
     if (kind === 'official_cwd') {
-      const found = extractCwd(text)
-      if (found && !cwd) cwd = found
       decisions.push({ action: 'keep_official_cwd', cwd: found || cwd })
       continue
     }
 
     // foreign 人设 + leftover context → official system text blocks
-    const found = extractCwd(text)
-    if (found && !cwd) cwd = found
     const persona = stripCwdLines(text)
     if (persona) {
       official.push(officialTextBlock(persona))

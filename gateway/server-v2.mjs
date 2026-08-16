@@ -342,6 +342,8 @@ async function handleProtocol(req, res, protocol, pathName) {
         prompt_preview: prepared.prompt.slice(0, 400),
         remaining_system: extractSystemAudit(prepared.body),
         egress_system: prepared.body?.system || null,
+        egress_prompt: prepared.prompt,
+        egress_argv: ['claude', '-p', '<egress_prompt>', '--model', prepared.body?.model || ctx.body?.model, '--output-format', 'stream-json'],
       }, null, 2),
     )
   }

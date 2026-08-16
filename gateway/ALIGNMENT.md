@@ -16,7 +16,7 @@
 
 1. **虚拟机里已经是官方 Claude Code**，出口身份由 VM 负责。网关不注入 billing header、不改 UA、不伪造 metadata。
 2. 网关只做两件事：把用户请求内容接进 CLI；把 CLI 输出按客户端协议返回。
-3. 官方 Claude Code 客户端：透传用户消息；剥掉 billing / 身份（VM 会再加），CWD 保留为官方字段。
+3. 官方 Claude Code 客户端：透传用户消息；剥掉 billing / 身份 / 官方 interactive-agent 系统提示（VM 会再加），CWD 保留为官方字段。
 4. 第三方：协议转换成 Messages；Pi / Codex / ChatGPT 人设改写成官方 `system` 文本块并追加。
 5. 这是接入，不是伪装。
 
