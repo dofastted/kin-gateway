@@ -1,0 +1,20 @@
+[Unit]
+Description=KIN Gateway Claude Protocol Adapter
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kin-gateway/gateway
+Environment=KIN_API_KEY=sk-kin-change-me
+Environment=KIN_ADMIN_USER=admin
+Environment=KIN_ADMIN_PASSWORD=change-me
+Environment=PORT=8787
+Environment=HOST=0.0.0.0
+Environment=PUBLIC_BASE_URL=https://your.domain
+ExecStart=/usr/bin/node server-v2.mjs
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

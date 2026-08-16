@@ -21,7 +21,7 @@ import {
   createResponsesStreamState,
   claudeSSELineToResponsesEvents,
 } from './lib/convert.mjs'
-import { callClaudeUpstream, streamClaudeUpstream } from './lib/upstream.mjs'
+import { callClaudeCli, streamClaudeCli } from './lib/cli-runner.mjs'
 import { updateVmClaudeCode, fetchLatestClaudeCodeVersion } from './lib/claude-code-update.mjs'
 import { fingerprintRequest, alignToClaudeCodeStandard, officializeToClaudeCli, classifyClient } from './lib/client-fingerprint.mjs'
 import { applySystemPromptPolicy, extractSystemAudit } from './lib/system-prompt-policy.mjs'
@@ -376,16 +376,19 @@ async function handleProtocol(req, res, protocol, pathName) {
     stats.stream++
     const releaseStream = () => { try { accountQuota.release(accountId) } catch {} }
     if (protocol === 'anthropic.messages') {
-      // true passthrough stream of Claude SSE (no OpenAI [DONE] trailer)
+      // Official Anthropic SSE requires both event: and data: (RikkaHub uses event.event)
       writeSSEHeaders(res)
-      const result = await streamClaudeUpstream({
-        token: cfg.vm.access_token,
-        body: ctx.body,
-        timeoutMs: cfg.limits.upstream_timeout_ms,
-        headers: upstreamHeadersOverride || undefined,
+      const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
         onHeaders: (h) => accountQuota.ingestHeaders(accountId, h),
         onEvent: async (line) => {
-          res.write(line + '\n\n')
+          let evtName = "message"
+          const raw = String(line || "")
+          const payload = raw.startsWith("data:") ? raw.slice(5).trim() : raw.trim()
+          try {
+            const obj = JSON.parse(payload)
+            if (obj && typeof obj.type === "string") evtName = obj.type
+          } catch {}
+          res.write("event: " + evtName + "\ndata: " + payload + "\n\n")
         },
       })
       if (!result.ok) {
@@ -398,11 +401,7 @@ async function handleProtocol(req, res, protocol, pathName) {
     if (protocol === 'openai.chat') {
       writeSSEHeaders(res)
       const state = createOpenAIChatStreamState(inbound.model || claude.model, cfg.vm.id)
-      const result = await streamClaudeUpstream({
-        token: cfg.vm.access_token,
-        body: ctx.body,
-        timeoutMs: cfg.limits.upstream_timeout_ms,
-        headers: upstreamHeadersOverride || undefined,
+      const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
         onHeaders: (h) => accountQuota.ingestHeaders(accountId, h),
         onEvent: async (line) => {
           const chunks = claudeSSELineToOpenAIChatChunks(line, state)
@@ -420,11 +419,7 @@ async function handleProtocol(req, res, protocol, pathName) {
     if (protocol === 'openai.responses') {
       writeSSEHeaders(res)
       const state = createResponsesStreamState(inbound.model || claude.model, cfg.vm.id)
-      const result = await streamClaudeUpstream({
-        token: cfg.vm.access_token,
-        body: ctx.body,
-        timeoutMs: cfg.limits.upstream_timeout_ms,
-        headers: upstreamHeadersOverride || undefined,
+      const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
         onHeaders: (h) => accountQuota.ingestHeaders(accountId, h),
         onEvent: async (line) => {
           const events = claudeSSELineToResponsesEvents(line, state)
@@ -444,11 +439,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   // -------- non-stream --------
   let upstream
   try {
-    upstream = await callClaudeUpstream({
-      token: cfg.vm.access_token,
-      body: ctx.body,
-      timeoutMs: cfg.limits.upstream_timeout_ms,
-      headers: upstreamHeadersOverride || undefined,
+    upstream = await callClaudeCli({ ...buildCliOpts(cfg, ctx.body),
     })
     if (upstream.headers) {
       accountQuota.ingestHeaders(accountId, upstream.headers, upstream.body?.usage)
@@ -484,7 +475,7 @@ async function handleProtocol(req, res, protocol, pathName) {
     out = { ...upstream.body }
     // debug only when X-Kin-Debug: 1
     if (String(req.headers['x-kin-debug'] || '') === '1') {
-      out = { ...out, kin: { vm_id: cfg.vm.id, mode } }
+      if (req.headers['x-kin-debug'] === '1') out = { ...out, kin: { vm_id: cfg.vm.id, mode } }
     }
   } else if (protocol === 'openai.chat') {
     out = fromClaudeToOpenAIChat(upstream.body, inbound.model, cfg.vm.id, mode)
@@ -494,6 +485,26 @@ async function handleProtocol(req, res, protocol, pathName) {
 
   ctx = applyIntercept(cfg.intercept.rules, 'before_client', { ...ctx, body: out })
   return json(res, 200, ctx.body)
+}
+
+
+
+function buildCliOpts(cfg, body) {
+  const px = resolveVmProxyUrl(cfg)
+  return {
+    model: body?.model,
+    body,
+    accessToken: cfg.vm.access_token,
+    refreshToken: cfg.vm.refresh_token || null,
+    expiresAt: cfg.vm.expires_at || null,
+    proxyUrl: px,
+    homeDir: `/var/lib/kin/vms/${cfg.vm.id || 'default'}/home`,
+    timeoutMs: cfg.limits.upstream_timeout_ms || 180000,
+  }
+}
+
+function resolveVmProxyUrl(cfg) {
+  return null // CLI path: socks ALL_PROXY hangs claude binary; disable until fixed
 }
 
 const server = http.createServer(async (req, res) => {

@@ -4,244 +4,346 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>种核 KIN · 管理台</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            border: 'var(--border)',
-            input: 'var(--input)',
-            ring: 'var(--ring)',
-            background: 'var(--background)',
-            foreground: 'var(--foreground)',
-            primary: { DEFAULT: 'var(--primary)', foreground: 'var(--primary-foreground)' },
-            secondary: { DEFAULT: 'var(--secondary)', foreground: 'var(--secondary-foreground)' },
-            destructive: { DEFAULT: 'var(--destructive)', foreground: 'var(--destructive-foreground)' },
-            muted: { DEFAULT: 'var(--muted)', foreground: 'var(--muted-foreground)' },
-            accent: { DEFAULT: 'var(--accent)', foreground: 'var(--accent-foreground)' },
-            card: { DEFAULT: 'var(--card)', foreground: 'var(--card-foreground)' },
-            popover: { DEFAULT: 'var(--popover)', foreground: 'var(--popover-foreground)' },
-            sidebar: { DEFAULT: 'var(--sidebar)', foreground: 'var(--sidebar-foreground)', border: 'var(--sidebar-border)', accent: 'var(--sidebar-accent)' },
-            success: 'oklch(0.72 0.17 145)',
-            warning: 'oklch(0.78 0.16 75)',
-            danger: 'oklch(0.704 0.191 22.216)',
-          },
-          borderRadius: {
-            lg: 'var(--radius)',
-            md: 'calc(var(--radius) - 2px)',
-            sm: 'calc(var(--radius) - 4px)',
-          },
-          fontFamily: {
-            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-          },
-        }
-      }
-    }
-  </script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    /* shadcn/ui slate · dark (from satnaing/shadcn-admin theme.css) */
-    :root {
-      --radius: 0.625rem;
-    }
-    .dark {
-      --background: oklch(0.129 0.042 264.695);
-      --foreground: oklch(0.984 0.003 247.858);
-      --card: oklch(0.14 0.04 259.21);
-      --card-foreground: oklch(0.984 0.003 247.858);
-      --popover: oklch(0.208 0.042 265.755);
-      --popover-foreground: oklch(0.984 0.003 247.858);
-      --primary: oklch(0.929 0.013 255.508);
-      --primary-foreground: oklch(0.208 0.042 265.755);
-      --secondary: oklch(0.279 0.041 260.031);
-      --secondary-foreground: oklch(0.984 0.003 247.858);
-      --muted: oklch(0.279 0.041 260.031);
-      --muted-foreground: oklch(0.704 0.04 256.788);
-      --accent: oklch(0.279 0.041 260.031);
-      --accent-foreground: oklch(0.984 0.003 247.858);
-      --destructive: oklch(0.704 0.191 22.216);
-      --destructive-foreground: oklch(0.984 0.003 247.858);
-      --border: oklch(1 0 0 / 10%);
-      --input: oklch(1 0 0 / 15%);
-      --ring: oklch(0.551 0.027 264.364);
-      --sidebar: oklch(0.129 0.042 264.695);
-      --sidebar-foreground: oklch(0.984 0.003 247.858);
-      --sidebar-border: oklch(1 0 0 / 10%);
-      --sidebar-accent: oklch(0.279 0.041 260.031);
-    }
-    * { border-color: var(--border); }
-    body {
-      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-      background: var(--background);
-      color: var(--foreground);
-      -webkit-font-smoothing: antialiased;
-    }
-    .nav-item {
-      display: flex; align-items: center; gap: 0.5rem;
-      border-radius: calc(var(--radius) - 2px);
-      padding: 0.5rem 0.75rem;
-      font-size: 0.875rem; line-height: 1.25rem;
-      color: var(--muted-foreground);
-      cursor: pointer; transition: color .15s, background .15s;
-    }
-    .nav-item:hover { background: var(--accent); color: var(--accent-foreground); }
-    .nav-item.active { background: var(--accent); color: var(--accent-foreground); font-weight: 500; }
-    .card {
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      background: var(--card);
-      color: var(--card-foreground);
-      padding: 1rem;
-      box-shadow: 0 1px 2px oklch(0 0 0 / 6%);
-    }
-    .btn {
-      display: inline-flex; align-items: center; justify-content: center;
-      height: 2.25rem; padding: 0 0.75rem;
-      border-radius: calc(var(--radius) - 2px);
-      font-size: 0.875rem; font-weight: 500;
-      transition: background .15s, opacity .15s, border-color .15s;
-      cursor: pointer;
-    }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .btn-primary {
-      background: oklch(0.929 0.013 255.508) !important;
-      color: oklch(0.208 0.042 265.755) !important;
-      border: none;
-      width: 100%;
-      font-weight: 600;
-    }
-    .btn-primary:hover { opacity: 0.92; }
-    .btn-ghost { background: transparent; color: var(--foreground); border: none; }
-    .btn-ghost:hover { background: var(--accent); }
-    .btn-outline {
-      background: transparent; color: var(--foreground);
-      border: 1px solid var(--border);
-    }
-    .btn-outline:hover { background: var(--accent); }
-    .input {
-      height: 2.5rem; width: 100%;
-      border-radius: calc(var(--radius) - 2px);
-      border: 1px solid oklch(1 0 0 / 15%);
-      background: oklch(0.18 0.03 260) !important;
-      color: oklch(0.984 0.003 247.858) !important;
-      padding: 0 0.75rem;
-      font-size: 0.875rem;
-      outline: none;
-      -webkit-appearance: none;
-      appearance: none;
-      color-scheme: dark;
-    }
-    .input:focus {
-      border-color: oklch(0.55 0.03 264);
-      box-shadow: 0 0 0 2px oklch(0.55 0.03 264 / 30%);
-    }
-    .input::placeholder { color: oklch(0.65 0.03 256); }
-    /* kill browser autofill white */
-    .input:-webkit-autofill,
-    .input:-webkit-autofill:hover,
-    .input:-webkit-autofill:focus {
-      -webkit-text-fill-color: oklch(0.984 0.003 247.858) !important;
-      -webkit-box-shadow: 0 0 0 1000px oklch(0.18 0.03 260) inset !important;
-      transition: background-color 9999s ease-in-out 0s;
-    }
-    .badge {
-      display: inline-flex; align-items: center;
-      border-radius: calc(var(--radius) - 2px);
-      border: 1px solid var(--border);
-      padding: 0.125rem 0.5rem;
-      font-size: 0.75rem;
-      color: var(--muted-foreground);
-      background: transparent;
-    }
-    .progress {
-      height: 0.5rem; width: 100%;
-      overflow: hidden; border-radius: 9999px;
-      background: var(--muted);
-    }
-    .progress > i { display: block; height: 100%; border-radius: 9999px; transition: width .2s; }
-    .layer-tag {
-      font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
-      color: var(--muted-foreground); font-weight: 500;
-    }
-    #loginGate {
-      position: fixed;
-      inset: 0;
-      z-index: 50;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.25rem;
-      background: oklch(0.129 0.042 264.695);
-    }
-    #loginGate .card {
-      width: 100%;
-      max-width: 22rem;
-      padding: 1.5rem;
-      background: oklch(0.16 0.035 259);
-      border: 1px solid oklch(1 0 0 / 12%);
-      border-radius: 0.75rem;
-    }
-    #loginGate .space-y-2 > * + * { margin-top: 0.6rem; }
-    #loginGate .space-y-4 > * + * { margin-top: 1rem; }
-    body.login-only > aside,
-    body.login-only > .flex-1 { visibility: hidden; pointer-events: none; }
-    html { color-scheme: dark; }
-    textarea.input {
-      height: auto; min-height: 5.5rem; padding: 0.6rem 0.75rem;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 0.8rem;
-    }
-  </style>
-</head>
-<body class="min-h-screen bg-background text-foreground flex font-sans antialiased login-only">
-  <!-- Sidebar: hierarchy -->
-  <aside class="w-56 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground flex flex-col">
-    <div class="p-4 border-b border-border">
-      <div class="text-base font-semibold tracking-tight">种核 KIN</div>
-      <div class="text-xs text-muted-foreground mt-0.5">多虚拟机 · Claude Code 网关</div>
-    </div>
-    <nav class="flex-1 p-2 space-y-0.5" id="nav">
-      <div class="layer-tag px-3 pt-3 pb-1">L0 · 平台</div>
-      <div class="nav-item active" data-view="overview">总览</div>
-      <div class="layer-tag px-3 pt-3 pb-1">L1 · 集群</div>
-      <div class="nav-item" data-view="cluster">虚拟机集群</div>
-      <div class="layer-tag px-3 pt-3 pb-1">L2–L3 · 节点</div>
-      <div class="nav-item" data-view="vm">虚拟机详情</div>
-      <div class="layer-tag px-3 pt-3 pb-1">L4 · 用量</div>
-      <div class="nav-item" data-view="usage">用量与额度</div>
-      <div class="layer-tag px-3 pt-3 pb-1">L5 · 协议</div>
-      <div class="nav-item" data-view="protocol">协议与模型</div>
-      <div class="layer-tag px-3 pt-3 pb-1">L6 · 配置</div>
-      <div class="nav-item" data-view="proxies">代理池 SOCKS5</div>
-      <div class="nav-item" data-view="settings">路由与策略</div>
-    </nav>
-    <div class="p-3 border-t border-border space-y-2">
-      <div class="text-xs text-muted-foreground">已登录 · <span id="loginUser">—</span></div>
-      <button class="btn btn-outline w-full" onclick="logout()">退出登录</button>
-    </div>
-  </aside>
+:root {
+  --background: oklch(0.129 0.042 264.695);
+  --foreground: oklch(0.984 0.003 247.858);
+  --card: oklch(0.168 0.038 260);
+  --card-foreground: oklch(0.984 0.003 247.858);
+  --primary: oklch(0.929 0.013 255.508);
+  --primary-foreground: oklch(0.208 0.042 265.755);
+  --muted: oklch(0.22 0.03 260);
+  --muted-foreground: oklch(0.704 0.04 256.788);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.55 0.03 264);
+  --destructive: oklch(0.65 0.2 22);
+  --sidebar: oklch(0.145 0.04 264);
+  --sidebar-foreground: oklch(0.95 0.01 250);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --accent: oklch(0.22 0.03 260);
+  --radius: 0.5rem;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { color-scheme: dark; height: 100%; }
+body {
+  margin: 0; min-height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+button, input, textarea { font: inherit; }
+a { color: inherit; }
 
-  <!-- Main -->
-  <div class="flex-1 flex flex-col min-w-0">
-    <header class="h-14 border-b border-border flex items-center justify-between px-6">
-      <div>
-        <h1 id="pageTitle" class="text-sm font-medium">总览</h1>
-        <p id="pageDesc" class="text-xs text-muted-foreground">平台健康 · 集群摘要</p>
+/* layout shell */
+.app {
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+}
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+  color: var(--sidebar-foreground);
+  border-right: 1px solid var(--sidebar-border);
+}
+.sidebar-head {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-head .title { font-size: 16px; font-weight: 600; }
+.sidebar-head .sub { font-size: 12px; color: var(--muted-foreground); margin-top: 2px; }
+.sidebar-nav { flex: 1; padding: 8px; overflow: auto; }
+.sidebar-foot {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.topbar {
+  height: 56px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+}
+.topbar h1 { margin: 0; font-size: 14px; font-weight: 600; }
+.topbar p { margin: 0; font-size: 12px; color: var(--muted-foreground); }
+.topbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.content {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+}
+
+/* login */
+#loginGate {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  background: var(--background);
+}
+#loginGate.hidden { display: none !important; }
+body.login-only .app { visibility: hidden; pointer-events: none; }
+.login-card {
+  width: 100%; max-width: 360px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+}
+.login-card h2 { margin: 0 0 4px; font-size: 18px; }
+.login-card .hint { margin: 0 0 16px; font-size: 12px; color: var(--muted-foreground); }
+.login-card .stack { display: flex; flex-direction: column; gap: 10px; }
+
+/* components */
+.layer-tag {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  padding: 10px 12px 4px;
+  font-weight: 500;
+}
+.nav-item {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--muted-foreground);
+  user-select: none;
+}
+.nav-item:hover { background: var(--accent); color: var(--foreground); }
+.nav-item.active {
+  background: var(--accent);
+  color: var(--foreground);
+  font-weight: 500;
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 36px; padding: 0 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 13px; font-weight: 500;
+  background: transparent; color: var(--foreground);
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary {
+  background: var(--primary) !important;
+  color: var(--primary-foreground) !important;
+  border: none;
+  font-weight: 600;
+}
+.btn-outline {
+  border: 1px solid var(--border);
+  background: transparent;
+}
+.btn-outline:hover { background: var(--accent); }
+.btn-ghost { border: none; background: transparent; }
+.btn-ghost:hover { background: var(--accent); }
+.input, textarea.input {
+  width: 100%;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid var(--input);
+  background: oklch(0.18 0.03 260);
+  color: var(--foreground);
+  padding: 0 12px;
+  outline: none;
+  -webkit-appearance: none;
+}
+textarea.input { height: auto; min-height: 96px; padding: 10px 12px; resize: vertical; }
+.input:focus { border-color: var(--ring); box-shadow: 0 0 0 2px oklch(0.55 0.03 264 / 25%); }
+.input::placeholder { color: var(--muted-foreground); }
+.card {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.badge {
+  display: inline-flex; align-items: center;
+  height: 22px; padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+.badge.ok { color: oklch(0.75 0.15 150); border-color: oklch(0.75 0.15 150 / 40%); }
+.badge.warn { color: oklch(0.8 0.14 80); border-color: oklch(0.8 0.14 80 / 40%); }
+.badge.err { color: var(--destructive); border-color: oklch(0.65 0.2 22 / 40%); }
+
+/* page sections */
+.section { display: flex; flex-direction: column; gap: 16px; }
+.section-title {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1100px) {
+  .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .app { flex-direction: column; }
+  .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--sidebar-border); }
+  .sidebar-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  .layer-tag { width: 100%; }
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .content { padding: 16px; }
+  .topbar { padding: 0 16px; height: auto; min-height: 56px; padding-top: 10px; padding-bottom: 10px; flex-wrap: wrap; }
+}
+.card .label { font-size: 12px; color: var(--muted-foreground); }
+.card .value { font-size: 20px; font-weight: 600; margin-top: 4px; }
+.card .meta { font-size: 12px; color: var(--muted-foreground); margin-top: 6px; }
+.bar {
+  height: 6px; border-radius: 99px;
+  background: oklch(1 0 0 / 8%);
+  overflow: hidden; margin-top: 10px;
+}
+.bar > i {
+  display: block; height: 100%;
+  background: oklch(0.7 0.12 200);
+  border-radius: 99px;
+}
+.bar.warn > i { background: oklch(0.8 0.14 80); }
+.bar.danger > i { background: var(--destructive); }
+.row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.muted { color: var(--muted-foreground); }
+.danger { color: var(--destructive); }
+.stack-sm { display: flex; flex-direction: column; gap: 8px; }
+.stack-md { display: flex; flex-direction: column; gap: 12px; }
+.stack-lg { display: flex; flex-direction: column; gap: 16px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+.table th, .table td {
+  text-align: left; padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.table th { color: var(--muted-foreground); font-weight: 500; font-size: 12px; }
+#toast {
+  position: fixed; right: 16px; bottom: 16px; z-index: 200;
+  background: var(--card); border: 1px solid var(--border);
+  padding: 10px 14px; border-radius: 8px;
+  display: none; max-width: 320px;
+}
+#toast.show { display: block; }
+.hidden { display: none !important; }
+.text-xs { font-size: 12px; }
+.text-sm { font-size: 13px; }
+.font-medium { font-weight: 500; }
+.font-semibold { font-weight: 600; }
+
+.cursor-pointer, [style*="cursor:pointer"] { cursor: pointer; }
+.card[onclick]:hover { border-color: oklch(1 0 0 / 25%); }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th, .table td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); }
+.table th { color: var(--muted-foreground); font-weight: 500; font-size: 12px; }
+code { font-family: ui-monospace, monospace; font-size: 12px; background: oklch(1 0 0 / 6%); padding: 1px 5px; border-radius: 4px; }
+ul { margin: 0; padding-left: 18px; }
+
+</style>
+</head>
+<body class="login-only">
+  <div id="loginGate">
+    <div class="login-card">
+      <h2>种核 KIN</h2>
+      <p class="hint">管理台登录</p>
+      <div class="stack">
+        <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
+        <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
+        <input id="loginBaseInput" class="input" placeholder="API Base（本站可留空）" />
+        <button type="button" class="btn btn-primary" onclick="doLogin()">登录</button>
+        <p id="loginErr" class="text-xs danger hidden"></p>
       </div>
-      <div class="flex items-center gap-2">
-        <span id="healthPill" class="badge">—</span>
-        <button class="btn btn-outline" onclick="refresh()">刷新</button>
-        <button class="btn btn-outline" onclick="probeAll()">全量探测</button>
-      </div>
-    </header>
-    <main class="flex-1 overflow-auto p-6" id="main"></main>
+    </div>
   </div>
 
-<script>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <div class="title">种核 KIN</div>
+        <div class="sub">多虚拟机 · Claude Code 网关</div>
+      </div>
+      <nav class="sidebar-nav" id="nav">
+        <div class="layer-tag">L0 · 平台</div>
+        <div class="nav-item active" data-view="overview">总览</div>
+        <div class="layer-tag">L1 · 集群</div>
+        <div class="nav-item" data-view="cluster">虚拟机集群</div>
+        <div class="layer-tag">L2–L3 · 节点</div>
+        <div class="nav-item" data-view="vm">虚拟机详情</div>
+        <div class="layer-tag">L4 · 用量</div>
+        <div class="nav-item" data-view="usage">用量与额度</div>
+        <div class="layer-tag">L5 · 协议</div>
+        <div class="nav-item" data-view="protocol">协议与模型</div>
+        <div class="layer-tag">L6 · 配置</div>
+        <div class="nav-item" data-view="proxies">代理池 SOCKS5</div>
+        <div class="nav-item" data-view="settings">路由与策略</div>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="text-xs muted">已登录 · <span id="loginUser">—</span></div>
+        <button class="btn btn-outline" style="width:100%" onclick="logout()">退出登录</button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">总览</h1>
+          <p id="pageDesc">平台健康 · 集群摘要</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="healthPill" class="badge">—</span>
+          <button class="btn btn-outline" onclick="refresh()">刷新</button>
+          <button class="btn btn-outline" onclick="probeAll()">全量探测</button>
+        </div>
+      </header>
+      <main class="content" id="main"></main>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
 const LS = 'kin_console_token'
 const LS_USER = 'kin_console_user'
 const LS_BASE = 'kin_api_base'
@@ -256,7 +358,14 @@ const titles = {
 }
 let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null }
 
-function apiBase() { return (localStorage.getItem(LS_BASE) || '').replace(/\/$/, '') }
+function apiBase() {
+  const host = (location.hostname || '')
+  if (/kin\.fkcodex\.com$/i.test(host)) return ''
+  const saved = (localStorage.getItem(LS_BASE) || '').replace(/\/$/, '')
+  if (saved) return saved
+  if (/vercel\.app$|netlify\.app$|github\.io$/.test(host)) return 'https://kin.fkcodex.com'
+  return ''
+}
 function key() { return (localStorage.getItem(LS) || '').trim() }
 function logout() {
   localStorage.removeItem(LS)
@@ -268,24 +377,31 @@ function logout() {
 async function doLogin() {
   const user = document.getElementById('loginUserInput').value.trim()
   const pass = document.getElementById('loginPassInput').value
-  let base = document.getElementById('loginBaseInput').value.trim().replace(/\/$/, '')
   const err = document.getElementById('loginErr')
   err.classList.add('hidden')
-  // empty base = same origin (Vercel serverless / gateway /console)
-  if (base) localStorage.setItem(LS_BASE, base)
-  else localStorage.removeItem(LS_BASE)
+  // On official domain always use same-origin (ignore stale localStorage base)
+  const host = location.hostname || ''
+  let base = ''
+  if (/kin\.fkcodex\.com$/i.test(host)) {
+    base = ''
+    localStorage.removeItem(LS_BASE)
+    const baseEl = document.getElementById('loginBaseInput')
+    if (baseEl) baseEl.value = ''
+  } else {
+    base = (document.getElementById('loginBaseInput').value || '').trim().replace(/\/$/, '') || apiBase()
+    if (base) localStorage.setItem(LS_BASE, base)
+    else localStorage.removeItem(LS_BASE)
+  }
+  const url = (base || '') + '/api/panel/login'
   try {
-    const url = (base || '') + '/api/panel/login'
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: user, password: pass }),
     })
-    if (res.status === 405) {
-      throw new Error('405：服务端未启用登录 API。请部署 Vercel Serverless 或打开网关 /console')
-    }
+    if (res.status === 405) throw new Error('405 Method Not Allowed: ' + url)
     const j = await res.json().catch(() => ({}))
-    if (!res.ok || !j.token) throw new Error(j?.error?.message || j?.message || ('登录失败 HTTP ' + res.status))
+    if (!res.ok || !j.token) throw new Error(j?.error?.message || j?.message || ('登录失败 HTTP ' + res.status + ' @ ' + url))
     localStorage.setItem(LS, j.token)
     localStorage.setItem(LS_USER, j.user || user)
     document.getElementById('loginGate').classList.add('hidden')
@@ -295,8 +411,8 @@ async function doLogin() {
     refresh()
   } catch (e) {
     const msg = e.message || String(e)
-    if (/Failed to fetch|NetworkError|CORS/i.test(msg)) {
-      err.textContent = '无法连接鉴权服务，请检查部署与环境变量'
+    if (/Failed to fetch|NetworkError|CORS|Load failed|network/i.test(msg)) {
+      err.textContent = '无法连接: ' + url + ' （请确认可打开该域名，或清空浏览器站点数据后重试）'
     } else {
       err.textContent = msg
     }
@@ -320,7 +436,7 @@ function pct(u) { if (u==null) return 0; const n=Number(u); return n>1?n:n*100 }
 function barColor(p) { if (p>=95) return 'var(--destructive)'; if (p>=85) return 'oklch(0.78 0.16 75)'; return 'oklch(0.72 0.17 145)' }
 function toast(m) {
   const el = document.createElement('div')
-  el.className = 'fixed bottom-4 right-4 z-50 rounded-md border border-border bg-popover text-popover-foreground px-3 py-2 text-sm shadow-md'
+  el.className = 'fixed bottom-4 right-4 z-50 rounded-md border border bg-popover text-popover-foreground px-3 py-2 text-sm shadow-md'
   el.textContent = m
   document.body.appendChild(el)
   setTimeout(() => el.remove(), 2200)
@@ -407,7 +523,7 @@ async function openVm(id) {
 function render() {
   const main = document.getElementById('main')
   const d = state.dashboard
-  if (!d) { main.innerHTML = '<p class="text-sm text-muted-foreground">请保存 API Key 后刷新</p>'; return }
+  if (!d) { main.innerHTML = '<p class="text-sm muted">请保存 API Key 后刷新</p>'; return }
   const views = { overview: renderOverview, cluster: renderCluster, vm: renderVm, usage: renderUsage, protocol: renderProtocol, proxies: renderProxies, settings: renderSettings }
   main.innerHTML = (views[state.view] || renderOverview)()
 }
@@ -415,45 +531,46 @@ function render() {
 function summaryCards(s) {
   const p5 = pct(s.peak_5h), p7 = pct(s.peak_7d)
   return `
-  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+  <div class="grid-4">
     ${card('虚拟机', s.vm_count, 'L1 集群规模')}
     ${card('账号', s.account_count, 'L3 凭证数')}
     ${cardBar('峰值 5h', p5.toFixed(1)+'%', p5, '安全线 95%')}
     ${cardBar('峰值 7d', p7.toFixed(1)+'%', p7, '周额度')}
   </div>
-  <div class="grid gap-4 sm:grid-cols-3 mt-4">
+  <div class="grid-3">
     ${card('总请求', s.requests, '累计')}
     ${card('Tokens', (s.tokens_in||0)+' / '+(s.tokens_out||0), 'In / Out')}
     ${card('近限额', s.near_limit, '≥95% 账号数')}
   </div>`
 }
 function card(label, value, sub) {
-  return `<div class="card"><div class="text-xs text-muted-foreground">${esc(label)}</div><div class="text-2xl font-semibold mt-1">${esc(value)}</div><div class="text-xs text-muted-foreground mt-1">${esc(sub||'')}</div></div>`
+  return `<div class="card"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="meta">${esc(sub||'')}</div></div>`
 }
 function cardBar(label, value, p, sub) {
-  return `<div class="card"><div class="text-xs text-muted-foreground">${esc(label)}</div><div class="text-2xl font-semibold mt-1">${esc(value)}</div><div class="progress mt-2"><i style="width:${Math.min(100,p)}%;background:${barColor(p)}"></i></div><div class="text-xs text-muted-foreground mt-1">${esc(sub||'')}</div></div>`
+  const cls = p >= 95 ? 'danger' : p >= 80 ? 'warn' : ''
+  return `<div class="card"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="bar ${cls}"><i style="width:${Math.min(100,p)}%;background:${barColor(p)}"></i></div><div class="meta">${esc(sub||'')}</div></div>`
 }
 
 function vmCard(v) {
   const u5 = pct(v.utilization_5h), u7 = pct(v.utilization_7d)
   return `
-  <div class="card hover:border-foreground/20 cursor-pointer transition-colors" onclick="openVm('${esc(v.id)}')">
-    <div class="flex items-start justify-between gap-2">
+  <div class="card style="cursor:pointer"" onclick="openVm('${esc(v.id)}')">
+    <div class="row">
       <div>
         <div class="font-medium">${esc(v.name||v.id)}</div>
-        <div class="text-xs text-muted-foreground mt-0.5">${esc(v.id)}</div>
+        <div class="text-xs muted">${esc(v.id)}</div>
       </div>
-      <div class="flex flex-col items-end gap-1">
-        ${v.active ? '<span class="badge border-emerald-700 text-emerald-400">active</span>' : '<span class="badge">standby</span>'}
+      <div class="stack-sm">
+        ${v.active ? '<span class="badge ok">active</span>' : '<span class="badge">standby</span>'}
         <span class="badge">${esc(v.status||'—')}</span>
       </div>
     </div>
-    <div class="mt-3 text-xs text-muted-foreground truncate">${esc(v.email||'无邮箱')}</div>
-    <div class="mt-3 space-y-2">
-      <div><div class="flex justify-between text-xs mb-1"><span>5h</span><span>${u5.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u5)}%;background:${barColor(u5)}"></i></div></div>
-      <div><div class="flex justify-between text-xs mb-1"><span>7d</span><span>${u7.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u7)}%;background:${barColor(u7)}"></i></div></div>
+    <div class="mt-3 text-xs muted ">${esc(v.email||'无邮箱')}</div>
+    <div class="mt-3 stack-sm">
+      <div><div class="flex justify-between text-xs mb-1"><span>5h</span><span>${u5.toFixed(1)}%</span></div><div class="bar"><i style="width:${Math.min(100,u5)}%;background:${barColor(u5)}"></i></div></div>
+      <div><div class="flex justify-between text-xs mb-1"><span>7d</span><span>${u7.toFixed(1)}%</span></div><div class="bar"><i style="width:${Math.min(100,u7)}%;background:${barColor(u7)}"></i></div></div>
     </div>
-    <div class="mt-3 flex justify-between text-xs text-muted-foreground">
+    <div class="mt-3 flex justify-between text-xs muted">
       <span>并发 ${v.inflight||0}/${v.max_concurrency||2}</span>
       <span>CC ${esc(v.claude_code_version||'—')}</span>
     </div>
@@ -467,24 +584,24 @@ function vmCard(v) {
 function renderOverview() {
   const d = state.dashboard
   return `
-  <section class="space-y-6">
+  <section class="section">
     <div>
-      <div class="layer-tag mb-2">L0 · 平台层</div>
-      <div class="card flex flex-wrap gap-6 text-sm">
-        <div><span class="text-muted-foreground">服务</span><div class="font-medium">${esc(d.health?.service||'kin-gateway')}</div></div>
-        <div><span class="text-muted-foreground">Base URL</span><div class="font-medium font-mono text-xs mt-0.5">${esc(d.health?.base_url||'')}</div></div>
-        <div><span class="text-muted-foreground">改写</span><div class="font-medium">${esc(d.health?.rewrite||'off')}</div></div>
-        <div><span class="text-muted-foreground">粘性会话</span><div class="font-medium">${d.routing?.sticky_sessions??0}</div></div>
+      <div class="section-title">L0 · 平台层</div>
+      <div class="card" style="display:flex;flex-wrap:wrap;gap:24px">
+        <div><span class="muted">服务</span><div class="font-medium">${esc(d.health?.service||'kin-gateway')}</div></div>
+        <div><span class="muted">Base URL</span><div class="font-medium mono">${esc(d.health?.base_url||'')}</div></div>
+        <div><span class="muted">改写</span><div class="font-medium">${esc(d.health?.rewrite||'off')}</div></div>
+        <div><span class="muted">粘性会话</span><div class="font-medium">${d.routing?.sticky_sessions??0}</div></div>
       </div>
     </div>
     <div>
-      <div class="layer-tag mb-2">L1 · 集群摘要</div>
+      <div class="section-title">L1 · 集群摘要</div>
       ${summaryCards(d.summary||{})}
     </div>
     <div>
-      <div class="layer-tag mb-2">集群节点预览</div>
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        ${(d.vms||[]).map(vmCard).join('') || '<p class="text-sm text-muted-foreground">暂无虚拟机</p>'}
+      <div class="section-title">集群节点预览</div>
+      <div class="grid-3">
+        ${(d.vms||[]).map(vmCard).join('') || '<p class="text-sm muted">暂无虚拟机</p>'}
       </div>
     </div>
   </section>`
@@ -493,15 +610,15 @@ function renderOverview() {
 function renderCluster() {
   const d = state.dashboard
   return `
-  <section class="space-y-4">
-    <div class="flex items-center justify-between">
-      <div class="layer-tag">L1 · 虚拟机集群 · ${d.vms?.length||0} 节点</div>
+  <section class="section">
+    <div class="row">
+      <div class="section-title">L1 · 虚拟机集群 · ${d.vms?.length||0} 节点</div>
       <button class="btn btn-outline" onclick="probeAll()">全量探测用量</button>
     </div>
-    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      ${(d.vms||[]).map(vmCard).join('') || '<p class="text-sm text-muted-foreground">暂无虚拟机，请导入种子 VM</p>'}
+    <div class="grid-3">
+      ${(d.vms||[]).map(vmCard).join('') || '<p class="text-sm muted">暂无虚拟机，请导入种子 VM</p>'}
     </div>
-    <p class="text-xs text-muted-foreground">卡片 = 最小管理单元：状态 · OAuth 账号 · 5h/7d 用量 · 并发 · Claude Code 版本</p>
+    <p class="text-xs muted">卡片 = 最小管理单元：状态 · OAuth 账号 · 5h/7d 用量 · 并发 · Claude Code 版本</p>
   </section>`
 }
 
@@ -509,49 +626,49 @@ function renderVm() {
   const det = state.detail
   const vms = state.dashboard?.vms || []
   if (!det && !state.selectedVm) {
-    return `<p class="text-sm text-muted-foreground">从集群选择一台虚拟机</p>
-    <div class="grid gap-4 sm:grid-cols-2 mt-4">${vms.map(vmCard).join('')}</div>`
+    return `<p class="text-sm muted">从集群选择一台虚拟机</p>
+    <div class="grid-3">${vms.map(vmCard).join('')}</div>`
   }
   const vm = det?.vm || vms.find(x => x.id === state.selectedVm) || {}
   const acc = det?.account
   const u5 = pct(acc?.utilization_5h ?? vm.utilization_5h)
   const u7 = pct(acc?.utilization_7d ?? vm.utilization_7d)
   return `
-  <section class="space-y-4">
-    <div class="flex flex-wrap gap-2 items-center">
+  <section class="section">
+    <div class="actions">
       <select class="input w-64" onchange="openVm(this.value)">
         ${vms.map(v => `<option value="${esc(v.id)}" ${v.id===vm.id?'selected':''}>${esc(v.name||v.id)}</option>`).join('')}
       </select>
       <button class="btn btn-outline" onclick="probeOne('${esc(vm.id)}')">官方用量探测</button>
       <button class="btn btn-outline" onclick="allocateProxy('${esc(vm.id)}')">分配 SOCKS5</button>
     </div>
-    <div class="grid gap-4 lg:grid-cols-2">
-      <div class="card space-y-3">
-        <div class="layer-tag">L2 · 虚拟机</div>
+    <div class="grid-3">
+      <div class="card stack-md">
+        <div class="section-title">L2 · 虚拟机</div>
         <div class="text-lg font-semibold">${esc(vm.name||vm.id)}</div>
         <dl class="grid grid-cols-2 gap-2 text-sm">
-          <dt class="text-muted-foreground">ID</dt><dd class="font-mono text-xs">${esc(vm.id)}</dd>
-          <dt class="text-muted-foreground">状态</dt><dd>${esc(vm.status)} ${vm.active?'· active':''}</dd>
-          <dt class="text-muted-foreground">Claude Code</dt><dd>${esc(vm.claude_code_version||'—')}</dd>
-          <dt class="text-muted-foreground">并发</dt><dd>${vm.inflight||0} / ${vm.max_concurrency||2}</dd>
-          <dt class="text-muted-foreground">Token</dt><dd>${vm.has_token?'已绑定':'未绑定'}</dd>
+          <dt class="muted">ID</dt><dd class="mono">${esc(vm.id)}</dd>
+          <dt class="muted">状态</dt><dd>${esc(vm.status)} ${vm.active?'· active':''}</dd>
+          <dt class="muted">Claude Code</dt><dd>${esc(vm.claude_code_version||'—')}</dd>
+          <dt class="muted">并发</dt><dd>${vm.inflight||0} / ${vm.max_concurrency||2}</dd>
+          <dt class="muted">Token</dt><dd>${vm.has_token?'已绑定':'未绑定'}</dd>
         </dl>
       </div>
-      <div class="card space-y-3">
-        <div class="layer-tag">L3 · 账号凭证</div>
+      <div class="card stack-md">
+        <div class="section-title">L3 · 账号凭证</div>
         <div class="text-sm">${esc(vm.email||'—')}</div>
-        <div class="text-xs font-mono text-muted-foreground break-all">${esc(vm.account_uuid||'—')}</div>
-        <div class="space-y-2 pt-2">
-          <div><div class="flex justify-between text-xs mb-1"><span>5h 用量</span><span>${u5.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u5)}%;background:${barColor(u5)}"></i></div></div>
-          <div><div class="flex justify-between text-xs mb-1"><span>7d 用量</span><span>${u7.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u7)}%;background:${barColor(u7)}"></i></div></div>
+        <div class="text-xs font-mono muted break-all">${esc(vm.account_uuid||'—')}</div>
+        <div class="stack-sm pt-2">
+          <div><div class="flex justify-between text-xs mb-1"><span>5h 用量</span><span>${u5.toFixed(1)}%</span></div><div class="bar"><i style="width:${Math.min(100,u5)}%;background:${barColor(u5)}"></i></div></div>
+          <div><div class="flex justify-between text-xs mb-1"><span>7d 用量</span><span>${u7.toFixed(1)}%</span></div><div class="bar"><i style="width:${Math.min(100,u7)}%;background:${barColor(u7)}"></i></div></div>
         </div>
-        ${acc?.reset_5h ? `<div class="text-xs text-muted-foreground">5h 重置: ${esc(acc.reset_5h)}</div>` : ''}
-        ${acc?.reset_7d ? `<div class="text-xs text-muted-foreground">7d 重置: ${esc(acc.reset_7d)}</div>` : ''}
+        ${acc?.reset_5h ? `<div class="text-xs muted">5h 重置: ${esc(acc.reset_5h)}</div>` : ''}
+        ${acc?.reset_7d ? `<div class="text-xs muted">7d 重置: ${esc(acc.reset_7d)}</div>` : ''}
       </div>
     </div>
     ${acc?.recent?.length ? `
     <div class="card">
-      <div class="layer-tag mb-2">最近分配记录</div>
+      <div class="section-title">最近分配记录</div>
       <pre class="text-xs overflow-auto max-h-48">${esc(JSON.stringify(acc.recent, null, 2))}</pre>
     </div>` : ''}
   </section>`
@@ -561,60 +678,60 @@ function renderUsage() {
   const u = state.usage || {}
   const s = u.totals || state.dashboard?.summary || {}
   return `
-  <section class="space-y-4">
-    <div class="layer-tag">L4 · 官方 Claude stats（oauth/usage + unified headers）</div>
+  <section class="section">
+    <div class="section-title">L4 · 官方 Claude stats（oauth/usage + unified headers）</div>
     ${summaryCards({ ...s, vm_count: state.dashboard?.summary?.vm_count, account_count: state.dashboard?.summary?.account_count, peak_5h: s.peak_5h, peak_7d: s.peak_7d, near_limit: s.near_limit, requests: s.requests, tokens_in: s.tokens_in, tokens_out: s.tokens_out })}
-    <div class="card overflow-hidden p-0">
-      <table class="w-full text-sm">
-        <thead class="bg-muted/40 text-muted-foreground text-left">
+    <div class="card ">
+      <table class="table">
+        <thead >
           <tr>
-            <th class="p-3 font-medium">账号 / VM</th>
-            <th class="p-3 font-medium">5h</th>
-            <th class="p-3 font-medium">7d</th>
-            <th class="p-3 font-medium">并发</th>
-            <th class="p-3 font-medium">请求</th>
-            <th class="p-3 font-medium">状态</th>
+            <th >账号 / VM</th>
+            <th >5h</th>
+            <th >7d</th>
+            <th >并发</th>
+            <th >请求</th>
+            <th >状态</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-border">
           ${(u.accounts||[]).map(a => {
             const p5=pct(a.utilization_5h), p7=pct(a.utilization_7d)
             return `<tr class="hover:bg-muted/20">
-              <td class="p-3"><div>${esc(a.email||a.account_id)}</div><div class="text-xs text-muted-foreground">${esc(a.vm_id||'')}</div></td>
-              <td class="p-3 w-36"><div class="text-xs mb-1">${p5.toFixed(1)}%</div><div class="progress"><i style="width:${Math.min(100,p5)}%;background:${barColor(p5)}"></i></div></td>
-              <td class="p-3 w-36"><div class="text-xs mb-1">${p7.toFixed(1)}%</div><div class="progress"><i style="width:${Math.min(100,p7)}%;background:${barColor(p7)}"></i></div></td>
-              <td class="p-3">${a.inflight}/${a.max_concurrency}</td>
-              <td class="p-3">${a.requests||0}</td>
-              <td class="p-3">${a.near_limit?'<span class="badge border-red-800 text-red-400">near limit</span>':'<span class="badge">ok</span>'}</td>
+              <td ><div>${esc(a.email||a.account_id)}</div><div class="text-xs muted">${esc(a.vm_id||'')}</div></td>
+              <td class="p-3 w-36"><div class="text-xs mb-1">${p5.toFixed(1)}%</div><div class="bar"><i style="width:${Math.min(100,p5)}%;background:${barColor(p5)}"></i></div></td>
+              <td class="p-3 w-36"><div class="text-xs mb-1">${p7.toFixed(1)}%</div><div class="bar"><i style="width:${Math.min(100,p7)}%;background:${barColor(p7)}"></i></div></td>
+              <td >${a.inflight}/${a.max_concurrency}</td>
+              <td >${a.requests||0}</td>
+              <td >${a.near_limit?'<span class="badge border-red-800 text-red-400">near limit</span>':'<span class="badge">ok</span>'}</td>
             </tr>`
-          }).join('') || '<tr><td class="p-3 text-muted-foreground" colspan="6">暂无数据，请先探测</td></tr>'}
+          }).join('') || '<tr><td class="p-3 muted" colspan="6">暂无数据，请先探测</td></tr>'}
         </tbody>
       </table>
     </div>
-    <p class="text-xs text-muted-foreground">安全策略：utilization ≥ ${(Number(u.safety_ratio||0.95)*100).toFixed(0)}% 时拒绝新请求，避免打满 5h / 周限额。</p>
+    <p class="text-xs muted">安全策略：utilization ≥ ${(Number(u.safety_ratio||0.95)*100).toFixed(0)}% 时拒绝新请求，避免打满 5h / 周限额。</p>
   </section>`
 }
 
 function renderProtocol() {
   const models = state.models?.items || []
   return `
-  <section class="space-y-4">
-    <div class="layer-tag">L5 · 协议网关</div>
-    <div class="card text-sm space-y-2">
+  <section class="section">
+    <div class="section-title">L5 · 协议网关</div>
+    <div class="card text-sm stack-sm">
       <div class="font-medium">入站 → 对齐 → VM Claude Code 转发</div>
-      <ul class="text-muted-foreground text-xs space-y-1 list-disc pl-4">
-        <li>OpenAI Chat Completions <code class="text-foreground">/v1/chat/completions</code></li>
-        <li>OpenAI Responses <code class="text-foreground">/v1/responses</code></li>
-        <li>Anthropic Messages <code class="text-foreground">/v1/messages</code></li>
+      <ul class="muted text-xs stack-sm ">
+        <li>OpenAI Chat Completions <code class="">/v1/chat/completions</code></li>
+        <li>OpenAI Responses <code class="">/v1/responses</code></li>
+        <li>Anthropic Messages <code class="">/v1/messages</code></li>
         <li>原则：对齐 Claude Code 官方请求标准（非伪装）</li>
         <li>仅官方 Claude 模型名；system 外站归因可剥离</li>
       </ul>
     </div>
     <div class="card">
-      <div class="layer-tag mb-2">官方模型（${models.length}）· source=${esc(state.models?.source||'')}${state.models?.note ? ' · '+esc(state.models.note) : ''}</div>
-      ${state.models?.error || state.models?.note && !models.length ? `<p class="text-xs text-destructive mb-2">${esc(state.models.error||state.models.note)}</p>` : ''}
-      <div class="grid gap-2 sm:grid-cols-2">
-        ${models.map(m => `<div class="rounded-md border border-border px-3 py-2 text-sm"><div class="font-medium">${esc(m.label||m.id)}</div><div class="text-xs text-muted-foreground font-mono">${esc(m.id)}</div></div>`).join('') || '<div class="text-sm text-muted-foreground">暂无模型数据</div>'}
+      <div class="section-title">官方模型（${models.length}）· source=${esc(state.models?.source||'')}${state.models?.note ? ' · '+esc(state.models.note) : ''}</div>
+      ${state.models?.error || state.models?.note && !models.length ? `<p class="text-xs danger">${esc(state.models.error||state.models.note)}</p>` : ''}
+      <div class="grid-2">
+        ${models.map(m => `<div class="card"><div class="font-medium">${esc(m.label||m.id)}</div><div class="text-xs muted font-mono">${esc(m.id)}</div></div>`).join('') || '<div class="text-sm muted">暂无模型数据</div>'}
       </div>
     </div>
   </section>`
@@ -623,23 +740,23 @@ function renderProtocol() {
 function renderSettings() {
   const r = state.routing || {}
   return `
-  <section class="space-y-4">
-    <div class="layer-tag">L6 · 配置</div>
-    <div class="grid gap-4 lg:grid-cols-2">
+  <section class="section">
+    <div class="section-title">L6 · 配置</div>
+    <div class="grid-3">
       <div class="card">
         <div class="font-medium text-sm mb-2">粘性路由</div>
-        <pre class="text-xs overflow-auto max-h-64 bg-background rounded-md p-3 border border-border">${esc(JSON.stringify(r.sticky||{}, null, 2))}</pre>
+        <pre class="text-xs overflow-auto max-h-64 bg-background rounded-md p-3 border border">${esc(JSON.stringify(r.sticky||{}, null, 2))}</pre>
       </div>
       <div class="card">
         <div class="font-medium text-sm mb-2">额度 / 并发</div>
-        <pre class="text-xs overflow-auto max-h-64 bg-background rounded-md p-3 border border-border">${esc(JSON.stringify({ quota: r.quota, concurrency: r.concurrency }, null, 2))}</pre>
+        <pre class="text-xs overflow-auto max-h-64 bg-background rounded-md p-3 border border">${esc(JSON.stringify({ quota: r.quota, concurrency: r.concurrency }, null, 2))}</pre>
       </div>
     </div>
     <div class="card">
       <div class="font-medium text-sm mb-2">活跃粘性会话</div>
-      <pre class="text-xs overflow-auto max-h-48 bg-background rounded-md p-3 border border-border">${esc(JSON.stringify(r.sessions||{}, null, 2))}</pre>
+      <pre class="text-xs overflow-auto max-h-48 bg-background rounded-md p-3 border border">${esc(JSON.stringify(r.sessions||{}, null, 2))}</pre>
     </div>
-    <p class="text-xs text-muted-foreground">修改请调用 <code>PUT /api/panel/routing</code>；契约见 PANEL_API.md</p>
+    <p class="text-xs muted">修改请调用 <code>PUT /api/panel/routing</code>；契约见 PANEL_API.md</p>
   </section>`
 }
 
@@ -702,9 +819,9 @@ function renderProxies() {
   const list = px.proxies || []
   const interval = cfg.probe_interval_min || 10
   return `
-  <section class="space-y-4">
-    <div class="layer-tag">L1/L6 · SOCKS5 代理池 · 一代理绑定一虚拟机</div>
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+  <section class="section">
+    <div class="section-title">L1/L6 · SOCKS5 代理池 · 一代理绑定一虚拟机</div>
+    <div class="grid-3">
       ${card('总数', tot.total??0, '池容量')}
       ${card('空闲', tot.free??0, '可自动分配')}
       ${card('已绑定', tot.bound??0, '1:1 VM')}
@@ -712,46 +829,46 @@ function renderProxies() {
       ${card('停用', tot.dead??0, 'fail→停用调度')}
     </div>
 
-    <div class="card space-y-3">
+    <div class="card stack-md">
       <div class="font-medium text-sm">自动探测间隔</div>
-      <div class="flex flex-wrap gap-2">
+      <div class="actions">
         ${[5,10,30,60].map(m => `
           <button class="btn ${interval===m?'btn-primary':'btn-outline'}" onclick="setProbeInterval(${m})">${m} 分钟</button>
         `).join('')}
         <button class="btn btn-outline" onclick="probeProxies()">立即全量探测</button>
       </div>
-      <p class="text-xs text-muted-foreground">连续失败 ≥ ${cfg.max_failures||2} 次 → 停用该代理，并<strong>暂停绑定 VM 的调度</strong></p>
+      <p class="text-xs muted">连续失败 ≥ ${cfg.max_failures||2} 次 → 停用该代理，并<strong>暂停绑定 VM 的调度</strong></p>
     </div>
 
-    <div class="card space-y-3">
+    <div class="card stack-md">
       <div class="font-medium text-sm">批量导入</div>
       <textarea id="proxyImport" class="input h-28 py-2 font-mono text-xs" placeholder="每行一条：&#10;socks5://user:pass@host:port&#10;host:port&#10;host:port:user:pass"></textarea>
       <button class="btn btn-primary" onclick="importProxies()">导入到代理池</button>
     </div>
 
-    <div class="card overflow-hidden p-0">
-      <table class="w-full text-sm">
-        <thead class="bg-muted/40 text-muted-foreground text-left">
+    <div class="card ">
+      <table class="table">
+        <thead >
           <tr>
-            <th class="p-3 font-medium">代理</th>
-            <th class="p-3 font-medium">状态</th>
-            <th class="p-3 font-medium">延迟</th>
-            <th class="p-3 font-medium">绑定 VM</th>
-            <th class="p-3 font-medium">失败</th>
+            <th >代理</th>
+            <th >状态</th>
+            <th >延迟</th>
+            <th >绑定 VM</th>
+            <th >失败</th>
             <th class="p-3 text-right font-medium">操作</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-border">
           ${list.map(p => `
             <tr class="hover:bg-muted/20">
-              <td class="p-3">
-                <div class="font-mono text-xs">${esc(p.host)}:${p.port}</div>
-                <div class="text-[10px] text-muted-foreground">${esc(p.id)}${p.has_auth?' · auth':''}</div>
+              <td >
+                <div class="mono">${esc(p.host)}:${p.port}</div>
+                <div class="text-[10px] muted">${esc(p.id)}${p.has_auth?' · auth':''}</div>
               </td>
-              <td class="p-3"><span class="badge ${p.status==='ok'?'border-emerald-700 text-emerald-400':p.status==='dead'?'border-red-800 text-red-400':''}">${esc(p.status)}</span> ${p.enabled?'':'· off'}</td>
-              <td class="p-3">${p.latency_ms!=null?p.latency_ms+'ms':'—'}</td>
+              <td ><span class="badge ${p.status==='ok'?'ok':p.status==='dead'?'border-red-800 text-red-400':''}">${esc(p.status)}</span> ${p.enabled?'':'· off'}</td>
+              <td >${p.latency_ms!=null?p.latency_ms+'ms':'—'}</td>
               <td class="p-3 font-mono text-xs">${esc(p.bound_vm_id||'—')}</td>
-              <td class="p-3">${p.consecutive_failures||0}${p.last_error?' <span class="text-xs text-muted-foreground">'+esc(p.last_error)+'</span>':''}</td>
+              <td >${p.consecutive_failures||0}${p.last_error?' <span class="text-xs muted">'+esc(p.last_error)+'</span>':''}</td>
               <td class="p-3 text-right space-x-1">
                 <button class="btn btn-ghost h-8 text-xs" onclick="probeProxyOne('${p.id}')">探测</button>
                 ${p.enabled
@@ -760,11 +877,11 @@ function renderProxies() {
                 ${p.bound_vm_id?`<button class="btn btn-ghost h-8 text-xs" onclick="unbindProxy('${p.id}')">解绑</button>`:''}
               </td>
             </tr>
-          `).join('') || '<tr><td class="p-3 text-muted-foreground" colspan="6">池为空，请先导入</td></tr>'}
+          `).join('') || '<tr><td class="p-3 muted" colspan="6">池为空，请先导入</td></tr>'}
         </tbody>
       </table>
     </div>
-    <p class="text-xs text-muted-foreground">虚拟机创建/分配：<code>POST /api/panel/vms/:id/allocate-proxy</code> 自动领取一台空闲 SOCKS5（优先 status=ok）。</p>
+    <p class="text-xs muted">虚拟机创建/分配：<code>POST /api/panel/vms/:id/allocate-proxy</code> 自动领取一台空闲 SOCKS5（优先 status=ok）。</p>
   </section>`
 }
 
@@ -785,34 +902,19 @@ function renderProxies() {
   }
 })()
 if (key()) refresh()
-else document.getElementById('main').innerHTML = '<p class="text-sm text-muted-foreground">在左下角填入 API Key 后点击保存</p>'
-</script>
+else document.getElementById('main').innerHTML = '<p class="text-sm muted">在左下角填入 API Key 后点击保存</p>'
 
-<!-- Login gate -->
-<div id="loginGate">
-  <div class="card space-y-4">
-    <div>
-      <div class="text-base font-semibold tracking-tight" style="color:oklch(0.984 0.003 247.858)">种核 KIN</div>
-      <div class="text-xs mt-1" style="color:oklch(0.704 0.04 256.788)">管理台登录</div>
-    </div>
-    <div class="space-y-2">
-      <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
-      <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
-      <input id="loginBaseInput" class="input" placeholder="API Base（可空=本站）" />
-    </div>
-    <button type="button" class="btn btn-primary" onclick="doLogin()">登录</button>
-    <p id="loginErr" class="text-xs hidden" style="color:oklch(0.704 0.191 22.216)"></p>
-  </div>
-</div>
-<div class="space-y-2">
-      <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
-      <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
-      <input id="loginBaseInput" class="input" placeholder="API Base（可空=本站鉴权）" />
-    </div>
-    <button class="btn btn-primary w-full" onclick="doLogin()">登录</button>
-    <p id="loginErr" class="text-xs text-destructive hidden"></p>
-  </div>
-</div>
-
+// nav bind
+document.getElementById('nav').addEventListener('click', (e) => {
+  const item = e.target.closest('.nav-item')
+  if (!item) return
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'))
+  item.classList.add('active')
+  state.view = item.dataset.view
+  render()
+})
+initAuth()
+if (localStorage.getItem(LS)) refresh()
+  </script>
 </body>
 </html>

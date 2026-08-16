@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "node-fetch": "^2.7.0",
+    "socks-proxy-agent": "^8.0.5"
+  },
+  "name": "kin-gateway",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module"
+}

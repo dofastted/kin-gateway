@@ -23,7 +23,7 @@ export function loadConfig() {
     port,
     host,
     public_host: publicHost,
-    base_url: `http://${publicHost}:${port}`,
+    base_url: process.env.PUBLIC_BASE_URL || `${process.env.PUBLIC_SCHEME || 'http'}://${publicHost}${String(process.env.PUBLIC_SCHEME||'http')==='https' ? '' : ':'+port}`,
     api_key: apiKey,
     api_key_hash: hashKey(apiKey),
     // rewrite pipeline — DEFAULT OFF (passthrough preferred)
@@ -48,6 +48,7 @@ export function loadConfig() {
       account_uuid: vm.claude?.account_uuid || vm.id,
       org_uuid: vm.claude?.org_uuid || null,
       access_token: vm.claude?.access_token,
+      proxy: vm.proxy || null,
       refresh_token: vm.claude?.refresh_token,
       expires_at: vm.claude?.expires_at,
       max_concurrency: vm.policy?.maxConcurrency || 2,

@@ -276,7 +276,6 @@ export function fromClaudeToOpenAIChat(claude, requestedModel, vmId, mode = 'con
       completion_tokens: claude.usage?.output_tokens || 0,
       total_tokens: (claude.usage?.input_tokens || 0) + (claude.usage?.output_tokens || 0),
     },
-    kin: { vm_id: vmId, upstream_model: claude.model, mode },
   }
 }
 
@@ -311,7 +310,6 @@ export function fromClaudeToResponses(claude, requestedModel, vmId, mode = 'conv
       output_tokens: claude.usage?.output_tokens || 0,
       total_tokens: (claude.usage?.input_tokens || 0) + (claude.usage?.output_tokens || 0),
     },
-    kin: { vm_id: vmId, upstream_model: claude.model, mode },
   }
 }
 
@@ -370,11 +368,33 @@ export function claudeSSELineToOpenAIChatChunks(line, state) {
     })
   }
 
+  if (evt.type === 'content_block_start' && (evt.content_block?.type === 'thinking' || evt.content_block?.type === 'redacted_thinking')) {
+    // OpenAI-compat: announce reasoning channel
+    chunks.push({
+      ...base,
+      choices: [{ index: 0, delta: { reasoning_content: '' }, finish_reason: null }],
+    })
+  }
+
   if (evt.type === 'content_block_delta') {
     if (evt.delta?.type === 'text_delta') {
       chunks.push({
         ...base,
         choices: [{ index: 0, delta: { content: evt.delta.text || '' }, finish_reason: null }],
+      })
+    }
+    // Claude thinking → OpenAI-compat reasoning_content (原样文本)
+    if (evt.delta?.type === 'thinking_delta') {
+      chunks.push({
+        ...base,
+        choices: [{ index: 0, delta: { reasoning_content: evt.delta.thinking || '' }, finish_reason: null }],
+      })
+    }
+    // signature kept as opaque delta for clients that want full fidelity
+    if (evt.delta?.type === 'signature_delta' && evt.delta.signature) {
+      chunks.push({
+        ...base,
+        choices: [{ index: 0, delta: { reasoning_signature: evt.delta.signature }, finish_reason: null }],
       })
     }
     if (evt.delta?.type === 'input_json_delta') {
@@ -509,7 +529,6 @@ export function claudeSSELineToResponsesEvents(line, state) {
           content: [{ type: 'output_text', text: state.text }],
         }],
         output_text: state.text,
-        kin: { vm_id: state.vmId },
       },
     })
   }

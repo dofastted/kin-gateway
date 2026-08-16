@@ -80,14 +80,28 @@ export function makeError({
 
 /** Classify & map Anthropic upstream error body + HTTP status */
 export function mapUpstreamError(status, body, headers = {}) {
-  const msg =
+  const upType = body?.error?.type || body?.type || null
+  let msg =
     body?.error?.message ||
     body?.message ||
     (typeof body?.error === 'string' ? body.error : null) ||
     body?.raw ||
-    `Upstream HTTP ${status}`
+    null
 
-  const upType = body?.error?.type || null
+  // Anthropic sometimes returns literal "Error" — enrich for clients like RikkaHub
+  if (!msg || String(msg).trim() === '' || /^error$/i.test(String(msg).trim())) {
+    if (status === 429 || upType === 'rate_limit_error') {
+      msg = 'Rate limit exceeded (upstream). Please retry later or switch account.'
+    } else if (status === 401 || status === 403 || upType === 'authentication_error') {
+      msg = 'Upstream authentication failed. OAuth credential may be expired.'
+    } else if (status === 529 || upType === 'overloaded_error') {
+      msg = 'Upstream overloaded. Please retry shortly.'
+    } else if (upType) {
+      msg = `Upstream error: ${upType} (HTTP ${status})`
+    } else {
+      msg = `Upstream HTTP ${status}`
+    }
+  }
   const request_id =
     body?.error?.request_id ||
     body?.request_id ||

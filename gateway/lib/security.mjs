@@ -56,7 +56,7 @@ export const HOP_BY_HOP = new Set([
 export function getPanelAdmin() {
   return {
     username: process.env.KIN_ADMIN_USER || 'admin',
-    password: process.env.KIN_ADMIN_PASSWORD || '123456qwe',
+    password: process.env.KIN_ADMIN_PASSWORD || 'change-me',
   }
 }
 

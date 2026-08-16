@@ -3,10 +3,6 @@ data/
 captures/
 *.log
 .env
-.env.*
+vms/
+*.pem
 config/test.key
-**/*oauth*.json
-**/account-stats.json
-**/sticky-map.json
-**/proxy-pool.json
-.DS_Store
