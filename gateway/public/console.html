@@ -108,9 +108,13 @@
     }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-primary {
-      background: var(--primary); color: var(--primary-foreground); border: none;
+      background: oklch(0.929 0.013 255.508) !important;
+      color: oklch(0.208 0.042 265.755) !important;
+      border: none;
+      width: 100%;
+      font-weight: 600;
     }
-    .btn-primary:hover { opacity: 0.9; }
+    .btn-primary:hover { opacity: 0.92; }
     .btn-ghost { background: transparent; color: var(--foreground); border: none; }
     .btn-ghost:hover { background: var(--accent); }
     .btn-outline {
@@ -119,20 +123,31 @@
     }
     .btn-outline:hover { background: var(--accent); }
     .input {
-      height: 2.25rem; width: 100%;
+      height: 2.5rem; width: 100%;
       border-radius: calc(var(--radius) - 2px);
-      border: 1px solid var(--input);
-      background: transparent;
-      color: var(--foreground);
+      border: 1px solid oklch(1 0 0 / 15%);
+      background: oklch(0.18 0.03 260) !important;
+      color: oklch(0.984 0.003 247.858) !important;
       padding: 0 0.75rem;
       font-size: 0.875rem;
       outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+      color-scheme: dark;
     }
     .input:focus {
-      border-color: var(--ring);
-      box-shadow: 0 0 0 2px oklch(0.551 0.027 264.364 / 35%);
+      border-color: oklch(0.55 0.03 264);
+      box-shadow: 0 0 0 2px oklch(0.55 0.03 264 / 30%);
     }
-    .input::placeholder { color: var(--muted-foreground); }
+    .input::placeholder { color: oklch(0.65 0.03 256); }
+    /* kill browser autofill white */
+    .input:-webkit-autofill,
+    .input:-webkit-autofill:hover,
+    .input:-webkit-autofill:focus {
+      -webkit-text-fill-color: oklch(0.984 0.003 247.858) !important;
+      -webkit-box-shadow: 0 0 0 1000px oklch(0.18 0.03 260) inset !important;
+      transition: background-color 9999s ease-in-out 0s;
+    }
     .badge {
       display: inline-flex; align-items: center;
       border-radius: calc(var(--radius) - 2px);
@@ -153,9 +168,28 @@
       color: var(--muted-foreground); font-weight: 500;
     }
     #loginGate {
-      background: oklch(0.129 0.042 264.695 / 0.92);
-      backdrop-filter: blur(8px);
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+      background: oklch(0.129 0.042 264.695);
     }
+    #loginGate .card {
+      width: 100%;
+      max-width: 22rem;
+      padding: 1.5rem;
+      background: oklch(0.16 0.035 259);
+      border: 1px solid oklch(1 0 0 / 12%);
+      border-radius: 0.75rem;
+    }
+    #loginGate .space-y-2 > * + * { margin-top: 0.6rem; }
+    #loginGate .space-y-4 > * + * { margin-top: 1rem; }
+    body.login-only > aside,
+    body.login-only > .flex-1 { visibility: hidden; pointer-events: none; }
+    html { color-scheme: dark; }
     textarea.input {
       height: auto; min-height: 5.5rem; padding: 0.6rem 0.75rem;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -163,7 +197,7 @@
     }
   </style>
 </head>
-<body class="min-h-screen bg-background text-foreground flex font-sans antialiased">
+<body class="min-h-screen bg-background text-foreground flex font-sans antialiased login-only">
   <!-- Sidebar: hierarchy -->
   <aside class="w-56 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground flex flex-col">
     <div class="p-4 border-b border-border">
@@ -228,6 +262,7 @@ function logout() {
   localStorage.removeItem(LS)
   localStorage.removeItem(LS_USER)
   document.getElementById('loginGate').classList.remove('hidden')
+  document.body.classList.add('login-only')
   document.getElementById('loginUser').textContent = '—'
 }
 async function doLogin() {
@@ -236,14 +271,9 @@ async function doLogin() {
   let base = document.getElementById('loginBaseInput').value.trim().replace(/\/$/, '')
   const err = document.getElementById('loginErr')
   err.classList.add('hidden')
-  const host = location.hostname || ''
-  const onStatic = /vercel\.app$|github\.io$|netlify\.app$/.test(host)
-  if (onStatic && !base) {
-    err.textContent = '请填写 API Base（网关地址，例如 https://你的网关:8787）'
-    err.classList.remove('hidden')
-    return
-  }
+  // empty base = same origin (Vercel serverless / gateway /console)
   if (base) localStorage.setItem(LS_BASE, base)
+  else localStorage.removeItem(LS_BASE)
   try {
     const url = (base || '') + '/api/panel/login'
     const res = await fetch(url, {
@@ -252,20 +282,21 @@ async function doLogin() {
       body: JSON.stringify({ username: user, password: pass }),
     })
     if (res.status === 405) {
-      throw new Error('405：当前地址不接受 POST。请在 API Base 填写真实网关地址，或打开网关 /console')
+      throw new Error('405：服务端未启用登录 API。请部署 Vercel Serverless 或打开网关 /console')
     }
     const j = await res.json().catch(() => ({}))
     if (!res.ok || !j.token) throw new Error(j?.error?.message || j?.message || ('登录失败 HTTP ' + res.status))
     localStorage.setItem(LS, j.token)
     localStorage.setItem(LS_USER, j.user || user)
     document.getElementById('loginGate').classList.add('hidden')
+    document.body.classList.remove('login-only')
     document.getElementById('loginUser').textContent = j.user || user
     toast('登录成功')
     refresh()
   } catch (e) {
     const msg = e.message || String(e)
     if (/Failed to fetch|NetworkError|CORS/i.test(msg)) {
-      err.textContent = '无法连接网关。请确认 API Base 可访问且已开启 CORS'
+      err.textContent = '无法连接鉴权服务，请检查部署与环境变量'
     } else {
       err.textContent = msg
     }
@@ -736,9 +767,11 @@ function renderProxies() {
   if (baseEl && base) baseEl.value = base
   if (tok) {
     document.getElementById('loginGate').classList.add('hidden')
+    document.body.classList.remove('login-only')
     document.getElementById('loginUser').textContent = u || 'admin'
   } else {
     document.getElementById('loginGate').classList.remove('hidden')
+    document.body.classList.add('login-only')
   }
 })()
 if (key()) refresh()
@@ -746,16 +779,25 @@ else document.getElementById('main').innerHTML = '<p class="text-sm text-muted-f
 </script>
 
 <!-- Login gate -->
-<div id="loginGate" class="fixed inset-0 z-50 flex items-center justify-center">
-  <div class="card w-full max-w-sm space-y-4 shadow-lg">
+<div id="loginGate">
+  <div class="card space-y-4">
     <div>
-      <div class="text-base font-semibold tracking-tight">种核 KIN</div>
-      <div class="text-xs text-muted-foreground mt-1">管理台登录</div>
+      <div class="text-base font-semibold tracking-tight" style="color:oklch(0.984 0.003 247.858)">种核 KIN</div>
+      <div class="text-xs mt-1" style="color:oklch(0.704 0.04 256.788)">管理台登录</div>
     </div>
     <div class="space-y-2">
       <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
       <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
-      <input id="loginBaseInput" class="input" placeholder="API Base 网关地址（Vercel 必填）" />
+      <input id="loginBaseInput" class="input" placeholder="API Base（可空=本站）" />
+    </div>
+    <button type="button" class="btn btn-primary" onclick="doLogin()">登录</button>
+    <p id="loginErr" class="text-xs hidden" style="color:oklch(0.704 0.191 22.216)"></p>
+  </div>
+</div>
+<div class="space-y-2">
+      <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
+      <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
+      <input id="loginBaseInput" class="input" placeholder="API Base（可空=本站鉴权）" />
     </div>
     <button class="btn btn-primary w-full" onclick="doLogin()">登录</button>
     <p id="loginErr" class="text-xs text-destructive hidden"></p>
