@@ -8,6 +8,8 @@ import path from 'node:path'
 import { loadConfig, saveVmPatch } from './lib/config.mjs'
 import {
   extractApiKey, timingSafeEqualStr, redactSecrets, createRateLimiter,
+  verifyPanelLogin, createPanelSession, verifyPanelSession, extractPanelToken,
+  getPanelAdmin,
 } from './lib/security.mjs'
 import { applyIntercept } from './lib/intercept.mjs'
 import {
@@ -89,7 +91,7 @@ function json(res, status, body) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite',
+    'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token',
     'access-control-allow-methods': 'GET,POST,OPTIONS,PUT,DELETE',
     'x-kin-rewrite': cfg.rewrite.enabled ? 'on' : 'off',
   })
@@ -150,28 +152,45 @@ function readBody(req, maxBytes) {
 }
 
 function requireAuth(req, res) {
-  const key = extractApiKey(req)
-  if (!key) {
+  const token = extractPanelToken(req) || extractApiKey(req)
+  if (!token) {
     const e = makeError({
       type: ErrorType.AUTH,
       code: ErrorCode.MISSING_API_KEY,
-      message: 'Missing API key. Provide Authorization: Bearer <key> or x-api-key header.',
+      message: 'Missing credentials. Login at /api/panel/login or provide Authorization Bearer token.',
       status: 401,
     })
     json(res, e.status, e.body)
     return false
   }
-  if (!timingSafeEqualStr(key, cfg.api_key)) {
+  // Panel session
+  const session = verifyPanelSession(token)
+  if (session) {
+    if (!allowRate('panel:' + session.user)) {
+      const e = makeError({
+        type: ErrorType.RATE_LIMIT,
+        code: ErrorCode.GATEWAY_RATE_LIMIT,
+        message: 'Gateway rate limit exceeded. Retry later.',
+        status: 429,
+      })
+      json(res, e.status, e.body)
+      return false
+    }
+    req.panelUser = session.user
+    return true
+  }
+  // API key
+  if (!timingSafeEqualStr(token, cfg.api_key)) {
     const e = makeError({
       type: ErrorType.AUTH,
       code: ErrorCode.INVALID_API_KEY,
-      message: 'Invalid API key',
+      message: 'Invalid credentials',
       status: 401,
     })
     json(res, e.status, e.body)
     return false
   }
-  if (!allowRate(key)) {
+  if (!allowRate(token)) {
     const e = makeError({
       type: ErrorType.RATE_LIMIT,
       code: ErrorCode.GATEWAY_RATE_LIMIT,
@@ -482,7 +501,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'access-control-allow-origin': '*',
-        'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite',
+        'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token',
         'access-control-allow-methods': 'GET,POST,OPTIONS,PUT,DELETE',
       })
       return res.end()
@@ -619,9 +638,35 @@ const server = http.createServer(async (req, res) => {
       })
     }
 
+    // ========== Panel login (public) ==========
+    if (req.method === 'POST' && p === '/api/panel/login') {
+      const body = await readBody(req, 4096)
+      const username = body.username || body.user || body.account
+      const password = body.password || body.pass
+      if (!verifyPanelLogin(username, password)) {
+        const e = makeError({
+          type: ErrorType.AUTH,
+          code: ErrorCode.INVALID_API_KEY,
+          message: 'Invalid username or password',
+          status: 401,
+        })
+        return json(res, e.status, e.body)
+      }
+      const token = createPanelSession(String(username))
+      return json(res, 200, {
+        ok: true,
+        token,
+        user: String(username),
+        expires_in: 7 * 24 * 3600,
+      })
+    }
+
     // ========== Simplified Panel API (shadcn-ready) ==========
     if (p.startsWith('/api/panel')) {
       if (!requireAuth(req, res)) return
+      if (req.method === 'GET' && p === '/api/panel/me') {
+        return json(res, 200, { ok: true, user: req.panelUser || 'api-key' })
+      }
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
         return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats }))

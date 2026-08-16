@@ -51,3 +51,51 @@ export const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length',
 ])
+
+/** Panel admin credentials (env override) */
+export function getPanelAdmin() {
+  return {
+    username: process.env.KIN_ADMIN_USER || 'admin',
+    password: process.env.KIN_ADMIN_PASSWORD || '123456qwe',
+  }
+}
+
+const panelSessions = new Map() // token -> { user, exp }
+
+export function createPanelSession(username, ttlMs = 7 * 24 * 3600 * 1000) {
+  const token = 'kin-panel-' + crypto.randomBytes(24).toString('hex')
+  panelSessions.set(token, { user: username, exp: Date.now() + ttlMs })
+  return token
+}
+
+export function verifyPanelSession(token) {
+  if (!token || !token.startsWith('kin-panel-')) return null
+  const s = panelSessions.get(token)
+  if (!s) return null
+  if (Date.now() > s.exp) {
+    panelSessions.delete(token)
+    return null
+  }
+  return s
+}
+
+export function revokePanelSession(token) {
+  panelSessions.delete(token)
+}
+
+export function verifyPanelLogin(username, password) {
+  const admin = getPanelAdmin()
+  if (!timingSafeEqualStr(String(username || ''), admin.username)) return false
+  if (!timingSafeEqualStr(String(password || ''), admin.password)) return false
+  return true
+}
+
+/** Extract panel session or API key from request */
+export function extractPanelToken(req) {
+  const auth = req.headers.authorization || ''
+  if (typeof auth === 'string' && auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim()
+  }
+  if (req.headers['x-panel-token']) return String(req.headers['x-panel-token']).trim()
+  return ''
+}

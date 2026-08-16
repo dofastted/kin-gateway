@@ -66,8 +66,8 @@
       <div class="nav-item" data-view="settings">路由与策略</div>
     </nav>
     <div class="p-3 border-t border-border space-y-2">
-      <input id="apiKey" type="password" class="input" placeholder="API Key" />
-      <button class="btn btn-primary w-full" onclick="saveKey()">保存并刷新</button>
+      <div class="text-xs text-muted-foreground">已登录 · <span id="loginUser">—</span></div>
+      <button class="btn btn-outline w-full" onclick="logout()">退出登录</button>
     </div>
   </aside>
 
@@ -88,7 +88,9 @@
   </div>
 
 <script>
-const LS = 'kin_console_key'
+const LS = 'kin_console_token'
+const LS_USER = 'kin_console_user'
+const LS_BASE = 'kin_api_base'
 const titles = {
   overview: ['总览', 'L0 平台 + L1 集群摘要'],
   cluster: ['虚拟机集群', 'L1 多种子节点一览'],
@@ -100,14 +102,53 @@ const titles = {
 }
 let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null }
 
-function key() { return (document.getElementById('apiKey').value || localStorage.getItem(LS) || '').trim() }
-function saveKey() { localStorage.setItem(LS, key()); toast('已保存'); refresh() }
+function apiBase() { return (localStorage.getItem(LS_BASE) || '').replace(/\/$/, '') }
+function key() { return (localStorage.getItem(LS) || '').trim() }
+function logout() {
+  localStorage.removeItem(LS)
+  localStorage.removeItem(LS_USER)
+  document.getElementById('loginGate').classList.remove('hidden')
+  document.getElementById('loginUser').textContent = '—'
+}
+async function doLogin() {
+  const user = document.getElementById('loginUserInput').value.trim()
+  const pass = document.getElementById('loginPassInput').value
+  const base = document.getElementById('loginBaseInput').value.trim().replace(/\/$/, '')
+  const err = document.getElementById('loginErr')
+  err.classList.add('hidden')
+  if (base) localStorage.setItem(LS_BASE, base)
+  try {
+    const url = (base || '') + '/api/panel/login'
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    })
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok || !j.token) throw new Error(j?.error?.message || j?.message || ('登录失败 ' + res.status))
+    localStorage.setItem(LS, j.token)
+    localStorage.setItem(LS_USER, j.user || user)
+    document.getElementById('loginGate').classList.add('hidden')
+    document.getElementById('loginUser').textContent = j.user || user
+    toast('登录成功')
+    refresh()
+  } catch (e) {
+    err.textContent = e.message || String(e)
+    err.classList.remove('hidden')
+  }
+}
 function headers() { return { Authorization: 'Bearer ' + key(), 'Content-Type': 'application/json' } }
 async function api(path, opts={}) {
-  const res = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers||{}) } })
+  if (!key()) throw new Error('未登录')
+  const url = (apiBase() || '') + path
+  const res = await fetch(url, { ...opts, headers: { ...headers(), ...(opts.headers||{}) } })
   const j = await res.json().catch(() => ({}))
-  if (!res.ok || j.ok === false) throw new Error(j?.error?.message || res.statusText)
-  return j.data !== undefined ? j : j
+  if (res.status === 401) {
+    logout()
+    throw new Error('鉴权失效，请重新登录')
+  }
+  if (!res.ok || j.ok === false) throw new Error(j?.error?.message || j?.message || res.statusText)
+  return j.data !== undefined ? j.data : j
 }
 function pct(u) { if (u==null) return 0; const n=Number(u); return n>1?n:n*100 }
 function barColor(p) { if (p>=95) return 'var(--danger, #ef4444)'; if (p>=85) return '#f59e0b'; return '#22c55e' }
@@ -121,6 +162,7 @@ function toast(m) {
 function esc(s) { return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) }
 
 // Nav
+document.getElementById('loginPassInput') && document.getElementById('loginPassInput').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin() })
 document.getElementById('nav').addEventListener('click', (e) => {
   const item = e.target.closest('.nav-item')
   if (!item) return
@@ -551,9 +593,39 @@ function renderProxies() {
 }
 
 
-document.getElementById('apiKey').value = localStorage.getItem(LS) || ''
+;(function initAuth(){
+  const u = localStorage.getItem(LS_USER) || ''
+  const tok = localStorage.getItem(LS) || ''
+  const base = localStorage.getItem(LS_BASE) || ''
+  const baseEl = document.getElementById('loginBaseInput')
+  if (baseEl && base) baseEl.value = base
+  if (tok) {
+    document.getElementById('loginGate').classList.add('hidden')
+    document.getElementById('loginUser').textContent = u || 'admin'
+  } else {
+    document.getElementById('loginGate').classList.remove('hidden')
+  }
+})()
 if (key()) refresh()
 else document.getElementById('main').innerHTML = '<p class="text-sm text-muted-foreground">在左下角填入 API Key 后点击保存</p>'
 </script>
+
+<!-- Login gate -->
+<div id="loginGate" class="fixed inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm">
+  <div class="card w-full max-w-sm space-y-4">
+    <div>
+      <div class="text-base font-semibold">种核 KIN</div>
+      <div class="text-xs text-muted-foreground mt-1">管理台登录</div>
+    </div>
+    <div class="space-y-2">
+      <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" />
+      <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
+      <input id="loginBaseInput" class="input" placeholder="API Base（可空=同源）" />
+    </div>
+    <button class="btn btn-primary w-full" onclick="doLogin()">登录</button>
+    <p id="loginErr" class="text-xs text-danger hidden"></p>
+  </div>
+</div>
+
 </body>
 </html>
