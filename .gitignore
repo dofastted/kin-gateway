@@ -1,0 +1,4 @@
+gateway/config/test.key
+**/node_modules/
+**/.credentials.json
+**/credentials.json
