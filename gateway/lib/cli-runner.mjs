@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { prepareForVmClaude } from './prepare-cli.mjs'
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true })
@@ -76,30 +77,7 @@ export function defaultSeedPolicy(partial = {}) {
 }
 
 export function messagesToPrompt(body) {
-  const parts = []
-  const sys = body?.system
-  if (typeof sys === 'string' && sys.trim()) parts.push(sys.trim())
-  else if (Array.isArray(sys)) {
-    const t = sys.map((b) => (typeof b === 'string' ? b : b?.text || '')).filter(Boolean).join('\n')
-    if (t) parts.push(t)
-  }
-  const msgs = Array.isArray(body?.messages) ? body.messages : []
-  for (const m of msgs) {
-    let text = ''
-    if (typeof m.content === 'string') text = m.content
-    else if (Array.isArray(m.content)) {
-      text = m.content
-        .map((c) => (typeof c === 'string' ? c : c?.type === 'text' ? c.text || '' : ''))
-        .filter(Boolean)
-        .join('\n')
-    }
-    if (!text) continue
-    const role = m.role || 'user'
-    if (role === 'system') parts.push(text)
-    else if (role === 'assistant') parts.push(`Assistant: ${text}`)
-    else parts.push(text)
-  }
-  return parts.join('\n\n').trim() || 'Hello'
+  return prepareForVmClaude(body).prompt
 }
 
 /**
@@ -346,6 +324,10 @@ export async function streamClaudeCli({
   expiresAt,
   proxyUrl,
   homeDir,
+  timezone,
+  locale,
+  kernel,
+  seedPolicy,
   timeoutMs = 180000,
   onEvent,
   onHeaders,

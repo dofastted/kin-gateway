@@ -7,6 +7,7 @@
 import { sanitizeAnthropicBody } from './sanitize.mjs'
 import { openaiReasoningToClaudeThinking, claudeThinkingToOpenAIReasoning } from './thinking.mjs'
 import { openaiContentToClaudeContent } from './images.mjs'
+import { remapCodexTools } from './prepare-cli.mjs'
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -44,7 +45,7 @@ export function isClaudeMessagesShape(body) {
 /** OpenAI tools → Claude tools */
 export function openaiToolsToClaude(tools) {
   if (!Array.isArray(tools) || !tools.length) return undefined
-  return tools
+  return remapCodexTools(tools)
     .filter((t) => t && (t.type === 'function' || t.function || t.name))
     .map((t) => {
       if (t.type === 'function' && t.function) {

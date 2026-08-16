@@ -26,7 +26,8 @@ import { updateVmClaudeCode, fetchLatestClaudeCodeVersion } from './lib/claude-c
 import { sessionKeyToOAuth } from '../session-to-oauth.mjs'
 import crypto from 'node:crypto'
 import { fingerprintRequest, alignToClaudeCodeStandard, officializeToClaudeCli, classifyClient } from './lib/client-fingerprint.mjs'
-import { applySystemPromptPolicy, extractSystemAudit } from './lib/system-prompt-policy.mjs'
+import { extractSystemAudit } from './lib/system-prompt-policy.mjs'
+import { prepareForVmClaude } from './lib/prepare-cli.mjs'
 import { validateOfficialModel, listOfficialModels, fetchOfficialModels } from './lib/models.mjs'
 import { StickyRouter } from './lib/sticky-router.mjs'
 import { AccountQuota } from './lib/account-quota.mjs'
@@ -269,33 +270,9 @@ async function handleProtocol(req, res, protocol, pathName) {
   let ctx = { path: pathName, protocol, body: sanitizeInboundBody(inbound, cfg.vm.seed_policy || defaultSeedPolicy()), headers: { ...req.headers } }
   ctx = applyIntercept(cfg.intercept.rules, 'before_convert', ctx)
 
-  // System prompt policy: DEFAULT OFF — never inject or strip prompts unless explicitly enabled
-  // KIN_SYSTEM_POLICY=inspect|strip|strict to enable
+  // VM already runs official Claude Code. Do not inject identity.
+  // Convert first happens below; here only drop client identity metadata.
   let systemPolicyDecisions = []
-  const systemPolicyMode = String(process.env.KIN_SYSTEM_POLICY || 'off').toLowerCase()
-  if (
-    systemPolicyMode !== 'off' &&
-    fp.client_class !== 'claude_code_official' &&
-    fp.client_class !== 'claude_official_cli'
-  ) {
-    const pol = applySystemPromptPolicy(ctx.body, {
-      mode: systemPolicyMode,
-      source: fp.client_class,
-    })
-    ctx = { ...ctx, body: pol.body }
-    systemPolicyDecisions = pol.decisions
-    if (systemPolicyDecisions.length) {
-      fs.writeFileSync(
-        path.join(diffDir, `${Date.now()}-system-policy.json`),
-        JSON.stringify({
-          client_class: fp.client_class,
-          protocol,
-          decisions: systemPolicyDecisions,
-          remaining_system: extractSystemAudit(ctx.body),
-        }, null, 2),
-      )
-    }
-  }
 
   const strictPassthrough = String(req.headers['x-kin-strict-passthrough'] || '') === '1'
 
@@ -349,6 +326,25 @@ async function handleProtocol(req, res, protocol, pathName) {
   else stats.convert++
 
   ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: claude })
+
+  // VM owns official identity. Foreign 人设 → official system text blocks.
+  {
+    const prepared = prepareForVmClaude(ctx.body)
+    ctx = { ...ctx, body: prepared.body }
+    systemPolicyDecisions = prepared.decisions
+    fs.writeFileSync(
+      path.join(diffDir, `${Date.now()}-prepare-cli.json`),
+      JSON.stringify({
+        client_class: fp.client_class,
+        protocol,
+        decisions: prepared.decisions,
+        stripped: prepared.stripped,
+        prompt_preview: prepared.prompt.slice(0, 400),
+        remaining_system: extractSystemAudit(prepared.body),
+        egress_system: prepared.body?.system || null,
+      }, null, 2),
+    )
+  }
 
   // Body alignment DEFAULT OFF — do not rewrite body or inject metadata/system.
   // Headers-only optional via KIN_ALIGN_HEADERS=1; full body align only KIN_ALIGN_BODY=1

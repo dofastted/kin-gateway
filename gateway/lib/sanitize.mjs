@@ -18,14 +18,20 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
     if (ALLOWED_TOP.has(k)) out[k] = v
   }
 
-  // system: Claude CLI sends array of {type,text,...}; API accepts string or array of text blocks
+  // system: keep official Claude Code text-block array (type/text/cache_control)
   if (Array.isArray(out.system)) {
-    const texts = out.system.map((b) => {
-      if (typeof b === 'string') return b
-      if (b && typeof b.text === 'string') return b.text
-      return ''
-    }).filter(Boolean)
-    out.system = texts.length === 1 ? texts[0] : texts.map((t) => ({ type: 'text', text: t }))
+    const blocks = out.system
+      .map((b) => {
+        if (typeof b === 'string') return { type: 'text', text: b }
+        if (b && typeof b.text === 'string') {
+          const block = { type: 'text', text: b.text }
+          if (b.cache_control) block.cache_control = b.cache_control
+          return block
+        }
+        return null
+      })
+      .filter(Boolean)
+    out.system = blocks
   }
 
   // tools: empty array → omit (cleaner)

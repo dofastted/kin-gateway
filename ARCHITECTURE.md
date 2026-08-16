@@ -20,8 +20,8 @@ L4  用量层 Usage / Quota
 
 L5  协议层 Protocol Gateway
     OpenAI Chat / Responses / Anthropic Messages
-    → 对齐 Claude Code 官方标准 → VM 转发
-    模型白名单、system 策略、错误分类
+    → 协议转换 + 拦截官方不接受的字段 → VM 内真实 Claude Code
+    外国 CLI 人设追加为官方 system 文本块；不注入 billing/身份
 
 L6  配置层 Settings
     粘性路由、额度策略、拦截规则、种子模板
