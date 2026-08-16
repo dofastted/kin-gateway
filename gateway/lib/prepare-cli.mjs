@@ -2,33 +2,23 @@
  * Prepare an inbound (already converted) Messages body for VM-local Claude Code.
  *
  * VM already runs official Claude Code — do not inject billing/identity.
- * Foreign 人设 (Pi / Codex / ChatGPT) is rewritten into official system
- * text blocks and appended. Fields `claude -p` cannot take are dropped.
- * Official Claude Code's own agent system is stripped (VM already has it).
+ * Foreign 人设 (Pi / Codex / ChatGPT / Hermes / OpenClaw / unknown) is
+ * rewritten into official system text blocks and appended.
+ * Fields `claude -p` cannot take are dropped via allowlist.
  */
 
-const UNOFFICIAL_TOP = new Set([
-  'thinking',
-  'context_management',
-  'output_config',
-  'metadata',
-  'settings',
-  'claude_settings',
-  'env',
-  'user',
-  'user_id',
-  'instructions',
-  'input',
-  'max_output_tokens',
-  'max_completion_tokens',
-  'reasoning',
-  'reasoning_effort',
-  'store',
-  'previous_response_id',
-  'truncation',
-  'include',
-  'text',
-  'service_tier',
+/** Only these top-level keys survive into the CLI hop. Unknown keys are dropped. */
+const ALLOWED_TOP = new Set([
+  'model',
+  'messages',
+  'system',
+  'max_tokens',
+  'stream',
+  'temperature',
+  'top_p',
+  'top_k',
+  'stop_sequences',
+  'stop',
 ])
 
 const OFFICIAL_IDENTITY = [
@@ -55,6 +45,17 @@ const FOREIGN_IDENTITY = [
   /you are an expert coding assistant/i,
   /you are a coding agent/i,
   /guideline.*tool use.*openai/i,
+  /you are hermes/i,
+  /hermes-agent/i,
+  /nous research/i,
+  /soul\.md/i,
+  /operating inside (open)?claw/i,
+  /running inside openclaw/i,
+  /you are (a )?personal assistant running inside openclaw/i,
+  /openclaw/i,
+  /clawdbot/i,
+  /moltbot/i,
+  /<available_skills>/i,
 ]
 
 export const CODEX_TOOL_MAP = {
@@ -127,6 +128,7 @@ export function extractCwd(text) {
     /<cwd>\s*([^<]+)\s*<\/cwd>/i,
     /working directory is\s+([^\n]+)/i,
     /Primary working directory:\s*(.+)/i,
+    /workspace(?: root)?:\s*(\/[^\n]+)/i,
   ]
   for (const re of patterns) {
     const m = t.match(re)
@@ -138,9 +140,9 @@ export function extractCwd(text) {
 function stripCwdLines(text) {
   return String(text || '')
     .replace(/^\s*Current working directory:\s*.+$/im, '')
-    .replace(/^\s*Primary working directory:\s*.+$/im, '')
     .replace(/^\s*CWD:\s*.+$/im, '')
     .replace(/^\s*Date:\s*\d{4}-\d{2}-\d{2}\s*$/im, '')
+    .replace(/^\s*Primary working directory:\s*.+$/im, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
@@ -162,13 +164,6 @@ export function prepareForVmClaude(body) {
   }
 
   const next = { ...body }
-  for (const k of Object.keys(next)) {
-    if (UNOFFICIAL_TOP.has(k)) {
-      delete next[k]
-      stripped.push(k)
-    }
-  }
-  if (stripped.length) decisions.push({ action: 'strip_unofficial_fields', fields: stripped })
 
   if (next.tools) {
     decisions.push({
@@ -179,6 +174,14 @@ export function prepareForVmClaude(body) {
     delete next.tools
     delete next.tool_choice
   }
+
+  for (const k of Object.keys(next)) {
+    if (!ALLOWED_TOP.has(k)) {
+      delete next[k]
+      stripped.push(k)
+    }
+  }
+  if (stripped.length) decisions.push({ action: 'strip_unofficial_fields', fields: stripped })
 
   const blocks = systemBlocks(next.system)
   const official = []
@@ -201,7 +204,7 @@ export function prepareForVmClaude(body) {
       continue
     }
 
-    // foreign 人设 + leftover context → official system text blocks
+    // foreign 人设 + leftover / unknown harness context → official system text blocks
     const persona = stripCwdLines(text)
     if (persona) {
       official.push(officialTextBlock(persona))

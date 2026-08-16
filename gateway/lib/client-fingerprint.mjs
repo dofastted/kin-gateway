@@ -32,11 +32,27 @@ export function fingerprintRequest(req, body) {
 export function classifyClient(headers, body) {
   const ua = String(headers['user-agent'] || '')
   const xapp = String(headers['x-app'] || '')
+  const blob = systemBlob(body)
   if (/claude-cli|claude-code/i.test(ua) || xapp === 'cli') return 'claude_code_official'
-  if (/pi\b|pi-coding|openai|codex|axios|got\b|node-fetch|undici/i.test(ua)) return 'third_party'
+  if (/hermes-agent|hermes\//i.test(ua) || /you are hermes|nous research/i.test(blob)) return 'hermes'
+  if (/openclaw|clawdbot|moltbot/i.test(ua) || /inside openclaw|running inside openclaw/i.test(blob)) return 'openclaw'
+  if (/pi\b|pi-coding/i.test(ua) || /operating inside pi/i.test(blob)) return 'third_party'
+  if (/codex|openai/i.test(ua) || /codex cli/i.test(blob)) return 'third_party'
+  if (/axios|got\b|node-fetch|undici/i.test(ua)) return 'third_party'
   if (headers['x-stainless-package-version'] && /claude-cli/i.test(ua)) return 'claude_code_official'
   if (headers['anthropic-beta'] && !/claude-cli/i.test(ua)) return 'third_party_sdk'
   return 'unknown'
+}
+
+function systemBlob(body) {
+  if (!body || typeof body !== 'object') return ''
+  const parts = []
+  if (typeof body.system === 'string') parts.push(body.system)
+  else if (Array.isArray(body.system)) {
+    for (const b of body.system) parts.push(typeof b === 'string' ? b : b?.text || '')
+  }
+  if (typeof body.instructions === 'string') parts.push(body.instructions)
+  return parts.join('\n').slice(0, 4000)
 }
 
 function summarizeBody(body) {

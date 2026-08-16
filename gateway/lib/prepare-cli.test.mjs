@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { prepareForVmClaude, classifySystemText, remapCodexTools } from './prepare-cli.mjs'
+import { classifyClient } from './client-fingerprint.mjs'
+import { validateOfficialModel } from './models.mjs'
 
 test('strips official identity/billing, keeps official CWD + user', () => {
   const { prompt, decisions, body } = prepareForVmClaude({
@@ -93,4 +95,47 @@ test('codex tool remap', () => {
   const out = remapCodexTools([{ name: 'apply_patch' }, { function: { name: 'read_file' } }])
   assert.equal(out[0].name, 'Bash')
   assert.equal(out[1].function.name, 'Read')
+})
+
+test('Hermes / OpenClaw 人设 appended as official system; unknown keys dropped', () => {
+  const hermes = prepareForVmClaude({
+    model: 'claude-sonnet-5',
+    system: 'You are Hermes.\nSOUL.md identity.\n<available_skills>\n- web\n</available_skills>\nCurrent working directory: /home/me/proj',
+    messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+    extra_body: { foo: 1 },
+    cacheRetention: 'long',
+    fastMode: true,
+    tools: [{ name: 'browser_navigate' }, { name: 'memory_search' }],
+  })
+  assert.match(hermes.prompt, /You are Hermes/)
+  assert.match(hermes.prompt, /CWD: \/home\/me\/proj/)
+  assert.match(hermes.prompt, /Reply with exactly: pong/)
+  assert.ok(hermes.decisions.some((d) => d.action === 'drop_client_tools' && d.count === 2))
+  assert.ok(hermes.stripped.includes('extra_body'))
+  assert.ok(hermes.stripped.includes('cacheRetention'))
+  assert.ok(hermes.stripped.includes('fastMode'))
+  assert.equal(classifySystemText('You are Hermes.\nSOUL.md'), 'foreign_identity')
+
+  const claw = prepareForVmClaude({
+    model: 'claude-sonnet-5',
+    system: 'You are a personal assistant running inside OpenClaw.',
+    messages: [{ role: 'user', content: 'hi' }],
+  })
+  assert.match(claw.prompt, /inside OpenClaw/)
+  assert.match(claw.prompt, /hi/)
+  assert.doesNotMatch(claw.prompt, /\[System Instructions\]/)
+  assert.doesNotMatch(claw.prompt, /Understood\. I will follow/)
+  assert.equal(classifySystemText('You are a personal assistant running inside OpenClaw.'), 'foreign_identity')
+})
+
+test('unknown harness model prefix + client class', () => {
+  assert.equal(validateOfficialModel('anthropic/claude-sonnet-5').ok, true)
+  assert.equal(validateOfficialModel('anthropic/claude-sonnet-5').model, 'claude-sonnet-5')
+  assert.equal(validateOfficialModel('openrouter/anthropic/claude-opus-4-6').model, 'claude-opus-4-6')
+  assert.equal(validateOfficialModel('gpt-4o').ok, false)
+  assert.equal(classifyClient({ 'user-agent': 'hermes-agent/0.13.0' }, {}), 'hermes')
+  assert.equal(
+    classifyClient({ 'user-agent': 'node' }, { system: 'You are a personal assistant running inside OpenClaw.' }),
+    'openclaw',
+  )
 })

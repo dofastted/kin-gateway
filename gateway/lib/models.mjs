@@ -152,7 +152,11 @@ export function validateOfficialModel(model) {
     }
   }
 
-  if (/^(gpt-|o1|o3|o4|text-|davinci|gemini|deepseek|mistral|grok)/i.test(m)) {
+  // OpenClaw / Hermes / OpenRouter often send "anthropic/claude-sonnet-5"
+  const bare = m.split('/').filter(Boolean).pop() || m
+  const id = /^claude-/i.test(bare) ? bare : m
+
+  if (/^(gpt-|o1|o3|o4|text-|davinci|gemini|deepseek|mistral|grok)/i.test(id)) {
     return {
       ok: false,
       error: {
@@ -164,8 +168,8 @@ export function validateOfficialModel(model) {
     }
   }
 
-  if (/^claude-/i.test(m)) {
-    return { ok: true, model: m }
+  if (/^claude-/i.test(id)) {
+    return { ok: true, model: id }
   }
 
   // If we have a live cache, check exact id
