@@ -1,0 +1,21 @@
+{
+  "base_url": "https://kin.fkcodex.com",
+  "api_key": "sk-kin-f3929…ea8a9a",
+  "rewrite_default": false,
+  "vm_id": "vm-16966a",
+  "version": "2.1",
+  "features": [
+    "passthrough",
+    "stream",
+    "tools",
+    "intercept-admin"
+  ],
+  "endpoints": {
+    "health": "https://kin.fkcodex.com/health",
+    "chat": "https://kin.fkcodex.com/v1/chat/completions",
+    "responses": "https://kin.fkcodex.com/v1/responses",
+    "messages": "https://kin.fkcodex.com/v1/messages",
+    "intercept_rules": "https://kin.fkcodex.com/admin/intercept/rules",
+    "cc_update": "https://kin.fkcodex.com/admin/vm/claude-code/update"
+  }
+}

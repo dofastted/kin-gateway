@@ -1,0 +1,1977 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>种核 KIN · 管理台</title>
+  <style>
+/* ── tokens ─────────────────────────────────────────────── */
+:root{
+  --bg:oklch(0.155 0.006 265);
+  --panel:oklch(0.196 0.007 265);
+  --panel-2:oklch(0.232 0.008 265);
+  --sidebar:oklch(0.172 0.006 265);
+  --fg:oklch(0.975 0.002 265);
+  --muted:oklch(0.72 0.012 265);
+  --faint:oklch(0.575 0.012 265);
+  --line:oklch(1 0 0 / 8%);
+  --line-2:oklch(1 0 0 / 15%);
+  --ok:oklch(0.76 0.15 152);
+  --warn:oklch(0.83 0.14 78);
+  --bad:oklch(0.68 0.19 25);
+  --primary:oklch(0.97 0 0);
+  --primary-fg:oklch(0.2 0.01 265);
+  --destructive:oklch(0.68 0.19 25);
+  --muted-foreground:var(--muted);
+  --border:var(--line);
+  --r-lg:14px;
+  --r-md:12px;
+  --r-sm:8px;
+  --sp:16px;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{color-scheme:dark;height:100%}
+body{
+  margin:0;min-height:100%;
+  background:var(--bg);color:var(--fg);
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-size:13.5px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  letter-spacing:-0.005em;
+}
+button,input,textarea,select{font:inherit;color:inherit}
+a{color:inherit;text-decoration:none}
+::selection{background:oklch(0.76 0.15 152 / 30%)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:oklch(1 0 0/8%);border-radius:99px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:oklch(1 0 0/16%);background-clip:content-box}
+
+/* ── shell ──────────────────────────────────────────────── */
+.app{display:flex;min-height:100vh;width:100%}
+.sidebar{
+  width:216px;flex-shrink:0;display:flex;flex-direction:column;
+  background:var(--sidebar);border-right:1px solid var(--line);
+  position:sticky;top:0;height:100vh;
+}
+.sidebar-head{padding:18px 16px 14px}
+.brand{display:flex;align-items:center;gap:9px}
+.brand .mark{
+  width:26px;height:26px;border-radius:8px;flex-shrink:0;
+  background:linear-gradient(145deg,oklch(0.82 0.14 152),oklch(0.6 0.12 200));
+  display:grid;place-items:center;font-size:12px;font-weight:700;color:oklch(0.18 0.02 265);
+}
+.brand .t{font-size:14px;font-weight:600;letter-spacing:-0.01em}
+.brand .s{font-size:11px;color:var(--faint);margin-top:1px}
+.sidebar-nav{flex:1;padding:6px 10px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.nav-item{
+  display:flex;align-items:center;gap:9px;
+  padding:7px 10px;border-radius:var(--r-sm);cursor:pointer;
+  color:var(--muted);user-select:none;font-size:13px;
+  transition:background .12s,color .12s;
+}
+.nav-item::before{content:'';width:4px;height:4px;border-radius:99px;background:currentColor;opacity:.3}
+.nav-item:hover{background:oklch(1 0 0/5%);color:var(--fg)}
+.nav-item.active{background:oklch(1 0 0/8%);color:var(--fg);font-weight:500}
+.nav-item.active::before{opacity:1;color:var(--ok)}
+.sidebar-foot{padding:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{
+  height:56px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;
+  gap:12px;padding:0 24px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;z-index:20;
+  background:oklch(0.155 0.006 265 / 82%);backdrop-filter:blur(12px);
+}
+.topbar h1{margin:0;font-size:14px;font-weight:600;letter-spacing:-0.01em}
+.topbar p{margin:1px 0 0;font-size:11.5px;color:var(--faint)}
+.topbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.content{flex:1;overflow:auto;padding:24px;max-width:1440px;width:100%}
+
+/* ── login ──────────────────────────────────────────────── */
+#loginGate{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg)}
+#loginGate.hidden{display:none!important}
+body.login-only .app{visibility:hidden;pointer-events:none}
+.login-card{width:100%;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:24px}
+.login-card h2{margin:14px 0 2px;font-size:17px;letter-spacing:-0.02em}
+.login-card .hint{margin:0 0 18px;font-size:12px;color:var(--faint)}
+.login-card .stack{display:flex;flex-direction:column;gap:9px}
+
+/* ── primitives ─────────────────────────────────────────── */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  height:32px;padding:0 12px;border-radius:var(--r-sm);
+  border:1px solid transparent;cursor:pointer;
+  font-size:12.5px;font-weight:500;background:transparent;color:var(--fg);
+  transition:background .12s,border-color .12s,opacity .12s;white-space:nowrap;
+}
+.btn:disabled,.btn[disabled]{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--primary);color:var(--primary-fg);font-weight:600}
+.btn-primary:hover:not(:disabled){background:oklch(0.9 0 0)}
+.btn-outline{border-color:var(--line-2);background:oklch(1 0 0/3%)}
+.btn-outline:hover:not(:disabled){background:oklch(1 0 0/8%);border-color:oklch(1 0 0/22%)}
+.btn-ghost:hover{background:oklch(1 0 0/7%)}
+.btn-sm{height:28px;padding:0 10px;font-size:12px}
+.btn-danger{border:1px solid oklch(0.68 0.19 25/40%);color:oklch(0.8 0.13 25)}
+.btn-danger:hover:not(:disabled){background:oklch(0.68 0.19 25/12%)}
+.btn-xs{height:22px;padding:0 7px;font-size:11px;border-radius:6px}
+
+.input,textarea.input,select.input{
+  width:100%;height:34px;border-radius:var(--r-sm);
+  border:1px solid var(--line-2);background:oklch(1 0 0/4%);
+  color:var(--fg);padding:0 11px;outline:none;-webkit-appearance:none;appearance:none;
+  transition:border-color .12s,box-shadow .12s;font-size:13px;
+}
+select.input{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 10px center;padding-right:30px}
+textarea.input{height:auto;min-height:92px;padding:9px 11px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6}
+.input:focus{border-color:oklch(1 0 0/30%);box-shadow:0 0 0 3px oklch(1 0 0/6%)}
+.input::placeholder{color:var(--faint)}
+input[type=checkbox]{width:15px;height:15px;accent-color:oklch(0.76 0.15 152);cursor:pointer}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px}
+.card-pad-lg{padding:18px 20px}
+
+.badge{
+  display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px;
+  border-radius:999px;border:1px solid var(--line-2);
+  font-size:11px;color:var(--muted);background:transparent;white-space:nowrap;
+}
+.badge.ok{color:var(--ok);border-color:oklch(0.76 0.15 152/35%);background:oklch(0.76 0.15 152/10%)}
+.badge.warn{color:var(--warn);border-color:oklch(0.83 0.14 78/35%);background:oklch(0.83 0.14 78/10%)}
+.badge.err,.badge.danger{color:var(--bad);border-color:oklch(0.68 0.19 25/38%);background:oklch(0.68 0.19 25/12%)}
+
+.acc-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line-2);color:var(--muted);white-space:nowrap}
+.acc-pill::before{content:'';width:5px;height:5px;border-radius:99px;background:currentColor}
+.acc-pill.ok{color:var(--ok);border-color:oklch(0.76 0.15 152/32%);background:oklch(0.76 0.15 152/9%)}
+.acc-pill.warn{color:var(--warn);border-color:oklch(0.83 0.14 78/32%);background:oklch(0.83 0.14 78/9%)}
+.acc-pill.bad{color:var(--bad);border-color:oklch(0.68 0.19 25/35%);background:oklch(0.68 0.19 25/10%)}
+.acc-pill.off{color:var(--faint);background:oklch(1 0 0/3%)}
+.acc-pill.none{color:var(--faint);border-style:dashed;background:transparent}
+.acc-pill.none::before{background:transparent;box-shadow:inset 0 0 0 1px currentColor}
+
+.status-dot{display:inline-block;width:7px;height:7px;border-radius:99px;flex-shrink:0}
+.status-dot.on{background:var(--ok);box-shadow:0 0 0 3px oklch(0.76 0.15 152/18%)}
+.status-dot.warn{background:var(--warn);box-shadow:0 0 0 3px oklch(0.83 0.14 78/18%)}
+.status-dot.danger{background:var(--bad);box-shadow:0 0 0 3px oklch(0.68 0.19 25/18%)}
+.status-dot.off{background:oklch(0.5 0.01 265)}
+
+.bar{height:4px;border-radius:99px;background:oklch(1 0 0/8%);overflow:hidden}
+.bar>i{display:block;height:100%;border-radius:99px;background:var(--ok);transition:width .3s ease}
+.meter{display:flex;flex-direction:column;gap:5px}
+.meter .lg{display:flex;justify-content:space-between;font-size:11.5px;color:var(--faint)}
+.meter .lg b{font-weight:500;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ── layout helpers ─────────────────────────────────────── */
+.section{display:flex;flex-direction:column;gap:var(--sp)}
+.section-title{font-size:12px;font-weight:600;color:var(--fg);letter-spacing:-0.005em}
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.head .sub{font-size:11.5px;color:var(--faint);margin-top:3px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.stack-sm{display:flex;flex-direction:column;gap:8px}
+.stack-md{display:flex;flex-direction:column;gap:12px}
+.grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.muted{color:var(--muted)}
+.faint{color:var(--faint)}
+.danger{color:var(--bad)}
+.hidden{display:none!important}
+.text-xs{font-size:11.5px}
+.text-sm{font-size:13px}
+.font-medium{font-weight:500}
+.font-semibold{font-weight:600}
+.num{font-variant-numeric:tabular-nums}
+code{font-family:ui-monospace,monospace;font-size:11.5px;background:oklch(1 0 0/6%);padding:2px 6px;border-radius:6px;color:var(--muted)}
+ul{margin:0;padding-left:18px}
+
+.kv{display:grid;grid-template-columns:auto 1fr;gap:9px 18px;margin:0;font-size:13px;align-items:baseline}
+.kv dt{color:var(--faint);font-size:12px;white-space:nowrap}
+.kv dd{margin:0;text-align:right;word-break:break-all}
+
+.table{width:100%;border-collapse:collapse;font-size:12.5px}
+.table th,.table td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+.table thead th{color:var(--faint);font-weight:500;font-size:11.5px;padding-top:0}
+.table tbody tr:last-child td{border-bottom:none}
+.table tbody tr:hover{background:oklch(1 0 0/2.5%)}
+.table .right{text-align:right}
+tr.near-limit td{background:oklch(0.68 0.19 25/8%)}
+tr.dead-row{opacity:.6}
+
+.empty-box{padding:34px 20px;text-align:center;color:var(--faint);font-size:12.5px;border:1px dashed var(--line-2);border-radius:var(--r-lg)}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.toolbar .input{max-width:220px;height:32px}
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:var(--r-sm);padding:2px;gap:2px;background:oklch(1 0 0/3%)}
+.seg button{border:0;background:transparent;color:var(--faint);font-size:12px;padding:5px 10px;cursor:pointer;border-radius:6px;transition:background .12s,color .12s}
+.seg button:hover{color:var(--fg)}
+.seg button.on{background:oklch(1 0 0/10%);color:var(--fg)}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line)}
+.tabs button{border:0;background:transparent;color:var(--faint);font-size:13px;padding:9px 12px;cursor:pointer;border-bottom:1.5px solid transparent;margin-bottom:-1px;transition:color .12s}
+.tabs button:hover{color:var(--muted)}
+.tabs button.on{color:var(--fg);border-bottom-color:var(--ok)}
+
+/* ── overview: health bar ───────────────────────────────── */
+.hcard{display:flex;align-items:center;gap:22px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px 20px}
+.hcard .score{display:flex;flex-direction:column;gap:3px;flex-shrink:0;min-width:104px;padding-right:22px;border-right:1px solid var(--line)}
+.hcard .score .n{display:flex;align-items:baseline;gap:2px}
+.hcard .score .n b{font-size:40px;font-weight:600;line-height:1;letter-spacing:-0.04em;font-variant-numeric:tabular-nums}
+.hcard .score .n i{font-style:normal;font-size:15px;color:var(--faint)}
+.hcard .score .l{font-size:11.5px;color:var(--faint)}
+.hcard .body{flex:1;min-width:0;display:flex;flex-direction:column;gap:11px}
+.hbar{display:flex;gap:2px;height:10px;border-radius:99px;overflow:hidden;background:oklch(1 0 0/6%)}
+.hbar i{display:block;min-width:2px;border-radius:2px;transition:flex-grow .35s ease}
+.hbar i.s-ok{background:var(--ok)}
+.hbar i.s-warn{background:var(--warn)}
+.hbar i.s-bad{background:var(--bad)}
+.hbar i.s-off{background:oklch(0.5 0.01 265)}
+.hbar i.s-none{background:oklch(1 0 0/14%)}
+.hlegend{display:flex;flex-wrap:wrap;gap:6px 18px}
+.hleg{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--faint)}
+.hleg s{width:7px;height:7px;border-radius:99px;display:block;text-decoration:none;flex-shrink:0}
+.hleg b{font-size:13px;font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+.hleg.zero{opacity:.42}
+.facts{display:flex;flex-wrap:wrap;gap:8px}
+.fact{display:inline-flex;align-items:center;gap:7px;max-width:100%;min-width:0;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);font-size:11.5px;color:var(--faint)}
+.fact b{font-weight:550;color:var(--fg);font-variant-numeric:tabular-nums}
+.fact .v{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.stat-hero{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.stat-tile{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px 18px;position:relative;overflow:hidden;min-width:0}
+.stat-tile .k{font-size:11.5px;color:var(--faint)}
+.stat-tile .v{font-size:34px;font-weight:600;margin-top:8px;letter-spacing:-0.035em;line-height:1.05;font-variant-numeric:tabular-nums}
+.stat-tile .v small{font-size:15px;font-weight:500;color:var(--faint);letter-spacing:-0.01em}
+.stat-tile .s{font-size:11px;color:var(--faint);margin-top:9px}
+.stat-tile .ring{position:absolute;right:14px;top:14px}
+.stat-tile .edge{position:absolute;left:0;right:0;bottom:0;height:2px;background:oklch(1 0 0/7%)}
+.stat-tile .edge>i{display:block;height:100%;background:var(--ok);transition:width .35s ease}
+
+/* ── vm cards ───────────────────────────────────────────── */
+.vm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.vm-viz{
+  border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 15px 13px;
+  background:var(--panel);cursor:pointer;transition:border-color .14s,background .14s;
+  display:flex;flex-direction:column;gap:12px;
+}
+.vm-viz:hover{border-color:var(--line-2);background:var(--panel-2)}
+.vm-viz .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.vm-viz .name{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:8px;min-width:0}
+.vm-viz .name span.txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vm-viz .sub{font-size:11.5px;color:var(--faint);display:flex;gap:6px;align-items:center;min-width:0;margin-top:-6px}
+.vm-viz .sub .e{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vm-viz .foot{display:flex;justify-content:space-between;align-items:center;gap:8px;padding-top:11px;border-top:1px solid var(--line)}
+/* big-number usage block */
+.vm-use{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.vm-use .big{display:flex;align-items:baseline;gap:3px;line-height:1}
+.vm-use .big b{font-size:26px;font-weight:600;letter-spacing:-0.035em;font-variant-numeric:tabular-nums}
+.vm-use .big i{font-style:normal;font-size:12px;color:var(--faint)}
+.vm-use .big em{font-style:normal;font-size:11px;color:var(--faint);margin-left:5px}
+.vm-track{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px;max-width:130px}
+.vm-track .tk{display:flex;align-items:center;gap:6px}
+.vm-track .tk u{text-decoration:none;font-size:10px;color:var(--faint);width:15px;flex-shrink:0}
+.k-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);background:oklch(1 0 0/5%);border-radius:6px;padding:2px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.k-tag i{width:4px;height:4px;border-radius:99px;background:var(--faint);font-style:normal;flex-shrink:0}
+.spark{display:flex;align-items:flex-end;gap:2px;height:18px;flex-shrink:0}
+.spark i{display:block;width:3px;border-radius:2px;background:oklch(1 0 0/10%)}
+.spark i.on{background:oklch(1 0 0/22%)}
+.spark i.hot{background:var(--sp,var(--ok));opacity:.7}
+/* 卡片上的精简运维入口：hover 才出现，默认不抢注意力 */
+.vm-viz .foot .right{display:flex;align-items:center;gap:8px}
+.vm-ops{display:flex;gap:2px;opacity:0;transition:opacity .12s}
+.vm-viz:hover .vm-ops,.vm-viz:focus-within .vm-ops{opacity:1}
+@media(hover:none){.vm-ops{opacity:1}}
+
+/* ── create box + kernel picker ─────────────────────────── */
+.create-box{border:1px solid var(--line);border-radius:var(--r-lg);padding:14px;background:var(--panel)}
+.create-box .base-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.create-box .base-row .name-in{flex:1;min-width:150px;max-width:240px}
+.kpick{position:relative;flex:1;min-width:230px;max-width:300px}
+.kpick-trigger{
+  width:100%;display:flex;align-items:center;gap:9px;height:34px;padding:0 10px;
+  border:1px solid var(--line-2);border-radius:var(--r-sm);background:oklch(1 0 0/4%);
+  cursor:pointer;text-align:left;transition:border-color .12s,background .12s;
+}
+.kpick-trigger:hover{background:oklch(1 0 0/7%);border-color:oklch(1 0 0/22%)}
+.kpick-trigger .kdot{width:7px;height:7px;border-radius:99px;background:var(--ok);flex-shrink:0;box-shadow:0 0 0 3px oklch(0.76 0.15 152/18%)}
+.kpick-trigger .lab{display:flex;align-items:baseline;gap:7px;min-width:0;flex:1}
+.kpick-trigger .lab b{font-size:12.5px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpick-trigger .lab em{font-style:normal;font-size:11px;color:var(--faint);white-space:nowrap}
+.kpick-trigger .chev{color:var(--faint);flex-shrink:0;transition:transform .15s}
+.kpick.open .kpick-trigger .chev{transform:rotate(180deg)}
+/* kernel archive popover */
+.kernel-panel{
+  position:absolute;z-index:40;top:calc(100% + 7px);left:0;
+  width:min(560px,calc(100vw - 60px));padding:11px;
+  background:var(--panel-2);border:1px solid var(--line-2);border-radius:var(--r-lg);
+  box-shadow:0 18px 44px oklch(0 0 0/50%);animation:popIn .13s ease;
+}
+.kernel-panel[hidden]{display:none}
+@keyframes popIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.kernel-panel .kp-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--faint);margin:1px 2px 9px}
+.kernel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px}
+.kernel-card{
+  position:relative;display:flex;flex-direction:column;gap:7px;text-align:left;
+  border:1px solid var(--line);border-radius:var(--r-md);padding:11px 12px;
+  background:oklch(1 0 0/2.5%);cursor:pointer;transition:border-color .12s,background .12s;
+}
+.kernel-card:hover{border-color:var(--line-2);background:oklch(1 0 0/6%)}
+.kernel-card.on{border-color:oklch(0.76 0.15 152/55%);background:oklch(0.76 0.15 152/9%)}
+.kernel-card .kc-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.kernel-card .kc-name{font-size:12.5px;font-weight:600;letter-spacing:-0.01em}
+.kernel-card .kc-size{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;flex-shrink:0}
+.kernel-card.on .kc-size{color:var(--ok)}
+.kernel-card .kc-id{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--faint);margin-top:-4px}
+.kc-feats{display:flex;flex-wrap:wrap;gap:4px}
+.kc-feats span{font-size:10.5px;color:var(--muted);background:oklch(1 0 0/6%);border-radius:5px;padding:2px 6px;white-space:nowrap}
+.kernel-card.on .kc-feats span{background:oklch(0.76 0.15 152/14%)}
+.kernel-card .kc-check{
+  position:absolute;top:10px;right:10px;width:15px;height:15px;border-radius:99px;
+  display:none;place-items:center;background:var(--ok);color:oklch(0.2 0.03 152);font-size:9px;font-weight:800;
+}
+.kernel-card.on .kc-check{display:grid}
+.kernel-card.on .kc-top{padding-right:20px}
+/* advanced: folded to a single inline toggle */
+.adv-toggle{color:var(--faint);margin-left:auto}
+.adv-toggle:hover{color:var(--muted)}
+.adv-toggle .chev{transition:transform .15s}
+.adv-toggle.on{color:var(--fg)}
+.adv-toggle.on .chev{transform:rotate(180deg)}
+.adv-wrap{margin-top:14px;padding-top:13px;border-top:1px solid var(--line)}
+.adv-wrap[hidden]{display:none}
+.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px 14px}
+.form-grid label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--faint)}
+.form-grid label.full{grid-column:1/-1}
+.form-grid .check{flex-direction:row;align-items:center;gap:8px;font-size:12px;color:var(--muted);align-self:end;height:34px}
+
+/* ── stepper (import) ───────────────────────────────────── */
+.stepper{display:flex;align-items:center;flex-wrap:wrap;gap:2px}
+.stepper .st{display:flex;align-items:center;gap:8px}
+.stepper .n{width:21px;height:21px;border-radius:99px;border:1px solid var(--line-2);display:grid;place-items:center;font-size:10.5px;color:var(--faint);flex-shrink:0}
+.stepper .t{font-size:12px;color:var(--faint);white-space:nowrap}
+.stepper .st.done .n{background:oklch(0.76 0.15 152/16%);border-color:oklch(0.76 0.15 152/45%);color:var(--ok)}
+.stepper .st.done .t{color:var(--muted)}
+.stepper .st.cur .n{background:var(--ok);border-color:transparent;color:oklch(0.2 0.03 152);font-weight:700;box-shadow:0 0 0 4px oklch(0.76 0.15 152/14%)}
+.stepper .st.cur .t{color:var(--fg);font-weight:500}
+.stepper .lnk{width:28px;height:1px;background:var(--line-2);margin:0 10px}
+
+/* ── misc ───────────────────────────────────────────────── */
+.endpoint-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.endpoint-row:last-child{border-bottom:none;padding-bottom:0}
+.model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.model-card{border:1px solid var(--line);border-radius:var(--r-md);padding:12px;background:var(--panel)}
+.model-card .id{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--faint);margin-top:4px;word-break:break-all}
+details.import-box{border:1px solid var(--line);border-radius:var(--r-md);padding:11px 13px;background:var(--panel)}
+details.import-box summary{cursor:pointer;font-size:12.5px;font-weight:500;list-style:none;color:var(--muted)}
+details.import-box summary::-webkit-details-marker{display:none}
+details.import-box summary::before{content:'＋ ';color:var(--faint)}
+details.import-box[open] summary::before{content:'－ '}
+details.import-box .body{margin-top:11px;display:flex;flex-direction:column;gap:9px}
+pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25%);border:1px solid var(--line);border-radius:var(--r-sm);padding:11px;margin:0;color:var(--muted)}
+
+.skeleton{background:linear-gradient(90deg,oklch(1 0 0/4%) 25%,oklch(1 0 0/8%) 37%,oklch(1 0 0/4%) 63%);background-size:400% 100%;animation:sk 1.3s ease infinite;border-radius:var(--r-md)}
+@keyframes sk{0%{background-position:100% 0}100%{background-position:0 0}}
+.sk-card{height:96px}
+.sk-row{height:13px;margin:10px 0;border-radius:6px}
+.sk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+#toastStack{position:fixed;bottom:18px;right:18px;z-index:80;display:flex;flex-direction:column;gap:8px;max-width:min(340px,92vw);pointer-events:none}
+.toast-item{pointer-events:auto;border-radius:var(--r-md);border:1px solid var(--line-2);background:var(--panel-2);padding:10px 13px;font-size:12.5px;box-shadow:0 10px 30px oklch(0 0 0/40%);animation:toastIn .16s ease}
+.toast-item.ok{border-color:oklch(0.76 0.15 152/40%)}
+.toast-item.err{border-color:oklch(0.68 0.19 25/45%);color:oklch(0.86 0.09 25)}
+@keyframes toastIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.busy{opacity:.6}
+
+/* ── modal（重置 / 删除确认）─────────────────────────────── */
+#modalRoot{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;padding:20px;background:oklch(0 0 0/58%);backdrop-filter:blur(3px)}
+#modalRoot.hidden{display:none!important}
+.modal{
+  width:100%;max-width:396px;background:var(--panel);border:1px solid var(--line-2);
+  border-radius:var(--r-lg);padding:18px;display:flex;flex-direction:column;gap:11px;
+  box-shadow:0 24px 60px oklch(0 0 0/55%);animation:popIn .13s ease;
+}
+.modal h3{margin:0;font-size:14px;font-weight:600;letter-spacing:-0.01em}
+.modal .who{font-size:11.5px;color:var(--faint);margin:-7px 0 0}
+.modal .opt{display:flex;align-items:flex-start;gap:9px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);cursor:pointer;transition:background .12s,border-color .12s}
+.modal .opt:hover{background:oklch(1 0 0/4%);border-color:var(--line-2)}
+.modal .opt input{margin-top:2px;flex-shrink:0}
+.modal .opt b{display:block;font-size:12.5px;font-weight:500}
+.modal .opt em{font-style:normal;font-size:11px;color:var(--faint)}
+.modal .danger-box{border:1px solid oklch(0.68 0.19 25/35%);background:oklch(0.68 0.19 25/10%);border-radius:var(--r-sm);padding:9px 11px;font-size:12px;color:oklch(0.86 0.09 25);line-height:1.55}
+.modal .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:3px}
+
+@media(max-width:1180px){
+  .stat-hero{grid-template-columns:repeat(2,1fr)}
+  /* 右对齐弹层，窄屏不越出内容区 */
+  .kernel-panel{left:auto;right:0;width:min(520px,calc(100vw - 300px))}
+  .grid-3,.grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:760px){
+  .app{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid var(--line)}
+  .sidebar-nav{flex-direction:row;flex-wrap:wrap;gap:4px}
+  .sidebar-foot{flex-direction:row;align-items:center;justify-content:space-between}
+  .sidebar-foot .btn{width:auto!important}
+  .content{padding:16px}
+  .topbar{padding:0 16px}
+  .stat-hero,.grid-3,.grid-4,.form-grid{grid-template-columns:1fr}
+  .kpick,.create-box .base-row .name-in{max-width:none}
+  .kv dd{text-align:left}
+  .hcard{flex-direction:column;align-items:stretch;gap:14px}
+  .hcard .score{border-right:none;border-bottom:1px solid var(--line);padding:0 0 12px;min-width:0}
+  .kernel-panel{left:0;right:0;width:auto}
+}
+  </style>
+</head>
+<body class="login-only">
+  <div id="loginGate">
+    <div class="login-card">
+      <div class="brand"><div class="mark">核</div><div><div class="t">种核 KIN</div></div></div>
+      <h2>登录管理台</h2>
+      <p class="hint">多虚拟机 · Claude Code 网关</p>
+      <div class="stack">
+        <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
+        <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
+        <input id="loginBaseInput" class="input" placeholder="API Base（本站可留空）" />
+        <button type="button" class="btn btn-primary" style="height:34px;margin-top:4px" onclick="doLogin()">登录</button>
+        <p id="loginErr" class="text-xs danger hidden"></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <div class="brand">
+          <div class="mark">核</div>
+          <div>
+            <div class="t">种核 KIN</div>
+            <div class="s">Claude Code 网关</div>
+          </div>
+        </div>
+      </div>
+      <nav class="sidebar-nav" id="nav">
+        <div class="nav-item active" data-view="overview">总览</div>
+        <div class="nav-item" data-view="cluster">集群</div>
+        <div class="nav-item" data-view="vm">虚拟机</div>
+        <div class="nav-item" data-view="import">导入</div>
+        <div class="nav-item" data-view="usage">用量</div>
+        <div class="nav-item" data-view="proxies">代理池</div>
+        <div class="nav-item" data-view="protocol">协议</div>
+        <div class="nav-item" data-view="settings">设置</div>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="text-xs faint">已登录 · <span id="loginUser">—</span></div>
+        <button class="btn btn-outline btn-sm" style="width:100%" onclick="logout()">退出登录</button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">总览</h1>
+          <p id="pageDesc">平台健康</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="healthPill" class="badge">—</span>
+          <button class="btn btn-outline" onclick="refresh()">刷新</button>
+          <button class="btn btn-outline" onclick="probeAll()">全量探测</button>
+        </div>
+      </header>
+      <main class="content" id="main"></main>
+    </div>
+  </div>
+
+  <div id="modalRoot" class="hidden" onclick="if(event.target===this)closeModal()"></div>
+  <div id="toastStack"></div>
+
+  <script>
+const LS = 'kin_console_token'
+const LS_USER = 'kin_console_user'
+const LS_BASE = 'kin_api_base'
+const COOKIE = 'kin_panel_token'
+const titles = {
+  overview: ['总览', '平台健康'],
+  cluster: ['集群', '节点与账号'],
+  vm: ['虚拟机', '创建与运维'],
+  import: ['导入', 'OAuth 凭证'],
+  usage: ['用量', '额度与限流'],
+  protocol: ['协议', '接入端点'],
+  proxies: ['代理池', 'SOCKS5'],
+  settings: ['设置', '路由策略'],
+}
+
+/* 官方内核档案 */
+const KERNELS = [
+  { id:'unikernel-min', name:'Unikernel Minimal', base:'solo5/min',       size:'~32MB',  feats:['单地址空间','无 shell','冷启最快'] },
+  { id:'claude-cli',    name:'Claude Code CLI',   base:'node22',          size:'~180MB', feats:['官方 CLI','stream-json','Node 22'] },
+  { id:'alpine-min',    name:'Alpine Minimal',    base:'alpine3.20',      size:'~48MB',  feats:['apk','busybox','socks5'] },
+  { id:'debian-slim',   name:'Debian Slim',       base:'debian12-slim',   size:'~90MB',  feats:['apt','glibc','兼容性好'] },
+  { id:'ubuntu-minimal',name:'Ubuntu Minimal',    base:'ubuntu24.04-min', size:'~110MB', feats:['LTS','systemd 可选','deb'] },
+]
+function kernelProfile(id) {
+  const k = String(id || '').trim()
+  return KERNELS.find(x => x.id === k) || (k ? { id:k, name:k, base:'', size:'', feats:['自定义内核'] } : null)
+}
+function kernelFeats(p) { return (p && Array.isArray(p.feats) ? p.feats : []) }
+function kernelTag(id) {
+  const p = kernelProfile(id)
+  if (!p) return `<span class="k-tag"><i></i>未指定内核</span>`
+  return `<span class="k-tag" title="${esc(p.id)}${p.base?' · '+esc(p.base):''}"><i></i>${esc(p.name)}${p.size?' · '+esc(p.size):''}</span>`
+}
+
+let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null, clusterQ: '', clusterFilter: 'all', vmTab: 'overview', loading: false, kernel: 'unikernel-min', createName: '', advOpen: false }
+let bootstrapped = false
+
+function apiBase() {
+  const host = (location.hostname || '')
+  if (/kin\.fkcodex\.com$/i.test(host)) return ''
+  const saved = (localStorage.getItem(LS_BASE) || '').replace(/\/$/, '')
+  if (saved) return saved
+  if (/vercel\.app$|netlify\.app$|github\.io$|grok\.me$/i.test(host)) return 'https://kin.fkcodex.com'
+  return ''
+}
+
+function readCookie(name) {
+  const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/[$()*+./?[\\\]^{|}-]/g, '\\$&') + '=([^;]*)'))
+  return m ? decodeURIComponent(m[1]) : ''
+}
+
+function writeClientCookie(name, value, days) {
+  // Non-HttpOnly mirror for SPA (server also sets HttpOnly kin_panel_token)
+  const max = days ? '; Max-Age=' + (days * 86400) : ''
+  const secure = location.protocol === 'https:' ? '; Secure' : ''
+  document.cookie = name + '=' + encodeURIComponent(value || '') + '; Path=/' + max + '; SameSite=Lax' + secure
+}
+
+function clearClientCookie(name) {
+  document.cookie = name + '=; Path=/; Max-Age=0; SameSite=Lax'
+}
+
+function key() {
+  return (localStorage.getItem(LS) || readCookie(COOKIE) || readCookie('kin_console_token') || '').trim()
+}
+
+function setSession(token, user) {
+  if (token) {
+    localStorage.setItem(LS, token)
+    writeClientCookie(COOKIE, token, 7)
+    writeClientCookie('kin_console_token', token, 7)
+  }
+  if (user) localStorage.setItem(LS_USER, user)
+}
+
+function clearSession() {
+  localStorage.removeItem(LS)
+  localStorage.removeItem(LS_USER)
+  clearClientCookie(COOKIE)
+  clearClientCookie('kin_console_token')
+}
+
+function showLogin() {
+  document.getElementById('loginGate').classList.remove('hidden')
+  document.body.classList.add('login-only')
+  document.getElementById('loginUser').textContent = '—'
+}
+
+function showApp(user) {
+  document.getElementById('loginGate').classList.add('hidden')
+  document.body.classList.remove('login-only')
+  document.getElementById('loginUser').textContent = user || localStorage.getItem(LS_USER) || 'admin'
+}
+
+function logout() {
+  const tok = key()
+  const base = apiBase()
+  // best-effort server revoke
+  if (tok) {
+    fetch((base || '') + '/api/panel/logout', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    }).catch(() => {})
+  }
+  clearSession()
+  showLogin()
+}
+
+async function doLogin() {
+  const user = document.getElementById('loginUserInput').value.trim()
+  const pass = document.getElementById('loginPassInput').value
+  const err = document.getElementById('loginErr')
+  err.classList.add('hidden')
+  const host = location.hostname || ''
+  let base = ''
+  if (/kin\.fkcodex\.com$/i.test(host)) {
+    base = ''
+    localStorage.removeItem(LS_BASE)
+    const baseEl = document.getElementById('loginBaseInput')
+    if (baseEl) baseEl.value = ''
+  } else {
+    base = (document.getElementById('loginBaseInput').value || '').trim().replace(/\/$/, '') || apiBase()
+    if (base) localStorage.setItem(LS_BASE, base)
+    else localStorage.removeItem(LS_BASE)
+  }
+  const url = (base || '') + '/api/panel/login'
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    })
+    if (res.status === 405) throw new Error('405 Method Not Allowed: ' + url)
+    const j = await res.json().catch(() => ({}))
+    const token = j.token || j.data?.token
+    if (!res.ok || !token) throw new Error(j?.error?.message || j?.message || ('登录失败 HTTP ' + res.status + ' @ ' + url))
+    setSession(token, j.user || user)
+    showApp(j.user || user)
+    toast('登录成功')
+    await refresh()
+    applyRoute()
+  } catch (e) {
+    const msg = e.message || String(e)
+    if (/Failed to fetch|NetworkError|CORS|Load failed|network/i.test(msg)) {
+      err.textContent = '无法连接鉴权服务: ' + url
+    } else {
+      err.textContent = msg
+    }
+    err.classList.remove('hidden')
+  }
+}
+
+function headers() {
+  const h = { 'Content-Type': 'application/json' }
+  const t = key()
+  if (t) h.Authorization = 'Bearer ' + t
+  return h
+}
+
+async function api(path, opts = {}) {
+  if (!key() && !readCookie(COOKIE)) throw new Error('未登录')
+  const url = (apiBase() || '') + path
+  const res = await fetch(url, {
+    ...opts,
+    credentials: 'include',
+    headers: { ...headers(), ...(opts.headers || {}) },
+  })
+  const j = await res.json().catch(() => ({}))
+  if (res.status === 401) {
+    clearSession()
+    showLogin()
+    throw new Error('鉴权失效，请重新登录')
+  }
+  if (!res.ok || j.ok === false) throw new Error(j?.error?.message || j?.message || res.statusText)
+  return j.data !== undefined ? j.data : j
+}
+
+/* ── helpers ─────────────────────────────────────────────── */
+function pct(u) { if (u == null) return 0; const n = Number(u); return n > 1 ? n : n * 100 }
+function barColor(p) { if (p >= 95) return 'var(--bad)'; if (p >= 85) return 'var(--warn)'; return 'var(--ok)' }
+function fmtNum(n) {
+  const v = Number(n) || 0
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + 'B'
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M'
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k'
+  return String(v)
+}
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
+function copyText(text) {
+  const v = String(text || '')
+  if (!v) return
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(v).then(() => toast('已复制')).catch(() => toast('复制失败', 'err'))
+  } else {
+    const ta = document.createElement('textarea')
+    ta.value = v
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy'); toast('已复制') } catch { toast('复制失败', 'err') }
+    ta.remove()
+  }
+}
+function toast(m, type) {
+  let stack = document.getElementById('toastStack')
+  if (!stack) {
+    stack = document.createElement('div')
+    stack.id = 'toastStack'
+    document.body.appendChild(stack)
+  }
+  const el = document.createElement('div')
+  const kind = type || (/失败|错误|失效|无法|禁止|401|403|500/i.test(String(m)) ? 'err' : 'ok')
+  el.className = 'toast-item ' + kind
+  el.textContent = String(m ?? '')
+  stack.appendChild(el)
+  setTimeout(() => {
+    el.style.opacity = '0'
+    el.style.transition = 'opacity .2s'
+    setTimeout(() => el.remove(), 220)
+  }, 2400)
+}
+function skeleton(kind) {
+  if (kind === 'table') return `<div class="card">${'<div class="skeleton sk-row"></div>'.repeat(8)}</div>`
+  return `<div class="sk-grid">${'<div class="skeleton sk-card"></div>'.repeat(6)}</div>`
+}
+function emptyBox(msg) { return `<div class="empty-box">${esc(msg)}</div>` }
+
+document.getElementById('loginPassInput') && document.getElementById('loginPassInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin() })
+
+async function refresh() {
+  if (!key()) return
+  const first = !state.dashboard
+  state.loading = true
+  if (first) render()
+  const btn = document.querySelector('.topbar-actions button[onclick="refresh()"]')
+  if (btn) { btn.disabled = true; btn.classList.add('busy') }
+  try {
+    const safe = (p) => api(p).catch((e) => ({ __error: e.message || String(e) }))
+    const [dash, usage, models, routing, proxies] = await Promise.all([
+      safe('/api/panel/dashboard'),
+      safe('/api/panel/usage'),
+      safe('/api/panel/models?refresh=1'),
+      safe('/api/panel/routing'),
+      safe('/api/panel/proxies'),
+    ])
+    state.dashboard = dash?.__error ? { error: dash.__error } : (dash.data || dash)
+    state.usage = usage?.__error ? { error: usage.__error } : (usage.data || usage)
+    let m = models?.__error ? null : (models.data || models)
+    if (m && Array.isArray(m.data) && !m.items) {
+      m = { items: m.data.map(x => ({ id: x.id, label: x.display_name || x.id })), source: m.source, total: m.data.length }
+    }
+    if (m && !m.items && Array.isArray(m)) {
+      m = { items: m.map(x => ({ id: x.id || x, label: x.label || x.display_name || x.id || x })), source: 'list' }
+    }
+    state.models = m || { items: [], source: 'error', note: models?.__error || 'empty' }
+    state.routing = routing?.__error ? { error: routing.__error } : (routing.data || routing)
+    state.proxies = proxies?.__error ? { error: proxies.__error } : (proxies.data || proxies)
+    if (!state.selectedVm && state.dashboard.vms?.[0]) state.selectedVm = state.dashboard.vms[0].id
+    const h = state.dashboard.health
+    const pill = document.getElementById('healthPill')
+    if (pill) {
+      const ok = (h?.status || 'ok') === 'ok'
+      pill.className = 'badge ' + (ok ? 'ok' : 'err')
+      pill.innerHTML = `<span class="status-dot ${ok ? 'on' : 'danger'}"></span>${esc(h?.status || 'ok')}`
+      pill.title = h?.base_url || ''
+    }
+  } catch (e) {
+    toast('刷新失败: ' + e.message, 'err')
+  } finally {
+    state.loading = false
+    const btn = document.querySelector('.topbar-actions button[onclick="refresh()"]')
+    if (btn) { btn.disabled = false; btn.classList.remove('busy') }
+    render()
+  }
+}
+
+async function probeAll() {
+  try {
+    toast('全量探测中…')
+    await api('/api/panel/probe', { method: 'POST' })
+    toast('探测完成')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function probeOne(id) {
+  try {
+    toast('探测 ' + id)
+    await api('/api/panel/vms/' + id + '/probe', { method: 'POST' })
+    toast('完成')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function openVm(id) {
+  const switched = state.selectedVm !== id
+  state.selectedVm = id
+  if (switched) state.vmTab = 'overview'
+  try {
+    const r = await api('/api/panel/vms/' + id)
+    state.detail = r.data || r
+  } catch (e) { state.detail = null; toast(e.message) }
+  state.view = 'vm'; loadSeedSettings().catch(()=>{})
+  if (location.hash !== `#/vm/${id}`) location.hash = `#/vm/${id}`
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === 'vm'))
+  const [tt, d] = titles.vm
+  document.getElementById('pageTitle').textContent = tt
+  document.getElementById('pageDesc').textContent = d
+  render()
+}
+
+/* ── vm view models ──────────────────────────────────────── */
+function vmRunning(v) {
+  const s = String(v.status || '').toLowerCase()
+  if (s === 'stopped' || s === 'dead' || s === 'disabled') return false
+  if (v.schedulable === false) return false
+  return !!(v.active || v.has_token || s === 'running' || s === 'ok' || !s)
+}
+function statusDot(v) {
+  if (!v.has_token) return 'warn'
+  if (!vmRunning(v)) return 'off'
+  const u = pct(v.utilization_5h)
+  if (u >= 95) return 'danger'
+  if (u >= 85) return 'warn'
+  return 'on'
+}
+/* 账号状态胶囊：五态互斥，颜色即语义 */
+function accountStatus(v) {
+  if (!v.has_token) return { cls: 'none', key: 'none', text: '无凭证' }
+  if (!vmRunning(v)) return { cls: 'off', key: 'off', text: '已停止' }
+  const u = pct(v.utilization_5h)
+  if (u >= 95) return { cls: 'bad', key: 'bad', text: '近限额' }
+  if (u >= 85) return { cls: 'warn', key: 'warn', text: '偏高' }
+  return { cls: 'ok', key: 'ok', text: '可用' }
+}
+const HEALTH_SEG = [
+  { key: 'ok',   label: '可用',   color: 'var(--ok)' },
+  { key: 'warn', label: '偏高',   color: 'var(--warn)' },
+  { key: 'bad',  label: '近限额', color: 'var(--bad)' },
+  { key: 'off',  label: '已停止', color: 'oklch(0.5 0.01 265)' },
+  { key: 'none', label: '无凭证', color: 'oklch(1 0 0/20%)' },
+]
+function vmBuckets(vms) {
+  const b = { ok: 0, warn: 0, bad: 0, off: 0, none: 0 }
+  vms.forEach(v => { b[accountStatus(v).key]++ })
+  return b
+}
+/* 健康分：可用满分，越接近限额/离线扣分越多 */
+function healthScore(vms) {
+  if (!vms.length) return 0
+  const b = vmBuckets(vms)
+  return Math.round((b.ok * 100 + b.warn * 72 + b.bad * 28 + b.off * 12) / vms.length)
+}
+function healthBar(b, total) {
+  const t = total || 1
+  const segs = HEALTH_SEG.map(s => b[s.key] ? `<i class="s-${s.key}" style="flex:${b[s.key]} 1 0;min-width:6px" title="${s.label} ${b[s.key]}"></i>` : '').join('')
+  return `<div class="hbar">${segs || `<i class="s-none" style="flex:${t}"></i>`}</div>`
+}
+function healthLegend(b) {
+  return `<div class="hlegend">${HEALTH_SEG.map(s => `<span class="hleg ${b[s.key] ? '' : 'zero'}"><s style="background:${s.color}"></s><b>${b[s.key]}</b>${s.label}</span>`).join('')}</div>`
+}
+function vmRegion(v) {
+  return v.region || v.zone || v.proxy?.region || (v.proxy?.host ? 'proxy' : 'local')
+}
+function sparkBars(v) {
+  // Derive a stable-looking activity sparkline from utilization + inflight + id hash
+  const base = Math.max(4, Math.min(96, pct(v.utilization_5h) || (v.inflight ? 30 : 6)))
+  const run = vmRunning(v)
+  let h = 0
+  const id = String(v.id || v.name || '')
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  const bars = []
+  for (let i = 0; i < 14; i++) {
+    const wave = ((h >> (i % 8)) & 7) / 7
+    let ht = run ? Math.round(4 + (base * 0.14) * (0.35 + wave) + (i === 13 ? base * 0.16 : 0)) : 2
+    if (!run) ht = 2 + (i % 2)
+    ht = Math.min(18, Math.max(2, ht))
+    const cls = !run ? '' : (ht > 11 ? 'hot' : 'on')
+    bars.push(`<i class="${cls}" style="height:${ht}px"></i>`)
+  }
+  return `<div class="spark" style="--sp:${barColor(pct(v.utilization_5h))}">${bars.join('')}</div>`
+}
+function meter(label, p) {
+  return `<div class="meter"><div class="lg"><span>${esc(label)}</span><b>${p.toFixed(1)}%</b></div><div class="bar"><i style="width:${Math.min(100, p)}%;background:${barColor(p)}"></i></div></div>`
+}
+function track(label, p) {
+  return `<div class="tk"><u>${esc(label)}</u><div class="bar" style="flex:1"><i style="width:${Math.min(100, p)}%;background:${barColor(p)}"></i></div></div>`
+}
+function vmCard(v) {
+  const acc = accountStatus(v)
+  const u5 = pct(v.utilization_5h)
+  const u7 = pct(v.utilization_7d)
+  return `
+  <div class="vm-viz" onclick="openVm('${esc(v.id)}')" title="${esc(v.name || v.id)} · 查看详情">
+    <div class="top">
+      <div class="name"><span class="status-dot ${statusDot(v)}"></span><span class="txt">${esc(v.name || v.id)}</span></div>
+      <span class="acc-pill ${acc.cls}">${acc.text}</span>
+    </div>
+    <div class="sub"><span class="e">${esc(v.email || '未绑定账号')}</span></div>
+    <div class="vm-use">
+      <div class="big"><b style="color:${barColor(u5)}">${u5.toFixed(0)}</b><i>%</i><em>5h</em></div>
+      <div class="vm-track">${track('5h', u5)}${track('7d', u7)}</div>
+    </div>
+    <div class="foot">
+      ${kernelTag(v.kernel)}
+      <div class="right">
+        ${sparkBars(v)}
+        <span class="vm-ops">
+          <button class="btn btn-ghost btn-xs faint" title="重置" onclick="event.stopPropagation();openResetVm('${esc(v.id)}')">重置</button>
+          <button class="btn btn-ghost btn-xs danger" title="删除" onclick="event.stopPropagation();openDeleteVm('${esc(v.id)}')">删除</button>
+        </span>
+      </div>
+    </div>
+  </div>`
+}
+function quotaRing(pctVal, size = 42) {
+  const p = Math.max(0, Math.min(100, Number(pctVal) || 0))
+  const r = 18, c = 2 * Math.PI * r
+  const off = c * (1 - p / 100)
+  const col = p >= 95 ? 'var(--bad)' : p >= 85 ? 'var(--warn)' : 'var(--ok)'
+  return `<svg class="ring" viewBox="0 0 48 48" width="${size}" height="${size}"><circle cx="24" cy="24" r="${r}" fill="none" stroke="oklch(1 0 0/8%)" stroke-width="4"/><circle cx="24" cy="24" r="${r}" fill="none" stroke="${col}" stroke-width="4" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 24 24)"/></svg>`
+}
+
+/* ── overview ────────────────────────────────────────────── */
+function renderOverview() {
+  const d = state.dashboard || {}
+  if (d.error) return emptyBox('加载失败: ' + d.error)
+  const vms = d.vms || []
+  const s = d.summary || {}
+  const tot = (state.usage && state.usage.totals) || {}
+  const health = d.health || {}
+  const gstat = d.gateway_stats || {}
+  const running = vms.filter(vmRunning).length
+  const withToken = vms.filter(v => v.has_token).length
+  const available = vms.filter(v => vmRunning(v) && v.has_token && pct(v.utilization_5h) < 95).length
+  const tokensIn = tot.tokens_in ?? s.tokens_in ?? 0
+  const tokensOut = tot.tokens_out ?? s.tokens_out ?? 0
+  const reqs = tot.requests ?? s.requests ?? 0
+  const peak5 = pct(s.peak_5h ?? tot.peak_5h)
+  const peak7 = pct(s.peak_7d ?? tot.peak_7d)
+  const ok = (health.status || 'ok') === 'ok'
+  const errs = gstat.errors || 0
+  const buckets = vmBuckets(vms)
+  const score = healthScore(vms)
+  const scoreColor = score >= 80 ? 'var(--ok)' : score >= 50 ? 'var(--warn)' : 'var(--bad)'
+  return `
+  <section class="section">
+    <div class="hcard">
+      <div class="score">
+        <div class="n"><b style="color:${scoreColor}">${score}</b><i>%</i></div>
+        <div class="l">集群健康</div>
+      </div>
+      <div class="body">
+        ${healthBar(buckets, vms.length)}
+        ${healthLegend(buckets)}
+      </div>
+    </div>
+
+    <div class="facts">
+      <span class="fact"><span class="status-dot ${ok ? 'on' : 'danger'}"></span>网关 <b>${esc(health.status || 'ok')}</b></span>
+      <span class="fact" title="${esc(health.base_url || location.origin)}">Base <span class="v">${esc(health.base_url || location.origin)}</span></span>
+      <span class="fact"><span class="status-dot ${s.active_vm ? 'on' : 'off'}"></span>活跃 <span class="v">${esc(s.active_vm || '未指定')}</span></span>
+      <span class="fact"><span class="status-dot ${errs > 0 ? 'danger' : 'on'}"></span>错误 <b>${errs}</b></span>
+      <span class="fact">请求 <b>${fmtNum(gstat.requests || 0)}</b></span>
+    </div>
+
+    <div class="stat-hero">
+      <div class="stat-tile">
+        <div class="k">可用</div>
+        <div class="v">${available}<small> / ${withToken}</small></div>
+        <div class="s">${s.vm_count ?? vms.length} 节点</div>
+        ${quotaRing(withToken ? (available / Math.max(withToken, 1)) * 100 : 0)}
+      </div>
+      <div class="stat-tile">
+        <div class="k">在线</div>
+        <div class="v">${running}<small> / ${vms.length}</small></div>
+        <div class="s">停止 ${vms.length - running}</div>
+        ${quotaRing(vms.length ? running / vms.length * 100 : 0)}
+      </div>
+      <div class="stat-tile">
+        <div class="k">Tokens</div>
+        <div class="v">${fmtNum(tokensIn)}<small> / ${fmtNum(tokensOut)}</small></div>
+        <div class="s">请求 ${fmtNum(reqs)}</div>
+        <div class="edge"><i style="width:${Math.min(100, (tokensIn + tokensOut) ? tokensOut / (tokensIn + tokensOut) * 100 : 0)}%;background:oklch(0.6 0.12 200)"></i></div>
+      </div>
+      <div class="stat-tile">
+        <div class="k">5h 峰值</div>
+        <div class="v">${peak5.toFixed(0)}<small>%</small></div>
+        <div class="s">7d ${peak7.toFixed(0)}%</div>
+        ${quotaRing(peak5)}
+      </div>
+    </div>
+
+    <div class="head">
+      <div><div class="section-title">节点</div><div class="sub">${running} / ${vms.length} 在线</div></div>
+      <div class="actions">
+        <button class="btn btn-outline btn-sm" onclick="go('import')">导入凭证</button>
+        <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部</button>
+      </div>
+    </div>
+    <div class="vm-grid">${vms.slice(0, 8).map(vmCard).join('') || emptyBox('暂无虚拟机 · 到「虚拟机」创建')}</div>
+  </section>`
+}
+
+/* ── cluster ─────────────────────────────────────────────── */
+function filteredVms() {
+  const vms = state.dashboard?.vms || []
+  const q = (state.clusterQ || '').trim().toLowerCase()
+  const f = state.clusterFilter || 'all'
+  return vms.filter(v => {
+    if (f === 'running' && !vmRunning(v)) return false
+    if (f === 'stopped' && vmRunning(v)) return false
+    if (f === 'notoken' && v.has_token) return false
+    if (f === 'near' && pct(v.utilization_5h) < 85) return false
+    if (!q) return true
+    const hay = [v.name, v.id, v.email, v.region, v.zone, v.kernel].map(x => String(x || '').toLowerCase()).join(' ')
+    return hay.includes(q)
+  })
+}
+function setClusterFilter(f) { state.clusterFilter = f; render() }
+function onClusterSearch(el) {
+  state.clusterQ = el.value || ''
+  const grid = document.getElementById('clusterGrid')
+  if (!grid) { render(); return }
+  const vms = filteredVms()
+  grid.innerHTML = vms.map(vmCard).join('') || emptyBox('无匹配节点')
+}
+function renderCluster() {
+  const d = state.dashboard || {}
+  if (d.error) return emptyBox('加载失败: ' + d.error)
+  const all = d.vms || []
+  const vms = filteredVms()
+  const b = vmBuckets(all)
+  const running = all.filter(vmRunning).length
+  const f = state.clusterFilter || 'all'
+  const counts = {
+    all: all.length,
+    running: running,
+    stopped: all.length - running,
+    notoken: b.none,
+    near: b.bad + b.warn,
+  }
+  const segs = [['all', '全部'], ['running', '在线'], ['stopped', '停止'], ['notoken', '无凭证'], ['near', '高水位']]
+  return `
+  <section class="section">
+    <div class="head">
+      <div><div class="section-title">集群</div><div class="sub">${b.ok} 可用 · ${all.length} 节点</div></div>
+      <div class="toolbar">
+        <input class="input" placeholder="搜索节点 / 账号 / 内核" value="${esc(state.clusterQ || '')}" oninput="onClusterSearch(this)" />
+        <div class="seg">${segs.map(([k, t]) => `<button class="${f === k ? 'on' : ''}" onclick="setClusterFilter('${k}')">${t}<span class="num faint" style="margin-left:5px">${counts[k]}</span></button>`).join('')}</div>
+      </div>
+    </div>
+    <div class="hcard" style="padding:14px 18px">
+      <div class="score" style="min-width:88px;padding-right:18px">
+        <div class="n"><b style="font-size:30px">${healthScore(all)}</b><i>%</i></div>
+        <div class="l">健康</div>
+      </div>
+      <div class="body">${healthBar(b, all.length)}${healthLegend(b)}</div>
+    </div>
+    <div class="vm-grid" id="clusterGrid">${vms.map(vmCard).join('') || emptyBox(all.length ? '无匹配节点' : '暂无节点')}</div>
+  </section>`
+}
+
+/* ── vm: create + detail ─────────────────────────────────── */
+function kernelPickerHTML() {
+  const cur = kernelProfile(state.kernel) || KERNELS[0]
+  return `
+  <div class="kpick" id="kpick">
+    <button type="button" class="kpick-trigger" onclick="toggleKernelPanel()" aria-expanded="false" aria-haspopup="listbox">
+      <span class="kdot"></span>
+      <span class="lab"><b id="kTrigName">${esc(cur.name)}</b><em id="kTrigMeta">${esc(cur.size || cur.id)}</em></span>
+      <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    ${kernelPanelHTML()}
+    <input type="hidden" id="vmCreateKernel" value="${esc(cur.id)}" />
+  </div>`
+}
+function kernelPanelHTML() {
+  return `
+  <div class="kernel-panel" id="kernelPanel" hidden role="listbox">
+    <div class="kp-h"><span>官方内核档案</span><span>名称 · 体积 · 特性</span></div>
+    <div class="kernel-grid" id="vmKernelChips">
+      ${KERNELS.map(k => `
+      <button type="button" class="kernel-card ${state.kernel === k.id ? 'on' : ''}" role="option" aria-selected="${state.kernel === k.id}" data-k="${esc(k.id)}" onclick="pickKernel(this)">
+        <span class="kc-check">✓</span>
+        <span class="kc-top"><span class="kc-name">${esc(k.name)}</span><span class="kc-size">${esc(k.size)}</span></span>
+        <span class="kc-id">${esc(k.base)}</span>
+        <span class="kc-feats">${kernelFeats(k).map(f => `<span>${esc(f)}</span>`).join('')}</span>
+      </button>`).join('')}
+    </div>
+  </div>`
+}
+function toggleKernelPanel(force) {
+  const panel = document.getElementById('kernelPanel')
+  const wrap = document.getElementById('kpick')
+  if (!panel) return
+  const open = force !== undefined ? force : panel.hasAttribute('hidden')
+  if (open) panel.removeAttribute('hidden'); else panel.setAttribute('hidden', '')
+  if (wrap) {
+    wrap.classList.toggle('open', open)
+    const trig = wrap.querySelector('.kpick-trigger')
+    if (trig) trig.setAttribute('aria-expanded', String(open))
+  }
+}
+function pickKernel(btn) {
+  const k = btn.getAttribute('data-k')
+  const p = kernelProfile(k) || KERNELS[0]
+  state.kernel = p.id
+  const wrap = document.getElementById('vmKernelChips')
+  if (wrap) wrap.querySelectorAll('.kernel-card').forEach(b => {
+    b.classList.toggle('on', b === btn)
+    b.setAttribute('aria-selected', String(b === btn))
+  })
+  const hidden = document.getElementById('vmCreateKernel')
+  if (hidden) hidden.value = p.id
+  const n = document.getElementById('kTrigName')
+  const m = document.getElementById('kTrigMeta')
+  if (n) n.textContent = p.name
+  if (m) m.textContent = p.size || p.id
+  const custom = document.getElementById('vmCreateKernelCustom')
+  if (custom) custom.value = ''
+  toggleKernelPanel(false)
+}
+/* 高级选项：默认折叠，不参与首屏一行布局 */
+function toggleAdv(force) {
+  const wrap = document.getElementById('advWrap')
+  const btn = document.getElementById('advToggle')
+  if (!wrap) return
+  const open = force !== undefined ? force : wrap.hasAttribute('hidden')
+  if (open) wrap.removeAttribute('hidden'); else wrap.setAttribute('hidden', '')
+  state.advOpen = open
+  if (btn) { btn.classList.toggle('on', open); btn.setAttribute('aria-expanded', String(open)) }
+}
+document.addEventListener('click', (e) => {
+  const wrap = document.getElementById('kpick')
+  if (!wrap || !wrap.classList.contains('open')) return
+  if (!wrap.contains(e.target)) toggleKernelPanel(false)
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  toggleKernelPanel(false)
+  closeModal()
+})
+function createBoxHTML() {
+  return `
+  <div class="create-box">
+    <div class="base-row">
+      <input id="vmCreateName" class="input name-in" placeholder="虚拟机名称" value="${esc(state.createName || '')}" oninput="state.createName=this.value" />
+      ${kernelPickerHTML()}
+      <button class="btn btn-primary" onclick="createVmFromPage()">创建</button>
+      <button type="button" id="advToggle" class="btn btn-ghost btn-sm adv-toggle ${state.advOpen ? 'on' : ''}" aria-expanded="${!!state.advOpen}" onclick="toggleAdv()">
+        高级
+        <svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+    </div>
+    <div class="adv-wrap" id="advWrap" ${state.advOpen ? '' : 'hidden'}>
+      <div class="form-grid">
+        <label>自定义 ID<input id="vmCreateId" class="input" placeholder="自动生成" /></label>
+        <label>自定义内核<input id="vmCreateKernelCustom" class="input" placeholder="覆盖上方选择" /></label>
+        <label>区域<input id="vmCreateRegion" class="input" placeholder="可选" /></label>
+        <label>时区
+          <select id="vmCreateTz" class="input">
+            <option value="America/Los_Angeles">America/Los_Angeles</option>
+            <option value="America/New_York">America/New_York</option>
+            <option value="UTC">UTC</option>
+            <option value="Europe/London">Europe/London</option>
+            <option value="Asia/Shanghai">Asia/Shanghai</option>
+            <option value="Asia/Tokyo">Asia/Tokyo</option>
+            <option value="Asia/Singapore">Asia/Singapore</option>
+          </select>
+        </label>
+        <label>语言
+          <select id="vmCreateLocale" class="input">
+            <option value="en_US.UTF-8">en_US.UTF-8</option>
+            <option value="zh_CN.UTF-8">zh_CN.UTF-8</option>
+            <option value="ja_JP.UTF-8">ja_JP.UTF-8</option>
+            <option value="C.UTF-8">C.UTF-8</option>
+          </select>
+        </label>
+        <label>Claude Code<input id="vmCreateCC" class="input" placeholder="版本，可选" /></label>
+        <label>并发<input id="vmCreateConc" class="input" type="number" min="1" max="32" value="2" /></label>
+        <label>权重<input id="vmCreateWeight" class="input" type="number" min="1" max="100" value="1" /></label>
+        <label>备注<input id="vmCreateNote" class="input" placeholder="可选" /></label>
+        <label class="check"><input id="vmCreateStart" type="checkbox" /> 创建后开机</label>
+        <label class="check"><input id="vmCreateProxy" type="checkbox" /> 分配 SOCKS5</label>
+        <label class="check"><input id="vmCreateActive" type="checkbox" /> 设为活跃</label>
+        <label class="check"><input id="vmCreateProxyCli" type="checkbox" /> proxy CLI</label>
+      </div>
+    </div>
+  </div>`
+}
+
+async function loadSeedSettings() {
+  const id = state.selectedVm
+  if (!id) return
+  try {
+    const r = await api('/api/panel/vms/' + id + '/seed-settings')
+    state.seedSettings = r.data || r
+    render()
+  } catch (e) { toast(e.message, 'err') }
+}
+async function saveSeedSettings(id) {
+  id = id || state.selectedVm
+  if (!id) return
+  let override = null
+  const raw = document.getElementById('seedOverride')?.value?.trim() || ''
+  if (raw) {
+    try { override = JSON.parse(raw) } catch { toast('settings JSON 无效', 'err'); return }
+  }
+  const body = {
+    telemetry_disabled: !!document.getElementById('seedTel')?.checked,
+    disable_nonessential_traffic: !!document.getElementById('seedNonEss')?.checked,
+    do_not_track: !!document.getElementById('seedDnt')?.checked,
+    reject_client_settings: !!document.getElementById('seedRejSet')?.checked,
+    reject_client_metadata_identity: !!document.getElementById('seedRejMeta')?.checked,
+    theme: document.getElementById('seedTheme')?.value || 'dark',
+    settings_json_override: override,
+  }
+  try {
+    const r = await api('/api/panel/vms/' + id + '/seed-settings', { method: 'PUT', body: JSON.stringify(body) })
+    state.seedSettings = r.data || r
+    toast('种子策略已保存')
+    render()
+  } catch (e) { toast(e.message, 'err') }
+}
+
+function setVmTab(tab) { state.vmTab = tab; render() }
+function renderVm() {
+  const vms = state.dashboard?.vms || []
+  const det = state.detail
+  const create = createBoxHTML()
+  if (!state.selectedVm && !det) {
+    return `<section class="section">
+      ${create}
+      <div class="head"><div><div class="section-title">节点列表</div><div class="sub">${vms.length} 台</div></div></div>
+      <div class="vm-grid">${vms.map(vmCard).join('') || emptyBox('暂无虚拟机 · 上方一行即可创建')}</div>
+    </section>`
+  }
+  const vm = det?.vm || vms.find(x => x.id === state.selectedVm) || {}
+  const acc = det?.account || {}
+  const proxy = det?.proxy || vm.proxy || {}
+  const u5 = pct(acc.utilization_5h ?? vm.utilization_5h)
+  const u7 = pct(acc.utilization_7d ?? vm.utilization_7d)
+  const tab = state.vmTab || 'overview'
+  const st = accountStatus(vm)
+  const running = vmRunning(vm)
+  const kp = kernelProfile(vm.kernel)
+  return `
+  <section class="section">
+    ${create}
+
+    <div class="card card-pad-lg stack-md">
+      <div class="head">
+        <div>
+          <div style="display:flex;align-items:center;gap:9px">
+            <span class="status-dot ${statusDot(vm)}"></span>
+            <span style="font-size:15px;font-weight:600;letter-spacing:-0.01em">${esc(vm.name || vm.id || '—')}</span>
+            <span class="acc-pill ${st.cls}">${st.text}</span>
+          </div>
+          <div class="sub mono">${esc(vm.id || '')} · ${running ? '运行中' : '已停止'}</div>
+        </div>
+        <div class="actions">
+          <select class="input" style="width:170px;height:32px" onchange="if(this.value)openVm(this.value)">
+            ${vms.map(v => `<option value="${esc(v.id)}" ${v.id === vm.id ? 'selected' : ''}>${esc(v.name || v.id)}</option>`).join('')}
+          </select>
+          <button class="btn btn-outline btn-sm" onclick="startVm('${esc(vm.id)}')">开机</button>
+          <button class="btn btn-outline btn-sm" onclick="stopVm('${esc(vm.id)}')">关机</button>
+          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')">探测</button>
+        </div>
+      </div>
+      <div class="tabs">
+        <button class="${tab === 'overview' ? 'on' : ''}" onclick="setVmTab('overview')">概览</button>
+        <button class="${tab === 'account' ? 'on' : ''}" onclick="setVmTab('account')">账号</button>
+        <button class="${tab === 'proxy' ? 'on' : ''}" onclick="setVmTab('proxy')">代理</button>
+        <button class="${tab === 'ops' ? 'on' : ''}" onclick="setVmTab('ops')">运维</button>
+        <button class="${tab === 'seed' ? 'on' : ''}" onclick="setVmTab('seed');loadSeedSettings()">种子策略</button>
+      </div>
+
+      ${tab === 'overview' ? `
+      <div class="grid-3">
+        <div class="card stack-md">
+          <div class="section-title">内核</div>
+          <div>
+            <div style="font-size:14px;font-weight:600">${esc(kp ? kp.name : '未指定')}</div>
+            <div class="text-xs faint mono" style="margin-top:3px">${esc(kp ? kp.id : '—')}${kp && kp.base ? ' · ' + esc(kp.base) : ''}</div>
+          </div>
+          <div class="kc-feats">${kernelFeats(kp).map(f => `<span>${esc(f)}</span>`).join('') || '<span class="faint text-xs">无特性档案</span>'}</div>
+          <dl class="kv">
+            <dt>体积</dt><dd class="num">${esc(kp?.size || '—')}</dd>
+            <dt>Claude Code</dt><dd>${esc(vm.claude_code_version || '—')}</dd>
+          </dl>
+        </div>
+        <div class="card stack-md">
+          <div class="section-title">用量</div>
+          <div class="stack-sm">${meter('5h', u5)}${meter('7d', u7)}</div>
+          <dl class="kv"><dt>并发</dt><dd class="num">${vm.inflight || 0} / ${vm.max_concurrency || 2}</dd></dl>
+        </div>
+        <div class="card stack-md">
+          <div class="section-title">账号</div>
+          <div class="text-sm" style="word-break:break-all">${esc(vm.email || '未绑定')}</div>
+          <div><span class="acc-pill ${st.cls}">${st.text}</span></div>
+          <dl class="kv">
+            <dt>代理</dt><dd class="mono">${esc(proxy.host || proxy.id || vm.proxy_id || '未绑定')}</dd>
+            <dt>区域</dt><dd>${esc(vmRegion(vm))}</dd>
+          </dl>
+        </div>
+      </div>` : ''}
+
+      ${tab === 'account' ? `
+      <div class="card stack-md">
+        <dl class="kv">
+          <dt>邮箱</dt><dd>${esc(vm.email || '—')}</dd>
+          <dt>UUID</dt><dd class="mono">${esc(vm.account_uuid || '—')}</dd>
+          <dt>凭证</dt><dd>${vm.has_token ? '<span class="acc-pill ok">已绑定</span>' : '<span class="acc-pill off">未绑定</span>'}</dd>
+          <dt>5h / 7d</dt><dd class="num">${u5.toFixed(1)}% / ${u7.toFixed(1)}%</dd>
+        </dl>
+        <div class="actions"><button class="btn btn-outline btn-sm" onclick="go('import')">去导入 OAuth</button></div>
+      </div>` : ''}
+
+      ${tab === 'proxy' ? `
+      <div class="card stack-md">
+        <dl class="kv">
+          <dt>绑定</dt><dd class="mono">${esc(proxy.id || vm.proxy_id || '—')}</dd>
+          <dt>Host</dt><dd class="mono">${esc(proxy.host || '—')}</dd>
+          <dt>Port</dt><dd class="mono">${esc(proxy.port || '—')}</dd>
+          <dt>状态</dt><dd>${esc(proxy.status || '—')}</dd>
+        </dl>
+        <div class="actions"><button class="btn btn-outline btn-sm" onclick="allocateProxy('${esc(vm.id)}')">分配 / 更换 SOCKS5</button></div>
+      </div>` : ''}
+
+      ${tab === 'ops' ? `
+      <div class="card stack-md">
+        <div class="actions">
+          <button class="btn btn-outline btn-sm" onclick="startVm('${esc(vm.id)}')">开机</button>
+          <button class="btn btn-outline btn-sm" onclick="stopVm('${esc(vm.id)}')">关机</button>
+          <button class="btn btn-outline btn-sm" onclick="activateVm('${esc(vm.id)}')">设为活跃</button>
+          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')">探测</button>
+          <button class="btn btn-outline btn-sm" onclick="updateClaudeCode('${esc(vm.id)}')">更新 Claude Code</button>
+        </div>
+        <dl class="kv">
+          <dt>Claude Code</dt><dd>${esc(vm.claude_code_version || '—')}</dd>
+          <dt>device_id</dt><dd class="mono">${esc((vm.fingerprint && vm.fingerprint.device_id) || '—')}</dd>
+          <dt>session_id</dt><dd class="mono">${esc((vm.fingerprint && vm.fingerprint.session_id) || '—')}</dd>
+        </dl>
+        <div style="border-top:1px solid var(--line);padding-top:12px">
+          <div class="section-title">重置与删除</div>
+          <p class="text-xs faint" style="margin:4px 0 10px">重置保留虚拟机；删除会移除记录与 cli-home。${isActiveVm(vm.id) ? '当前为活跃节点，不可删除。' : ''}</p>
+          <div class="actions">
+            <button class="btn btn-outline btn-sm" onclick="resetFingerprint('${esc(vm.id)}')">重置指纹</button>
+            <button class="btn btn-outline btn-sm" onclick="openResetVm('${esc(vm.id)}')">重置…</button>
+            <button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="openDeleteVm('${esc(vm.id)}')">删除虚拟机</button>
+          </div>
+        </div>
+      </div>` : ''}
+    ${tab === 'seed' ? `
+      <div class="card stack-md">
+        <div class="section-title">种子 settings · 入站策略</div>
+        <p class="text-xs muted">以本 VM cli-home settings.json 为唯一源；可拒绝客户端 settings / 身份 metadata。</p>
+        <div class="form-grid" style="margin-top:10px">
+          <label class="check"><input id="seedTel" type="checkbox" ${state.seedSettings?.seed_policy?.telemetry_disabled!==false?'checked':''}/> 禁用遥测</label>
+          <label class="check"><input id="seedNonEss" type="checkbox" ${state.seedSettings?.seed_policy?.disable_nonessential_traffic!==false?'checked':''}/> 禁用非必要流量</label>
+          <label class="check"><input id="seedDnt" type="checkbox" ${state.seedSettings?.seed_policy?.do_not_track!==false?'checked':''}/> DO_NOT_TRACK</label>
+          <label class="check"><input id="seedRejSet" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_settings!==false?'checked':''}/> 拒绝客户端 settings</label>
+          <label class="check"><input id="seedRejMeta" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_metadata_identity!==false?'checked':''}/> 清洗客户端身份 metadata</label>
+          <label>主题
+            <select id="seedTheme" class="input">
+              <option value="dark" ${(state.seedSettings?.seed_policy?.theme||'dark')==='dark'?'selected':''}>dark</option>
+              <option value="light" ${state.seedSettings?.seed_policy?.theme==='light'?'selected':''}>light</option>
+            </select>
+          </label>
+        </div>
+        <label class="text-xs muted" style="display:block;margin-top:12px">settings.json 覆盖（可选 JSON）
+          <textarea id="seedOverride" class="input h-28 py-2 font-mono text-xs" style="margin-top:6px" placeholder="{&quot;env&quot;:{}}">${esc(state.seedSettings?.seed_policy?.settings_json_override ? JSON.stringify(state.seedSettings.seed_policy.settings_json_override, null, 2) : '')}</textarea>
+        </label>
+        <div class="actions" style="margin-top:12px">
+          <button class="btn btn-primary" onclick="saveSeedSettings('${esc(vm.id)}')">保存并写回 cli-home</button>
+          <button class="btn btn-outline" onclick="loadSeedSettings()">刷新</button>
+        </div>
+        <details style="margin-top:12px">
+          <summary class="text-xs muted" style="cursor:pointer">当前 settings.json</summary>
+          <pre class="text-xs overflow-auto max-h-48 p-3 border" style="margin-top:8px">${esc(JSON.stringify(state.seedSettings?.settings_json || {}, null, 2))}</pre>
+        </details>
+      </div>` : ''}
+    </div>
+  </section>`
+}
+
+/* ── import ──────────────────────────────────────────────── */
+function renderImport() {
+  const vms = state.dashboard?.vms || []
+  const selected = state.importVmId || state.selectedVm || ''
+  const vm = vms.find(v => v.id === selected) || {}
+  const hasProxy = !!(vm.proxy || vm.proxy_id)
+  const hasTok = !!vm.has_token
+  const step = !selected ? 1 : (!hasProxy ? 2 : (!hasTok ? 3 : 4))
+  const steps = [[1, '选择虚拟机'], [2, '分配 SOCKS5'], [3, 'sessionKey → OAuth'], [4, '开机']]
+  return `
+  <section class="section">
+    <div class="head"><div><div class="section-title">OAuth 导入</div><div class="sub">经代理转换凭证并写入虚拟机</div></div></div>
+    <div class="stepper">
+      ${steps.map(([n, t], i) => `
+        ${i ? '<span class="lnk"></span>' : ''}
+        <span class="st ${step > n ? 'done' : ''} ${step === n ? 'cur' : ''}">
+          <span class="n">${step > n ? '✓' : n}</span><span class="t">${t}</span>
+        </span>`).join('')}
+    </div>
+    <div class="card card-pad-lg stack-md">
+      <label class="text-xs faint" style="display:flex;flex-direction:column;gap:6px">虚拟机
+        <select id="importVmSelect" class="input" onchange="state.importVmId=this.value;render()">
+          <option value="">— 选择 —</option>
+          ${vms.map(v => `<option value="${esc(v.id)}" ${v.id === selected ? 'selected' : ''}>${esc(v.name || v.id)} · ${v.has_token ? '已有凭证' : '无凭证'} · ${v.proxy_id || v.proxy ? '有代理' : '无代理'}</option>`).join('')}
+        </select>
+      </label>
+      ${selected ? `
+      <div class="actions">
+        <span class="acc-pill ${accountStatus(vm).cls}">${accountStatus(vm).text}</span>
+        <span class="acc-pill ${hasProxy ? 'ok' : 'off'}">${hasProxy ? '代理已绑定' : '代理未绑定'}</span>
+        ${kernelTag(vm.kernel)}
+        <button class="btn btn-outline btn-sm" onclick="state.selectedVm='${esc(selected)}';allocateProxy('${esc(selected)}')">分配 SOCKS5</button>
+      </div>
+      <textarea id="importSessionKey" class="input" placeholder="sessionKey (sk-ant-sid…) 或 access_token"></textarea>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="importOAuthWorkflow()">经代理转换 OAuth</button>
+        <button class="btn btn-outline" onclick="startVm('${esc(selected)}')">开机</button>
+        <button class="btn btn-outline" onclick="activateVm('${esc(selected)}')">设为活跃</button>
+      </div>` : emptyBox('请选择虚拟机 · 没有可用节点请先到「虚拟机」创建')}
+    </div>
+  </section>`
+}
+
+/* ── usage ───────────────────────────────────────────────── */
+function statTile(k, v, s) {
+  return `<div class="stat-tile"><div class="k">${esc(k)}</div><div class="v">${v}</div>${s ? `<div class="s">${esc(s)}</div>` : ''}</div>`
+}
+function renderUsage() {
+  const u = state.usage || {}
+  if (u.error) return emptyBox('加载失败: ' + u.error)
+  const accounts = u.accounts || []
+  const s = u.totals || state.dashboard?.summary || {}
+  const near = accounts.filter(a => a.near_limit || pct(a.utilization_5h) >= 95).length
+  const safety = (Number(u.safety_ratio || 0.95) * 100).toFixed(0)
+  const peak5 = pct(s.peak_5h ?? s.peak_5h_utilization)
+  const peak7 = pct(s.peak_7d ?? s.peak_7d_utilization)
+  return `
+  <section class="section">
+    <div class="head">
+      <div><div class="section-title">用量</div><div class="sub">${accounts.length} 账号 · ${near} 近限额 · 安全线 ${safety}%</div></div>
+      <button class="btn btn-outline btn-sm" onclick="probeAll()">全量探测</button>
+    </div>
+    <div class="stat-hero">
+      ${statTile('账号', s.account_count ?? accounts.length, `${near} 近限额`)}
+      ${statTile('5h 峰值', peak5.toFixed(0) + '<small>%</small>', `7d ${peak7.toFixed(0)}%`)}
+      ${statTile('请求', fmtNum(s.requests || 0), '')}
+      ${statTile('Tokens In / Out', `${fmtNum(s.tokens_in || 0)}<small> / ${fmtNum(s.tokens_out || 0)}</small>`, '')}
+    </div>
+    <div class="card">
+      <table class="table">
+        <thead><tr><th>账号 / 节点</th><th style="width:150px">5h</th><th style="width:150px">7d</th><th>并发</th><th>请求</th><th class="right">状态</th></tr></thead>
+        <tbody>
+          ${accounts.map(a => {
+            const p5 = pct(a.utilization_5h), p7 = pct(a.utilization_7d)
+            const nearL = !!(a.near_limit || p5 >= 95)
+            return `<tr class="${nearL ? 'near-limit' : ''}">
+              <td>
+                <div>${esc(a.email || a.account_id)}</div>
+                <div class="text-xs faint"><a href="#/vm/${esc(a.vm_id || '')}">${esc(a.vm_id || '')}</a></div>
+              </td>
+              <td>${meter('', p5)}</td>
+              <td>${meter('', p7)}</td>
+              <td class="num">${a.inflight || 0} / ${a.max_concurrency || 2}</td>
+              <td class="num">${fmtNum(a.requests || 0)}</td>
+              <td class="right">${nearL ? '<span class="badge danger">近限额</span>' : '<span class="badge ok">正常</span>'}</td>
+            </tr>`
+          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">暂无数据，请先探测</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <div class="text-xs faint">utilization ≥ ${safety}% 时拒绝新请求，避免打满 5h / 周限额。</div>
+  </section>`
+}
+
+/* ── protocol ────────────────────────────────────────────── */
+function renderProtocol() {
+  const models = state.models?.items || []
+  const base = (state.dashboard?.health?.base_url) || (location.origin) || 'https://kin.fkcodex.com'
+  const endpoints = [
+    ['Chat Completions', '/v1/chat/completions'],
+    ['Responses', '/v1/responses'],
+    ['Messages', '/v1/messages'],
+    ['Models', '/v1/models'],
+  ]
+  return `
+  <section class="section">
+    <div class="grid-3">
+      <div class="card stack-sm">
+        <div class="row"><span class="text-xs faint">Base URL</span><button class="btn btn-ghost btn-sm" onclick="copyText('${esc(base)}')">复制</button></div>
+        <div class="mono text-sm" style="word-break:break-all">${esc(base)}</div>
+      </div>
+      <div class="card stack-sm">
+        <div class="text-xs faint">鉴权</div>
+        <div class="text-sm">Bearer / x-api-key</div>
+        <div class="text-xs faint">面板 Cookie · kin-panel token</div>
+      </div>
+      <div class="card stack-sm">
+        <div class="text-xs faint">上游</div>
+        <div class="text-sm">VM · Claude Code CLI</div>
+        <div class="text-xs faint">真流式 · thinking 透传</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title" style="margin-bottom:6px">接入端点</div>
+      ${endpoints.map(([n, p]) => `<div class="endpoint-row"><span>${esc(n)}</span><code>${esc(base.replace(/\/$/, ''))}${esc(p)}</code></div>`).join('')}
+    </div>
+    <div class="head">
+      <div><div class="section-title">模型</div><div class="sub">${models.length} 个可用</div></div>
+      <button class="btn btn-outline btn-sm" onclick="refresh()">刷新</button>
+    </div>
+    ${state.models?.error || (state.models?.note && !models.length) ? `<p class="text-xs danger" style="margin:0">${esc(state.models.error || state.models.note)}</p>` : ''}
+    <div class="model-grid">
+      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型')}
+    </div>
+  </section>`
+}
+
+/* ── settings ────────────────────────────────────────────── */
+function renderSettings() {
+  const r = state.routing || {}
+  if (r.error) return emptyBox('加载失败: ' + r.error)
+  const st = r.sticky || {}
+  const q = r.quota || {}
+  const c = r.concurrency || {}
+  const sessions = r.sessions || {}
+  const active = sessions.sessions || sessions
+  const sessionCount = sessions.active_sessions ?? (active && typeof active === 'object' && !Array.isArray(active) ? Object.keys(active).length : 0)
+  return `
+  <section class="section">
+    <div class="card card-pad-lg stack-md">
+      <div class="section-title">粘性路由</div>
+      <div class="form-grid">
+        <label>模式
+          <select id="st_mode" class="input">
+            <option value="conversation" ${st.mode === 'conversation' ? 'selected' : ''}>conversation</option>
+            <option value="session" ${st.mode === 'session' ? 'selected' : ''}>session</option>
+            <option value="ip" ${st.mode === 'ip' ? 'selected' : ''}>ip</option>
+          </select>
+        </label>
+        <label>TTL（秒）<input id="st_ttl" class="input" type="number" min="60" value="${esc(st.ttl_seconds ?? 86400)}" /></label>
+        <label class="check"><input id="st_enabled" type="checkbox" ${st.enabled !== false ? 'checked' : ''}/> 启用粘性</label>
+      </div>
+    </div>
+    <div class="card card-pad-lg stack-md">
+      <div class="section-title">额度 / 并发</div>
+      <div class="form-grid">
+        <label>安全线（0–1）<input id="q_safety" class="input" type="number" step="0.01" min="0.5" max="1" value="${esc(q.safety_ratio ?? 0.95)}" /></label>
+        <label>警告线（0–1）<input id="q_warn" class="input" type="number" step="0.01" min="0.5" max="1" value="${esc(q.warn_ratio ?? 0.85)}" /></label>
+        <label>默认并发 / 账号<input id="c_max" class="input" type="number" min="1" max="32" value="${esc(c.default_max_per_account ?? 2)}" /></label>
+        <label class="check"><input id="q_block5" type="checkbox" ${q.block_on_5h !== false ? 'checked' : ''}/> 拦截 5h 超额</label>
+        <label class="check"><input id="q_block7" type="checkbox" ${q.block_on_7d !== false ? 'checked' : ''}/> 拦截 7d 超额</label>
+      </div>
+      <div class="actions"><button class="btn btn-primary" onclick="saveRouting()">保存</button></div>
+    </div>
+    <details class="import-box">
+      <summary>粘性会话 ${sessionCount}</summary>
+      <div class="body"><pre class="json">${esc(JSON.stringify(sessions, null, 2))}</pre></div>
+    </details>
+  </section>`
+}
+
+async function saveRouting() {
+  try {
+    const body = {
+      sticky: {
+        enabled: !!document.getElementById('st_enabled')?.checked,
+        mode: document.getElementById('st_mode')?.value || 'conversation',
+        ttl_seconds: Number(document.getElementById('st_ttl')?.value || 86400),
+      },
+      quota: {
+        safety_ratio: Number(document.getElementById('q_safety')?.value || 0.95),
+        warn_ratio: Number(document.getElementById('q_warn')?.value || 0.85),
+        block_on_5h: !!document.getElementById('q_block5')?.checked,
+        block_on_7d: !!document.getElementById('q_block7')?.checked,
+      },
+      concurrency: {
+        default_max_per_account: Number(document.getElementById('c_max')?.value || 2),
+      },
+    }
+    await api('/api/panel/routing', { method: 'PUT', body: JSON.stringify(body) })
+    toast('已保存')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+
+/* ── proxies ─────────────────────────────────────────────── */
+async function importProxies() {
+  const text = document.getElementById('proxyImport')?.value || ''
+  if (!text.trim()) { toast('请粘贴 SOCKS5 列表'); return }
+  try {
+    const r = await api('/api/panel/proxies/import', { method: 'POST', body: JSON.stringify({ text }) })
+    const d = r.data || r
+    toast(`导入 +${d.added} 跳过 ${d.skipped}`)
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function probeProxies() {
+  try {
+    toast('探测代理池…')
+    await api('/api/panel/proxies/probe', { method: 'POST' })
+    toast('探测完成')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function probeProxyOne(id) {
+  try {
+    await api('/api/panel/proxies/' + id + '/probe', { method: 'POST' })
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function enableProxy(id, on) {
+  try {
+    await api('/api/panel/proxies/' + id + '/' + (on ? 'enable' : 'disable'), { method: 'POST' })
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function unbindProxy(id) {
+  try {
+    await api('/api/panel/proxies/' + id + '/unbind', { method: 'POST' })
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function setProbeInterval(min) {
+  try {
+    await api('/api/panel/proxies/config', { method: 'PUT', body: JSON.stringify({ probe_interval_min: Number(min) }) })
+    toast('探测间隔 ' + min + ' 分钟')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function allocateProxy(vmId) {
+  try {
+    const r = await api('/api/panel/vms/' + vmId + '/allocate-proxy', { method: 'POST' })
+    toast('已绑定 ' + (r.data?.id || ''))
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+function vmNameById(id) {
+  if (!id) return ''
+  const v = (state.dashboard?.vms || []).find(x => x.id === id)
+  return v ? (v.name || v.id) : id
+}
+function renderProxies() {
+  const px = state.proxies || {}
+  if (px.error) return emptyBox('加载失败: ' + px.error)
+  const cfg = px.config || {}
+  const tot = px.totals || {}
+  const list = px.proxies || []
+  const interval = cfg.probe_interval_min || 10
+  return `
+  <section class="section">
+    <div class="head">
+      <div><div class="section-title">代理池</div><div class="sub">${tot.total ?? list.length} 条 · ${tot.free ?? 0} 空闲 · ${tot.bound ?? 0} 已绑定</div></div>
+      <div class="toolbar">
+        <span class="text-xs faint">探测间隔</span>
+        <div class="seg">${[5, 10, 30, 60].map(m => `<button class="${interval === m ? 'on' : ''}" onclick="setProbeInterval(${m})">${m}m</button>`).join('')}</div>
+        <button class="btn btn-outline btn-sm" onclick="probeProxies()">全量探测</button>
+      </div>
+    </div>
+    <div class="stat-hero">
+      ${statTile('总数', tot.total ?? list.length, '')}
+      ${statTile('空闲', tot.free ?? 0, '')}
+      ${statTile('已绑定', tot.bound ?? 0, '')}
+      ${statTile('健康 / 停用', `${tot.ok ?? 0}<small> / ${tot.dead ?? 0}</small>`, '')}
+    </div>
+    <details class="import-box">
+      <summary>导入 SOCKS5</summary>
+      <div class="body">
+        <textarea id="proxyImport" class="input" placeholder="每行一条&#10;socks5://user:pass@host:port&#10;host:port:user:pass"></textarea>
+        <div><button class="btn btn-primary btn-sm" onclick="importProxies()">导入</button></div>
+      </div>
+    </details>
+    <div class="card">
+      <table class="table">
+        <thead><tr><th>代理</th><th>状态</th><th>延迟</th><th>绑定节点</th><th>失败</th><th class="right">操作</th></tr></thead>
+        <tbody>
+          ${list.map(p => {
+            const dead = p.status === 'dead' || p.enabled === false
+            return `<tr class="${dead ? 'dead-row' : ''}">
+              <td>
+                <div class="mono">${esc(p.host)}:${esc(p.port)}</div>
+                <div class="text-xs faint">${esc(p.id)}${p.has_auth ? ' · auth' : ''}</div>
+              </td>
+              <td><span class="badge ${p.status === 'ok' ? 'ok' : dead ? 'danger' : 'warn'}">${esc(p.status || '—')}</span>${p.enabled === false ? ' <span class="text-xs faint">停用</span>' : ''}</td>
+              <td class="num">${p.latency_ms != null ? p.latency_ms + 'ms' : '—'}</td>
+              <td class="text-xs">${p.bound_vm_id ? `<a href="#/vm/${esc(p.bound_vm_id)}">${esc(vmNameById(p.bound_vm_id))}</a>` : '—'}</td>
+              <td class="num">${p.consecutive_failures || 0}${p.last_error ? ` <span class="text-xs faint">${esc(p.last_error)}</span>` : ''}</td>
+              <td class="right">
+                <button class="btn btn-ghost btn-sm" onclick="probeProxyOne('${esc(p.id)}')">探测</button>
+                ${p.enabled
+                  ? `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(p.id)}', false)">停用</button>`
+                  : `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(p.id)}', true)">启用</button>`}
+                ${p.bound_vm_id ? `<button class="btn btn-ghost btn-sm" onclick="unbindProxy('${esc(p.id)}')">解绑</button>` : ''}
+              </td>
+            </tr>`
+          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">池为空，展开上方导入</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  </section>`
+}
+
+/* ── vm actions ──────────────────────────────────────────── */
+async function createVmFromPage() {
+  const name = document.getElementById('vmCreateName')?.value?.trim() || ''
+  const id = document.getElementById('vmCreateId')?.value?.trim() || undefined
+  const note = document.getElementById('vmCreateNote')?.value?.trim() || undefined
+  const kernelCustom = document.getElementById('vmCreateKernelCustom')?.value?.trim()
+  const kernel = kernelCustom || document.getElementById('vmCreateKernel')?.value || state.kernel || 'unikernel-min'
+  const timezone = document.getElementById('vmCreateTz')?.value || 'America/Los_Angeles'
+  const locale = document.getElementById('vmCreateLocale')?.value || 'en_US.UTF-8'
+  const region = document.getElementById('vmCreateRegion')?.value?.trim() || undefined
+  const max_concurrency = Number(document.getElementById('vmCreateConc')?.value || 2)
+  const weight = Number(document.getElementById('vmCreateWeight')?.value || 1)
+  const claude_code_version = document.getElementById('vmCreateCC')?.value?.trim() || undefined
+  const start = !!document.getElementById('vmCreateStart')?.checked
+  const auto_allocate_proxy = !!document.getElementById('vmCreateProxy')?.checked
+  const activate = !!document.getElementById('vmCreateActive')?.checked
+  const proxy_cli_enabled = !!document.getElementById('vmCreateProxyCli')?.checked
+  try {
+    const body = {
+      name: name || undefined, id, note, kernel, timezone, locale, region,
+      max_concurrency, weight, claude_code_version,
+      start, auto_allocate_proxy, activate, proxy_cli_enabled,
+    }
+    const r = await api('/api/panel/vms/create', { method: 'POST', body: JSON.stringify(body) })
+    const d = r.data || r
+    state.createName = ''
+    toast('已创建 ' + (d.vm?.id || '') + (d.allocated_proxy ? ' · 已分配代理' : ''))
+    await refresh()
+    if (d.vm?.id) openVm(d.vm.id)
+  } catch (e) { toast(e.message, 'err') }
+}
+
+async function importOAuthWorkflow() {
+  const id = state.importVmId || document.getElementById('importVmSelect')?.value
+  const sessionKey = document.getElementById('importSessionKey')?.value?.trim() || ''
+  if (!id) { toast('请选择虚拟机', 'err'); return }
+  if (!sessionKey) { toast('请填写 sessionKey', 'err'); return }
+  try {
+    toast('经 SOCKS 转换…')
+    const body = { vm_id: id, start: false, activate: false }
+    if (/^sk-ant-sid/i.test(sessionKey)) body.sessionKey = sessionKey
+    else body.access_token = sessionKey
+    const r = await api('/api/panel/vms/import', { method: 'POST', body: JSON.stringify(body) })
+    const d = r.data || r
+    toast('已导入 ' + (d.oauth_email || id) + (d.proxy_used ? ' · SOCKS' : ''))
+    const el = document.getElementById('importSessionKey')
+    if (el) el.value = ''
+    await refresh()
+  } catch (e) { toast(e.message, 'err') }
+}
+
+async function startVm(id) {
+  try {
+    await api('/api/panel/vms/' + id + '/start', { method: 'POST' })
+    toast('已开机')
+    await refresh()
+    if (state.selectedVm === id) openVm(id)
+  } catch (e) { toast(e.message, 'err') }
+}
+async function stopVm(id) {
+  try {
+    await api('/api/panel/vms/' + id + '/stop', { method: 'POST' })
+    toast('已关机')
+    await refresh()
+    if (state.selectedVm === id) openVm(id)
+  } catch (e) { toast(e.message, 'err') }
+}
+async function activateVm(id) {
+  try {
+    await api('/api/panel/vms/' + id + '/activate', { method: 'POST' })
+    toast('已设为活跃')
+    await refresh()
+  } catch (e) { toast(e.message, 'err') }
+}
+async function updateClaudeCode(id) {
+  try {
+    toast('更新 Claude Code…')
+    const r = await api('/api/panel/vms/' + id + '/update-claude-code', { method: 'POST', body: JSON.stringify({}) })
+    const d = r.data || r
+    toast('Claude Code ' + (d.version || 'ok'))
+    await refresh()
+    if (state.selectedVm === id) openVm(id)
+  } catch (e) { toast(e.message, 'err') }
+}
+async function resetFingerprint(id) {
+  try {
+    await api('/api/panel/vms/' + id + '/reset-fingerprint', { method: 'POST' })
+    toast('指纹已重置')
+    await refresh()
+    if (state.selectedVm === id) openVm(id)
+  } catch (e) { toast(e.message, 'err') }
+}
+
+/* ── 重置 / 删除 ─────────────────────────────────────────── */
+let modalVmId = null
+function openModal(html) {
+  const root = document.getElementById('modalRoot')
+  if (!root) return
+  root.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`
+  root.classList.remove('hidden')
+}
+function closeModal() {
+  const root = document.getElementById('modalRoot')
+  if (!root) return
+  root.classList.add('hidden')
+  root.innerHTML = ''
+  modalVmId = null
+}
+function vmById(id) { return (state.dashboard?.vms || []).find(v => v.id === id) || null }
+function isActiveVm(id) {
+  if (!id) return false
+  const v = vmById(id)
+  return !!(v && v.active) || state.dashboard?.summary?.active_vm === id
+}
+function vmLabel(id) {
+  const v = vmById(id)
+  const name = v?.name || state.detail?.vm?.name || ''
+  return (name && name !== id ? esc(name) + ' · ' : '') + `<span class="mono">${esc(id)}</span>`
+}
+
+function openResetVm(id) {
+  modalVmId = id
+  openModal(`
+    <h3>重置虚拟机</h3>
+    <p class="who">${vmLabel(id)}</p>
+    <label class="opt"><input id="rsStats" type="checkbox" checked /><span><b>清统计</b><em>用量、请求计数归零</em></span></label>
+    <label class="opt"><input id="rsFp" type="checkbox" checked /><span><b>重置指纹</b><em>重新生成 device_id / session_id</em></span></label>
+    <label class="opt"><input id="rsSeed" type="checkbox" checked /><span><b>重写种子 settings</b><em>按当前策略重建 cli-home</em></span></label>
+    <label class="opt"><input id="rsOauth" type="checkbox" /><span><b>清除 OAuth</b><em>删除凭证并停机，需重新导入</em></span></label>
+    <div class="foot">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">取消</button>
+      <button class="btn btn-danger btn-sm" id="rsGo" onclick="doResetVm()">执行重置</button>
+    </div>`)
+}
+async function doResetVm() {
+  const id = modalVmId
+  if (!id) return
+  const body = {
+    clear_stats: !!document.getElementById('rsStats')?.checked,
+    reset_fingerprint: !!document.getElementById('rsFp')?.checked,
+    reseed_cli_home: !!document.getElementById('rsSeed')?.checked,
+    clear_oauth: !!document.getElementById('rsOauth')?.checked,
+  }
+  const btn = document.getElementById('rsGo')
+  if (btn) { btn.disabled = true; btn.textContent = '重置中…' }
+  try {
+    await api('/api/panel/vms/' + encodeURIComponent(id) + '/reset', { method: 'POST', body: JSON.stringify(body) })
+    closeModal()
+    toast('已重置 ' + id + (body.clear_oauth ? ' · 凭证已清除' : ''))
+    await refresh()
+    if (state.selectedVm === id) openVm(id)
+  } catch (e) {
+    toast(e.message, 'err')
+    if (btn) { btn.disabled = false; btn.textContent = '执行重置' }
+  }
+}
+
+function openDeleteVm(id) {
+  modalVmId = id
+  const active = isActiveVm(id)
+  openModal(`
+    <h3 class="danger">删除虚拟机</h3>
+    <p class="who">${vmLabel(id)}</p>
+    <div class="danger-box">将永久删除 <b class="mono">${esc(id)}</b> 的记录与 cli-home（含 OAuth 凭证），不可恢复。</div>
+    ${active ? `<p class="text-xs faint" style="margin:0">该节点为当前活跃节点，需先把活跃切到其它节点。</p>` : ''}
+    <label class="text-xs faint" style="display:flex;flex-direction:column;gap:6px">输入 <span class="mono">${esc(id)}</span> 以确认
+      <input id="delConfirm" class="input mono" autocomplete="off" spellcheck="false" placeholder="${esc(id)}"
+             oninput="syncDeleteBtn()" onkeydown="if(event.key==='Enter')doDeleteVm()" />
+    </label>
+    <div class="foot">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">取消</button>
+      <button class="btn btn-danger btn-sm" id="delGo" disabled onclick="doDeleteVm()">永久删除</button>
+    </div>`)
+  setTimeout(() => document.getElementById('delConfirm')?.focus(), 0)
+}
+function deleteConfirmed() {
+  return !!modalVmId && (document.getElementById('delConfirm')?.value || '').trim() === modalVmId
+}
+function syncDeleteBtn() {
+  const btn = document.getElementById('delGo')
+  if (btn) btn.disabled = !deleteConfirmed()
+}
+async function doDeleteVm() {
+  const id = modalVmId
+  if (!id || !deleteConfirmed()) return
+  const wasSelected = state.selectedVm === id
+  const btn = document.getElementById('delGo')
+  if (btn) { btn.disabled = true; btn.textContent = '删除中…' }
+  try {
+    await api('/api/panel/vms/' + encodeURIComponent(id), { method: 'DELETE' })
+    closeModal()
+    toast('已删除 ' + id)
+    await refresh()
+    if (wasSelected) {
+      state.selectedVm = null
+      state.detail = null
+      if (location.hash.replace(/^#\/?/, '').startsWith('vm/')) { location.hash = '#/vm'; return }
+    }
+    render()
+  } catch (e) {
+    toast(e.message, 'err')
+    if (btn) { btn.disabled = false; btn.textContent = '永久删除' }
+  }
+}
+
+/* ── router ──────────────────────────────────────────────── */
+function render() {
+  const views = { overview: renderOverview, cluster: renderCluster, vm: renderVm, import: renderImport, usage: renderUsage, protocol: renderProtocol, proxies: renderProxies, settings: renderSettings }
+  const fn = views[state.view] || renderOverview
+  const main = document.getElementById('main')
+  if (!key()) {
+    main.innerHTML = '<p class="text-sm faint">请先登录</p>'
+    return
+  }
+  try {
+    if (state.loading && !state.dashboard) {
+      main.innerHTML = skeleton(state.view === 'usage' || state.view === 'proxies' ? 'table' : 'cards')
+      return
+    }
+    main.innerHTML = fn()
+  } catch (e) {
+    main.innerHTML = '<p class="text-sm danger">渲染错误: ' + esc(e.message) + '</p>'
+  }
+}
+
+document.getElementById('nav')?.addEventListener('click', (e) => {
+  const item = e.target.closest('.nav-item')
+  if (!item) return
+  go(item.dataset.view)
+})
+window.addEventListener('hashchange', () => applyRoute())
+
+function parseHash() {
+  const h = (location.hash || '#/overview').replace(/^#\/?/, '')
+  const parts = h.split('/').filter(Boolean)
+  const view = parts[0] || 'overview'
+  const id = parts[1] || null
+  return { view, id }
+}
+function go(view, id) {
+  const path = id ? `#/${view}/${id}` : `#/${view}`
+  if (location.hash === path) {
+    applyRoute()
+    return
+  }
+  location.hash = path
+}
+function applyRoute() {
+  const { view, id } = parseHash()
+  const known = titles[view] ? view : 'overview'
+  state.view = known
+  if (id) state.selectedVm = id
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === known))
+  const pair = titles[known] || ['', '']
+  const pt = document.getElementById('pageTitle')
+  const pd = document.getElementById('pageDesc')
+  if (pt) pt.textContent = pair[0]
+  if (pd) pd.textContent = pair[1]
+  if (known === 'vm' && id) {
+    openVm(id)
+    return
+  }
+  render()
+}
+
+function bootstrap() {
+  if (bootstrapped) return
+  bootstrapped = true
+  const u = localStorage.getItem(LS_USER) || ''
+  const tok = key()
+  const base = localStorage.getItem(LS_BASE) || ''
+  const baseEl = document.getElementById('loginBaseInput')
+  if (baseEl && base) baseEl.value = base
+  if (tok) {
+    setSession(tok, u || 'admin')
+    showApp(u || 'admin')
+    refresh().then(() => applyRoute())
+  } else {
+    showLogin()
+    document.getElementById('main').innerHTML = '<p class="text-sm faint">请登录后继续</p>'
+  }
+}
+bootstrap()
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "base_url": "http://127.0.0.1:8787",
+  "api_key": "sk-kin-tes…ge-001",
+  "vm_id": "vm-2ba14a",
+  "email": "0617612053b@gmail.com",
+  "endpoints": {
+    "models": "/v1/models",
+    "chat_completions": "/v1/chat/completions",
+    "responses": "/v1/responses",
+    "messages": "/v1/messages"
+  },
+  "created_at": "2026-08-16T07:33:28.698Z"
+}
