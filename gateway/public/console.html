@@ -11,41 +11,161 @@
       theme: {
         extend: {
           colors: {
-            border: 'hsl(240 3.7% 15.9%)',
-            background: 'hsl(240 10% 3.9%)',
-            foreground: 'hsl(0 0% 98%)',
-            card: { DEFAULT: 'hsl(240 10% 6.5%)', foreground: 'hsl(0 0% 98%)' },
-            muted: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(240 5% 64.9%)' },
-            primary: { DEFAULT: 'hsl(0 0% 98%)', foreground: 'hsl(240 5.9% 10%)' },
-            accent: { DEFAULT: 'hsl(240 4% 16%)', foreground: 'hsl(0 0% 98%)' },
-            success: 'hsl(142 70% 40%)',
-            warning: 'hsl(38 92% 45%)',
-            danger: 'hsl(0 72% 51%)',
+            border: 'var(--border)',
+            input: 'var(--input)',
+            ring: 'var(--ring)',
+            background: 'var(--background)',
+            foreground: 'var(--foreground)',
+            primary: { DEFAULT: 'var(--primary)', foreground: 'var(--primary-foreground)' },
+            secondary: { DEFAULT: 'var(--secondary)', foreground: 'var(--secondary-foreground)' },
+            destructive: { DEFAULT: 'var(--destructive)', foreground: 'var(--destructive-foreground)' },
+            muted: { DEFAULT: 'var(--muted)', foreground: 'var(--muted-foreground)' },
+            accent: { DEFAULT: 'var(--accent)', foreground: 'var(--accent-foreground)' },
+            card: { DEFAULT: 'var(--card)', foreground: 'var(--card-foreground)' },
+            popover: { DEFAULT: 'var(--popover)', foreground: 'var(--popover-foreground)' },
+            sidebar: { DEFAULT: 'var(--sidebar)', foreground: 'var(--sidebar-foreground)', border: 'var(--sidebar-border)', accent: 'var(--sidebar-accent)' },
+            success: 'oklch(0.72 0.17 145)',
+            warning: 'oklch(0.78 0.16 75)',
+            danger: 'oklch(0.704 0.191 22.216)',
           },
-          borderRadius: { lg: '0.75rem', md: '0.5rem', sm: '0.375rem' },
+          borderRadius: {
+            lg: 'var(--radius)',
+            md: 'calc(var(--radius) - 2px)',
+            sm: 'calc(var(--radius) - 4px)',
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+          },
         }
       }
     }
   </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    .nav-item { @apply flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground cursor-pointer transition-colors; }
-    .nav-item.active { @apply bg-accent text-foreground font-medium; }
-    .card { @apply rounded-lg border border-border bg-card p-4 shadow-sm; }
-    .btn { @apply inline-flex items-center justify-center rounded-md text-sm font-medium h-9 px-3 transition-colors disabled:opacity-50; }
-    .btn-primary { @apply bg-primary text-primary-foreground hover:opacity-90; }
-    .btn-ghost { @apply hover:bg-accent; }
-    .btn-outline { @apply border border-border hover:bg-accent; }
-    .input { @apply h-9 w-full rounded-md border border-border bg-transparent px-3 text-sm; }
-    .badge { @apply inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs; }
-    .progress { @apply h-2 w-full overflow-hidden rounded-full bg-muted; }
-    .progress > i { @apply block h-full rounded-full transition-all; }
-    .layer-tag { @apply text-[10px] uppercase tracking-wider text-muted-foreground; }
+    /* shadcn/ui slate · dark (from satnaing/shadcn-admin theme.css) */
+    :root {
+      --radius: 0.625rem;
+    }
+    .dark {
+      --background: oklch(0.129 0.042 264.695);
+      --foreground: oklch(0.984 0.003 247.858);
+      --card: oklch(0.14 0.04 259.21);
+      --card-foreground: oklch(0.984 0.003 247.858);
+      --popover: oklch(0.208 0.042 265.755);
+      --popover-foreground: oklch(0.984 0.003 247.858);
+      --primary: oklch(0.929 0.013 255.508);
+      --primary-foreground: oklch(0.208 0.042 265.755);
+      --secondary: oklch(0.279 0.041 260.031);
+      --secondary-foreground: oklch(0.984 0.003 247.858);
+      --muted: oklch(0.279 0.041 260.031);
+      --muted-foreground: oklch(0.704 0.04 256.788);
+      --accent: oklch(0.279 0.041 260.031);
+      --accent-foreground: oklch(0.984 0.003 247.858);
+      --destructive: oklch(0.704 0.191 22.216);
+      --destructive-foreground: oklch(0.984 0.003 247.858);
+      --border: oklch(1 0 0 / 10%);
+      --input: oklch(1 0 0 / 15%);
+      --ring: oklch(0.551 0.027 264.364);
+      --sidebar: oklch(0.129 0.042 264.695);
+      --sidebar-foreground: oklch(0.984 0.003 247.858);
+      --sidebar-border: oklch(1 0 0 / 10%);
+      --sidebar-accent: oklch(0.279 0.041 260.031);
+    }
+    * { border-color: var(--border); }
+    body {
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: var(--background);
+      color: var(--foreground);
+      -webkit-font-smoothing: antialiased;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 0.5rem;
+      border-radius: calc(var(--radius) - 2px);
+      padding: 0.5rem 0.75rem;
+      font-size: 0.875rem; line-height: 1.25rem;
+      color: var(--muted-foreground);
+      cursor: pointer; transition: color .15s, background .15s;
+    }
+    .nav-item:hover { background: var(--accent); color: var(--accent-foreground); }
+    .nav-item.active { background: var(--accent); color: var(--accent-foreground); font-weight: 500; }
+    .card {
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--card-foreground);
+      padding: 1rem;
+      box-shadow: 0 1px 2px oklch(0 0 0 / 6%);
+    }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 2.25rem; padding: 0 0.75rem;
+      border-radius: calc(var(--radius) - 2px);
+      font-size: 0.875rem; font-weight: 500;
+      transition: background .15s, opacity .15s, border-color .15s;
+      cursor: pointer;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--primary); color: var(--primary-foreground); border: none;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-ghost { background: transparent; color: var(--foreground); border: none; }
+    .btn-ghost:hover { background: var(--accent); }
+    .btn-outline {
+      background: transparent; color: var(--foreground);
+      border: 1px solid var(--border);
+    }
+    .btn-outline:hover { background: var(--accent); }
+    .input {
+      height: 2.25rem; width: 100%;
+      border-radius: calc(var(--radius) - 2px);
+      border: 1px solid var(--input);
+      background: transparent;
+      color: var(--foreground);
+      padding: 0 0.75rem;
+      font-size: 0.875rem;
+      outline: none;
+    }
+    .input:focus {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 2px oklch(0.551 0.027 264.364 / 35%);
+    }
+    .input::placeholder { color: var(--muted-foreground); }
+    .badge {
+      display: inline-flex; align-items: center;
+      border-radius: calc(var(--radius) - 2px);
+      border: 1px solid var(--border);
+      padding: 0.125rem 0.5rem;
+      font-size: 0.75rem;
+      color: var(--muted-foreground);
+      background: transparent;
+    }
+    .progress {
+      height: 0.5rem; width: 100%;
+      overflow: hidden; border-radius: 9999px;
+      background: var(--muted);
+    }
+    .progress > i { display: block; height: 100%; border-radius: 9999px; transition: width .2s; }
+    .layer-tag {
+      font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--muted-foreground); font-weight: 500;
+    }
+    #loginGate {
+      background: oklch(0.129 0.042 264.695 / 0.92);
+      backdrop-filter: blur(8px);
+    }
+    textarea.input {
+      height: auto; min-height: 5.5rem; padding: 0.6rem 0.75rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.8rem;
+    }
   </style>
 </head>
-<body class="min-h-screen bg-background text-foreground flex">
+<body class="min-h-screen bg-background text-foreground flex font-sans antialiased">
   <!-- Sidebar: hierarchy -->
-  <aside class="w-56 shrink-0 border-r border-border flex flex-col">
+  <aside class="w-56 shrink-0 border-r border-sidebar-border bg-sidebar text-sidebar-foreground flex flex-col">
     <div class="p-4 border-b border-border">
       <div class="text-base font-semibold tracking-tight">种核 KIN</div>
       <div class="text-xs text-muted-foreground mt-0.5">多虚拟机 · Claude Code 网关</div>
@@ -151,10 +271,10 @@ async function api(path, opts={}) {
   return j.data !== undefined ? j.data : j
 }
 function pct(u) { if (u==null) return 0; const n=Number(u); return n>1?n:n*100 }
-function barColor(p) { if (p>=95) return 'var(--danger, #ef4444)'; if (p>=85) return '#f59e0b'; return '#22c55e' }
+function barColor(p) { if (p>=95) return 'var(--destructive)'; if (p>=85) return 'oklch(0.78 0.16 75)'; return 'oklch(0.72 0.17 145)' }
 function toast(m) {
   const el = document.createElement('div')
-  el.className = 'fixed bottom-4 right-4 z-50 rounded-md bg-primary text-primary-foreground px-3 py-2 text-sm shadow-lg'
+  el.className = 'fixed bottom-4 right-4 z-50 rounded-md border border-border bg-popover text-popover-foreground px-3 py-2 text-sm shadow-md'
   el.textContent = m
   document.body.appendChild(el)
   setTimeout(() => el.remove(), 2200)
@@ -611,19 +731,19 @@ else document.getElementById('main').innerHTML = '<p class="text-sm text-muted-f
 </script>
 
 <!-- Login gate -->
-<div id="loginGate" class="fixed inset-0 z-50 flex items-center justify-center bg-background/95 backdrop-blur-sm">
-  <div class="card w-full max-w-sm space-y-4">
+<div id="loginGate" class="fixed inset-0 z-50 flex items-center justify-center">
+  <div class="card w-full max-w-sm space-y-4 shadow-lg">
     <div>
-      <div class="text-base font-semibold">种核 KIN</div>
+      <div class="text-base font-semibold tracking-tight">种核 KIN</div>
       <div class="text-xs text-muted-foreground mt-1">管理台登录</div>
     </div>
     <div class="space-y-2">
-      <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" />
+      <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
       <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
       <input id="loginBaseInput" class="input" placeholder="API Base（可空=同源）" />
     </div>
     <button class="btn btn-primary w-full" onclick="doLogin()">登录</button>
-    <p id="loginErr" class="text-xs text-danger hidden"></p>
+    <p id="loginErr" class="text-xs text-destructive hidden"></p>
   </div>
 </div>
 
