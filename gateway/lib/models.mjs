@@ -37,76 +37,90 @@ export async function fetchOfficialModels(accessToken, { force = false, timeoutM
     return { ...cache.data, source: 'cache', cached_at: new Date(cache.at).toISOString() }
   }
 
-  if (!accessToken) {
-    return { object: 'list', data: listOfficialModels(), source: 'fallback_static' }
-  }
+  const tokens = Array.isArray(accessToken)
+    ? accessToken.filter(Boolean)
+    : (accessToken ? [accessToken] : [])
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const res = await fetch(MODELS_URL, {
-      method: 'GET',
-      signal: controller.signal,
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'oauth-2025-04-20',
-        accept: 'application/json',
-        'user-agent': 'claude-cli/2.1.233 (external, sdk-cli)',
-        'x-app': 'cli',
-      },
-    })
-    const text = await res.text()
-    let body
-    try {
-      body = JSON.parse(text)
-    } catch {
-      body = null
-    }
-
-    if (!res.ok || !body?.data) {
-      return {
-        object: 'list',
-        data: listOfficialModels(),
-        source: 'fallback_static',
-        upstream_status: res.status,
-        upstream_error: body?.error || text.slice(0, 200),
-      }
-    }
-
-    // Only Claude models — never expose non-claude
-    const data = (body.data || [])
-      .filter((m) => m && String(m.id || '').startsWith('claude-'))
-      .map((m) => ({
-        id: m.id,
-        object: 'model',
-        type: m.type || 'model',
-        display_name: m.display_name || m.id,
-        created: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : undefined,
-        created_at: m.created_at || null,
-        owned_by: 'anthropic',
-        max_input_tokens: m.max_input_tokens,
-        max_tokens: m.max_tokens,
-        capabilities: m.capabilities || undefined,
-      }))
-
-    const result = {
-      object: 'list',
-      data,
-      source: 'anthropic_api',
-      fetched_at: new Date().toISOString(),
-    }
-    cache = { at: Date.now(), data: result }
-    return result
-  } catch (e) {
+  if (!tokens.length) {
     return {
       object: 'list',
       data: listOfficialModels(),
       source: 'fallback_static',
-      error: String(e.message || e),
+      note: 'no_oauth_token',
     }
-  } finally {
-    clearTimeout(timer)
+  }
+
+  let lastError = null
+  for (const token of tokens) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const res = await fetch(MODELS_URL, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'oauth-2025-04-20',
+          accept: 'application/json',
+          'user-agent': 'claude-cli/2.1.233 (external, sdk-cli)',
+          'x-app': 'cli',
+        },
+      })
+      const text = await res.text()
+      let body
+      try { body = JSON.parse(text) } catch { body = null }
+
+      if (!res.ok || !Array.isArray(body?.data)) {
+        lastError = {
+          upstream_status: res.status,
+          upstream_error: body?.error || text.slice(0, 200),
+        }
+        continue
+      }
+
+      const data = (body.data || [])
+        .filter((m) => m && String(m.id || '').startsWith('claude-'))
+        .map((m) => ({
+          id: m.id,
+          object: 'model',
+          type: m.type || 'model',
+          display_name: m.display_name || m.id,
+          created: m.created_at ? Math.floor(new Date(m.created_at).getTime() / 1000) : undefined,
+          created_at: m.created_at || null,
+          owned_by: 'anthropic',
+          max_input_tokens: m.max_input_tokens,
+          max_tokens: m.max_tokens,
+          capabilities: m.capabilities || undefined,
+        }))
+
+      if (!data.length) {
+        lastError = { upstream_status: res.status, upstream_error: 'empty_claude_models' }
+        continue
+      }
+
+      const result = {
+        object: 'list',
+        data,
+        source: 'anthropic_api',
+        fetched_at: new Date().toISOString(),
+        total: data.length,
+      }
+      cache = { at: Date.now(), data: result }
+      return result
+    } catch (e) {
+      lastError = { error: String(e.message || e) }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  return {
+    object: 'list',
+    data: listOfficialModels(),
+    source: 'fallback_static',
+    total: OFFICIAL_CLAUDE_MODELS.length,
+    ...(lastError || {}),
   }
 }
 
@@ -114,6 +128,8 @@ export function listOfficialModels() {
   return OFFICIAL_CLAUDE_MODELS.map((id) => ({
     id,
     object: 'model',
+    type: 'model',
+    display_name: id,
     owned_by: 'anthropic',
   }))
 }

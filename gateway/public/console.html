@@ -344,18 +344,27 @@ document.getElementById('nav').addEventListener('click', (e) => {
 async function refresh() {
   if (!key()) { toast('请先填写 API Key'); return }
   try {
+    const safe = (p) => api(p).catch((e) => ({ __error: e.message || String(e) }))
     const [dash, usage, models, routing, proxies] = await Promise.all([
-      api('/api/panel/dashboard'),
-      api('/api/panel/usage'),
-      api('/api/panel/models'),
-      api('/api/panel/routing'),
-      api('/api/panel/proxies'),
+      safe('/api/panel/dashboard'),
+      safe('/api/panel/usage'),
+      safe('/api/panel/models?refresh=1'),
+      safe('/api/panel/routing'),
+      safe('/api/panel/proxies'),
     ])
-    state.dashboard = dash.data || dash
-    state.usage = usage.data || usage
-    state.models = models.data || models
-    state.routing = routing.data || routing
-    state.proxies = proxies.data || proxies
+    state.dashboard = dash?.__error ? { error: dash.__error } : (dash.data || dash)
+    state.usage = usage?.__error ? { error: usage.__error } : (usage.data || usage)
+    // models: support {items}, {data:{items}}, or OpenAI {data:[{id}]}
+    let m = models?.__error ? null : (models.data || models)
+    if (m && Array.isArray(m.data) && !m.items) {
+      m = { items: m.data.map(x => ({ id: x.id, label: x.display_name || x.id })), source: m.source, total: m.data.length }
+    }
+    if (m && !m.items && Array.isArray(m)) {
+      m = { items: m.map(x => ({ id: x.id || x, label: x.label || x.display_name || x.id || x })), source: 'list' }
+    }
+    state.models = m || { items: [], source: 'error', note: models?.__error || 'empty' }
+    state.routing = routing?.__error ? { error: routing.__error } : (routing.data || routing)
+    state.proxies = proxies?.__error ? { error: proxies.__error } : (proxies.data || proxies)
     if (!state.selectedVm && state.dashboard.vms?.[0]) state.selectedVm = state.dashboard.vms[0].id
     const h = state.dashboard.health
     document.getElementById('healthPill').textContent = (h?.status || 'ok') + ' · ' + (h?.base_url || '')
@@ -602,9 +611,10 @@ function renderProtocol() {
       </ul>
     </div>
     <div class="card">
-      <div class="layer-tag mb-2">官方模型（${models.length}）· source=${esc(state.models?.source||'')}</div>
+      <div class="layer-tag mb-2">官方模型（${models.length}）· source=${esc(state.models?.source||'')}${state.models?.note ? ' · '+esc(state.models.note) : ''}</div>
+      ${state.models?.error || state.models?.note && !models.length ? `<p class="text-xs text-destructive mb-2">${esc(state.models.error||state.models.note)}</p>` : ''}
       <div class="grid gap-2 sm:grid-cols-2">
-        ${models.map(m => `<div class="rounded-md border border-border px-3 py-2 text-sm"><div class="font-medium">${esc(m.label||m.id)}</div><div class="text-xs text-muted-foreground font-mono">${esc(m.id)}</div></div>`).join('') || '—'}
+        ${models.map(m => `<div class="rounded-md border border-border px-3 py-2 text-sm"><div class="font-medium">${esc(m.label||m.id)}</div><div class="text-xs text-muted-foreground font-mono">${esc(m.id)}</div></div>`).join('') || '<div class="text-sm text-muted-foreground">暂无模型数据</div>'}
       </div>
     </div>
   </section>`

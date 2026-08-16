@@ -210,17 +210,31 @@ export function buildUsage({ accountQuota, cfg }) {
 }
 
 export async function buildModels({ cfg, force = false }) {
-  const result = await fetchOfficialModels(cfg.vm.access_token, { force })
+  // Prefer active VM token; fall back to any VM oauth token
+  const tokens = []
+  if (cfg.vm?.access_token) tokens.push(cfg.vm.access_token)
+  try {
+    const { listVms, getVm } = await import('./vm-registry.mjs')
+    for (const s of listVms(cfg.paths.project) || []) {
+      const vm = getVm(cfg.paths.project, s.id)
+      const tok = vm?.claude?.access_token
+      if (tok && !tokens.includes(tok)) tokens.push(tok)
+    }
+  } catch {}
+  const result = await fetchOfficialModels(tokens.length ? tokens : null, { force })
+  const items = (result.data || []).map((m) => ({
+    id: m.id,
+    label: m.display_name || m.id,
+    max_tokens: m.max_tokens,
+    max_input_tokens: m.max_input_tokens,
+  }))
   return ok({
-    items: (result.data || []).map((m) => ({
-      id: m.id,
-      label: m.display_name || m.id,
-      max_tokens: m.max_tokens,
-      max_input_tokens: m.max_input_tokens,
-    })),
+    items,
     source: result.source,
     fetched_at: result.fetched_at || null,
-    total: result.data?.length || 0,
+    total: items.length,
+    upstream_status: result.upstream_status || null,
+    note: result.note || result.error || null,
   })
 }
 
