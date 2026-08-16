@@ -233,9 +233,16 @@ function logout() {
 async function doLogin() {
   const user = document.getElementById('loginUserInput').value.trim()
   const pass = document.getElementById('loginPassInput').value
-  const base = document.getElementById('loginBaseInput').value.trim().replace(/\/$/, '')
+  let base = document.getElementById('loginBaseInput').value.trim().replace(/\/$/, '')
   const err = document.getElementById('loginErr')
   err.classList.add('hidden')
+  const host = location.hostname || ''
+  const onStatic = /vercel\.app$|github\.io$|netlify\.app$/.test(host)
+  if (onStatic && !base) {
+    err.textContent = '请填写 API Base（网关地址，例如 https://你的网关:8787）'
+    err.classList.remove('hidden')
+    return
+  }
   if (base) localStorage.setItem(LS_BASE, base)
   try {
     const url = (base || '') + '/api/panel/login'
@@ -244,8 +251,11 @@ async function doLogin() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: user, password: pass }),
     })
+    if (res.status === 405) {
+      throw new Error('405：当前地址不接受 POST。请在 API Base 填写真实网关地址，或打开网关 /console')
+    }
     const j = await res.json().catch(() => ({}))
-    if (!res.ok || !j.token) throw new Error(j?.error?.message || j?.message || ('登录失败 ' + res.status))
+    if (!res.ok || !j.token) throw new Error(j?.error?.message || j?.message || ('登录失败 HTTP ' + res.status))
     localStorage.setItem(LS, j.token)
     localStorage.setItem(LS_USER, j.user || user)
     document.getElementById('loginGate').classList.add('hidden')
@@ -253,7 +263,12 @@ async function doLogin() {
     toast('登录成功')
     refresh()
   } catch (e) {
-    err.textContent = e.message || String(e)
+    const msg = e.message || String(e)
+    if (/Failed to fetch|NetworkError|CORS/i.test(msg)) {
+      err.textContent = '无法连接网关。请确认 API Base 可访问且已开启 CORS'
+    } else {
+      err.textContent = msg
+    }
     err.classList.remove('hidden')
   }
 }
@@ -740,7 +755,7 @@ else document.getElementById('main').innerHTML = '<p class="text-sm text-muted-f
     <div class="space-y-2">
       <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
       <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
-      <input id="loginBaseInput" class="input" placeholder="API Base（可空=同源）" />
+      <input id="loginBaseInput" class="input" placeholder="API Base 网关地址（Vercel 必填）" />
     </div>
     <button class="btn btn-primary w-full" onclick="doLogin()">登录</button>
     <p id="loginErr" class="text-xs text-destructive hidden"></p>
