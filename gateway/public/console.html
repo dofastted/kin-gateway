@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>种核 KIN · 管理台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            border: 'hsl(240 3.7% 15.9%)',
+            background: 'hsl(240 10% 3.9%)',
+            foreground: 'hsl(0 0% 98%)',
+            card: { DEFAULT: 'hsl(240 10% 6.5%)', foreground: 'hsl(0 0% 98%)' },
+            muted: { DEFAULT: 'hsl(240 3.7% 15.9%)', foreground: 'hsl(240 5% 64.9%)' },
+            primary: { DEFAULT: 'hsl(0 0% 98%)', foreground: 'hsl(240 5.9% 10%)' },
+            accent: { DEFAULT: 'hsl(240 4% 16%)', foreground: 'hsl(0 0% 98%)' },
+            success: 'hsl(142 70% 40%)',
+            warning: 'hsl(38 92% 45%)',
+            danger: 'hsl(0 72% 51%)',
+          },
+          borderRadius: { lg: '0.75rem', md: '0.5rem', sm: '0.375rem' },
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .nav-item { @apply flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground cursor-pointer transition-colors; }
+    .nav-item.active { @apply bg-accent text-foreground font-medium; }
+    .card { @apply rounded-lg border border-border bg-card p-4 shadow-sm; }
+    .btn { @apply inline-flex items-center justify-center rounded-md text-sm font-medium h-9 px-3 transition-colors disabled:opacity-50; }
+    .btn-primary { @apply bg-primary text-primary-foreground hover:opacity-90; }
+    .btn-ghost { @apply hover:bg-accent; }
+    .btn-outline { @apply border border-border hover:bg-accent; }
+    .input { @apply h-9 w-full rounded-md border border-border bg-transparent px-3 text-sm; }
+    .badge { @apply inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs; }
+    .progress { @apply h-2 w-full overflow-hidden rounded-full bg-muted; }
+    .progress > i { @apply block h-full rounded-full transition-all; }
+    .layer-tag { @apply text-[10px] uppercase tracking-wider text-muted-foreground; }
+  </style>
+</head>
+<body class="min-h-screen bg-background text-foreground flex">
+  <!-- Sidebar: hierarchy -->
+  <aside class="w-56 shrink-0 border-r border-border flex flex-col">
+    <div class="p-4 border-b border-border">
+      <div class="text-base font-semibold tracking-tight">种核 KIN</div>
+      <div class="text-xs text-muted-foreground mt-0.5">多虚拟机 · Claude Code 网关</div>
+    </div>
+    <nav class="flex-1 p-2 space-y-0.5" id="nav">
+      <div class="layer-tag px-3 pt-3 pb-1">L0 · 平台</div>
+      <div class="nav-item active" data-view="overview">总览</div>
+      <div class="layer-tag px-3 pt-3 pb-1">L1 · 集群</div>
+      <div class="nav-item" data-view="cluster">虚拟机集群</div>
+      <div class="layer-tag px-3 pt-3 pb-1">L2–L3 · 节点</div>
+      <div class="nav-item" data-view="vm">虚拟机详情</div>
+      <div class="layer-tag px-3 pt-3 pb-1">L4 · 用量</div>
+      <div class="nav-item" data-view="usage">用量与额度</div>
+      <div class="layer-tag px-3 pt-3 pb-1">L5 · 协议</div>
+      <div class="nav-item" data-view="protocol">协议与模型</div>
+      <div class="layer-tag px-3 pt-3 pb-1">L6 · 配置</div>
+      <div class="nav-item" data-view="proxies">代理池 SOCKS5</div>
+      <div class="nav-item" data-view="settings">路由与策略</div>
+    </nav>
+    <div class="p-3 border-t border-border space-y-2">
+      <input id="apiKey" type="password" class="input" placeholder="API Key" />
+      <button class="btn btn-primary w-full" onclick="saveKey()">保存并刷新</button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="flex-1 flex flex-col min-w-0">
+    <header class="h-14 border-b border-border flex items-center justify-between px-6">
+      <div>
+        <h1 id="pageTitle" class="text-sm font-medium">总览</h1>
+        <p id="pageDesc" class="text-xs text-muted-foreground">平台健康 · 集群摘要</p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="healthPill" class="badge">—</span>
+        <button class="btn btn-outline" onclick="refresh()">刷新</button>
+        <button class="btn btn-outline" onclick="probeAll()">全量探测</button>
+      </div>
+    </header>
+    <main class="flex-1 overflow-auto p-6" id="main"></main>
+  </div>
+
+<script>
+const LS = 'kin_console_key'
+const titles = {
+  overview: ['总览', 'L0 平台 + L1 集群摘要'],
+  cluster: ['虚拟机集群', 'L1 多种子节点一览'],
+  vm: ['虚拟机详情', 'L2 节点 · L3 账号凭证'],
+  usage: ['用量与额度', 'L4 官方 stats · 95% 安全线'],
+  protocol: ['协议与模型', 'L5 对齐 Claude Code 官方标准'],
+  proxies: ['代理池 SOCKS5', 'L1/L6 一代理绑定一 VM · 自动探测'],
+  settings: ['路由与策略', 'L6 粘性 · 并发 · 额度'],
+}
+let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null }
+
+function key() { return (document.getElementById('apiKey').value || localStorage.getItem(LS) || '').trim() }
+function saveKey() { localStorage.setItem(LS, key()); toast('已保存'); refresh() }
+function headers() { return { Authorization: 'Bearer ' + key(), 'Content-Type': 'application/json' } }
+async function api(path, opts={}) {
+  const res = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers||{}) } })
+  const j = await res.json().catch(() => ({}))
+  if (!res.ok || j.ok === false) throw new Error(j?.error?.message || res.statusText)
+  return j.data !== undefined ? j : j
+}
+function pct(u) { if (u==null) return 0; const n=Number(u); return n>1?n:n*100 }
+function barColor(p) { if (p>=95) return 'var(--danger, #ef4444)'; if (p>=85) return '#f59e0b'; return '#22c55e' }
+function toast(m) {
+  const el = document.createElement('div')
+  el.className = 'fixed bottom-4 right-4 z-50 rounded-md bg-primary text-primary-foreground px-3 py-2 text-sm shadow-lg'
+  el.textContent = m
+  document.body.appendChild(el)
+  setTimeout(() => el.remove(), 2200)
+}
+function esc(s) { return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) }
+
+// Nav
+document.getElementById('nav').addEventListener('click', (e) => {
+  const item = e.target.closest('.nav-item')
+  if (!item) return
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'))
+  item.classList.add('active')
+  state.view = item.dataset.view
+  const [t,d] = titles[state.view]
+  document.getElementById('pageTitle').textContent = t
+  document.getElementById('pageDesc').textContent = d
+  render()
+})
+
+async function refresh() {
+  if (!key()) { toast('请先填写 API Key'); return }
+  try {
+    const [dash, usage, models, routing, proxies] = await Promise.all([
+      api('/api/panel/dashboard'),
+      api('/api/panel/usage'),
+      api('/api/panel/models'),
+      api('/api/panel/routing'),
+      api('/api/panel/proxies'),
+    ])
+    state.dashboard = dash.data || dash
+    state.usage = usage.data || usage
+    state.models = models.data || models
+    state.routing = routing.data || routing
+    state.proxies = proxies.data || proxies
+    if (!state.selectedVm && state.dashboard.vms?.[0]) state.selectedVm = state.dashboard.vms[0].id
+    const h = state.dashboard.health
+    document.getElementById('healthPill').textContent = (h?.status || 'ok') + ' · ' + (h?.base_url || '')
+    render()
+  } catch (e) { toast('刷新失败: ' + e.message) }
+}
+
+async function probeAll() {
+  try {
+    toast('全量探测中…')
+    await api('/api/panel/probe', { method: 'POST' })
+    toast('探测完成')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+
+async function probeOne(id) {
+  try {
+    toast('探测 ' + id)
+    await api('/api/panel/vms/' + id + '/probe', { method: 'POST' })
+    toast('完成')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+
+async function openVm(id) {
+  state.selectedVm = id
+  try {
+    const r = await api('/api/panel/vms/' + id)
+    state.detail = r.data || r
+  } catch (e) { state.detail = null; toast(e.message) }
+  state.view = 'vm'
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view==='vm'))
+  const [t,d] = titles.vm
+  document.getElementById('pageTitle').textContent = t
+  document.getElementById('pageDesc').textContent = d
+  render()
+}
+
+function render() {
+  const main = document.getElementById('main')
+  const d = state.dashboard
+  if (!d) { main.innerHTML = '<p class="text-sm text-muted-foreground">请保存 API Key 后刷新</p>'; return }
+  const views = { overview: renderOverview, cluster: renderCluster, vm: renderVm, usage: renderUsage, protocol: renderProtocol, proxies: renderProxies, settings: renderSettings }
+  main.innerHTML = (views[state.view] || renderOverview)()
+}
+
+function summaryCards(s) {
+  const p5 = pct(s.peak_5h), p7 = pct(s.peak_7d)
+  return `
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    ${card('虚拟机', s.vm_count, 'L1 集群规模')}
+    ${card('账号', s.account_count, 'L3 凭证数')}
+    ${cardBar('峰值 5h', p5.toFixed(1)+'%', p5, '安全线 95%')}
+    ${cardBar('峰值 7d', p7.toFixed(1)+'%', p7, '周额度')}
+  </div>
+  <div class="grid gap-4 sm:grid-cols-3 mt-4">
+    ${card('总请求', s.requests, '累计')}
+    ${card('Tokens', (s.tokens_in||0)+' / '+(s.tokens_out||0), 'In / Out')}
+    ${card('近限额', s.near_limit, '≥95% 账号数')}
+  </div>`
+}
+function card(label, value, sub) {
+  return `<div class="card"><div class="text-xs text-muted-foreground">${esc(label)}</div><div class="text-2xl font-semibold mt-1">${esc(value)}</div><div class="text-xs text-muted-foreground mt-1">${esc(sub||'')}</div></div>`
+}
+function cardBar(label, value, p, sub) {
+  return `<div class="card"><div class="text-xs text-muted-foreground">${esc(label)}</div><div class="text-2xl font-semibold mt-1">${esc(value)}</div><div class="progress mt-2"><i style="width:${Math.min(100,p)}%;background:${barColor(p)}"></i></div><div class="text-xs text-muted-foreground mt-1">${esc(sub||'')}</div></div>`
+}
+
+function vmCard(v) {
+  const u5 = pct(v.utilization_5h), u7 = pct(v.utilization_7d)
+  return `
+  <div class="card hover:border-foreground/20 cursor-pointer transition-colors" onclick="openVm('${esc(v.id)}')">
+    <div class="flex items-start justify-between gap-2">
+      <div>
+        <div class="font-medium">${esc(v.name||v.id)}</div>
+        <div class="text-xs text-muted-foreground mt-0.5">${esc(v.id)}</div>
+      </div>
+      <div class="flex flex-col items-end gap-1">
+        ${v.active ? '<span class="badge border-emerald-700 text-emerald-400">active</span>' : '<span class="badge">standby</span>'}
+        <span class="badge">${esc(v.status||'—')}</span>
+      </div>
+    </div>
+    <div class="mt-3 text-xs text-muted-foreground truncate">${esc(v.email||'无邮箱')}</div>
+    <div class="mt-3 space-y-2">
+      <div><div class="flex justify-between text-xs mb-1"><span>5h</span><span>${u5.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u5)}%;background:${barColor(u5)}"></i></div></div>
+      <div><div class="flex justify-between text-xs mb-1"><span>7d</span><span>${u7.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u7)}%;background:${barColor(u7)}"></i></div></div>
+    </div>
+    <div class="mt-3 flex justify-between text-xs text-muted-foreground">
+      <span>并发 ${v.inflight||0}/${v.max_concurrency||2}</span>
+      <span>CC ${esc(v.claude_code_version||'—')}</span>
+    </div>
+    <div class="mt-3 flex gap-2" onclick="event.stopPropagation()">
+      <button class="btn btn-outline h-8 text-xs" onclick="probeOne('${esc(v.id)}')">探测</button>
+      <button class="btn btn-ghost h-8 text-xs" onclick="openVm('${esc(v.id)}')">详情</button>
+    </div>
+  </div>`
+}
+
+function renderOverview() {
+  const d = state.dashboard
+  return `
+  <section class="space-y-6">
+    <div>
+      <div class="layer-tag mb-2">L0 · 平台层</div>
+      <div class="card flex flex-wrap gap-6 text-sm">
+        <div><span class="text-muted-foreground">服务</span><div class="font-medium">${esc(d.health?.service||'kin-gateway')}</div></div>
+        <div><span class="text-muted-foreground">Base URL</span><div class="font-medium font-mono text-xs mt-0.5">${esc(d.health?.base_url||'')}</div></div>
+        <div><span class="text-muted-foreground">改写</span><div class="font-medium">${esc(d.health?.rewrite||'off')}</div></div>
+        <div><span class="text-muted-foreground">粘性会话</span><div class="font-medium">${d.routing?.sticky_sessions??0}</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="layer-tag mb-2">L1 · 集群摘要</div>
+      ${summaryCards(d.summary||{})}
+    </div>
+    <div>
+      <div class="layer-tag mb-2">集群节点预览</div>
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        ${(d.vms||[]).map(vmCard).join('') || '<p class="text-sm text-muted-foreground">暂无虚拟机</p>'}
+      </div>
+    </div>
+  </section>`
+}
+
+function renderCluster() {
+  const d = state.dashboard
+  return `
+  <section class="space-y-4">
+    <div class="flex items-center justify-between">
+      <div class="layer-tag">L1 · 虚拟机集群 · ${d.vms?.length||0} 节点</div>
+      <button class="btn btn-outline" onclick="probeAll()">全量探测用量</button>
+    </div>
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      ${(d.vms||[]).map(vmCard).join('') || '<p class="text-sm text-muted-foreground">暂无虚拟机，请导入种子 VM</p>'}
+    </div>
+    <p class="text-xs text-muted-foreground">卡片 = 最小管理单元：状态 · OAuth 账号 · 5h/7d 用量 · 并发 · Claude Code 版本</p>
+  </section>`
+}
+
+function renderVm() {
+  const det = state.detail
+  const vms = state.dashboard?.vms || []
+  if (!det && !state.selectedVm) {
+    return `<p class="text-sm text-muted-foreground">从集群选择一台虚拟机</p>
+    <div class="grid gap-4 sm:grid-cols-2 mt-4">${vms.map(vmCard).join('')}</div>`
+  }
+  const vm = det?.vm || vms.find(x => x.id === state.selectedVm) || {}
+  const acc = det?.account
+  const u5 = pct(acc?.utilization_5h ?? vm.utilization_5h)
+  const u7 = pct(acc?.utilization_7d ?? vm.utilization_7d)
+  return `
+  <section class="space-y-4">
+    <div class="flex flex-wrap gap-2 items-center">
+      <select class="input w-64" onchange="openVm(this.value)">
+        ${vms.map(v => `<option value="${esc(v.id)}" ${v.id===vm.id?'selected':''}>${esc(v.name||v.id)}</option>`).join('')}
+      </select>
+      <button class="btn btn-outline" onclick="probeOne('${esc(vm.id)}')">官方用量探测</button>
+      <button class="btn btn-outline" onclick="allocateProxy('${esc(vm.id)}')">分配 SOCKS5</button>
+    </div>
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="card space-y-3">
+        <div class="layer-tag">L2 · 虚拟机</div>
+        <div class="text-lg font-semibold">${esc(vm.name||vm.id)}</div>
+        <dl class="grid grid-cols-2 gap-2 text-sm">
+          <dt class="text-muted-foreground">ID</dt><dd class="font-mono text-xs">${esc(vm.id)}</dd>
+          <dt class="text-muted-foreground">状态</dt><dd>${esc(vm.status)} ${vm.active?'· active':''}</dd>
+          <dt class="text-muted-foreground">Claude Code</dt><dd>${esc(vm.claude_code_version||'—')}</dd>
+          <dt class="text-muted-foreground">并发</dt><dd>${vm.inflight||0} / ${vm.max_concurrency||2}</dd>
+          <dt class="text-muted-foreground">Token</dt><dd>${vm.has_token?'已绑定':'未绑定'}</dd>
+        </dl>
+      </div>
+      <div class="card space-y-3">
+        <div class="layer-tag">L3 · 账号凭证</div>
+        <div class="text-sm">${esc(vm.email||'—')}</div>
+        <div class="text-xs font-mono text-muted-foreground break-all">${esc(vm.account_uuid||'—')}</div>
+        <div class="space-y-2 pt-2">
+          <div><div class="flex justify-between text-xs mb-1"><span>5h 用量</span><span>${u5.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u5)}%;background:${barColor(u5)}"></i></div></div>
+          <div><div class="flex justify-between text-xs mb-1"><span>7d 用量</span><span>${u7.toFixed(1)}%</span></div><div class="progress"><i style="width:${Math.min(100,u7)}%;background:${barColor(u7)}"></i></div></div>
+        </div>
+        ${acc?.reset_5h ? `<div class="text-xs text-muted-foreground">5h 重置: ${esc(acc.reset_5h)}</div>` : ''}
+        ${acc?.reset_7d ? `<div class="text-xs text-muted-foreground">7d 重置: ${esc(acc.reset_7d)}</div>` : ''}
+      </div>
+    </div>
+    ${acc?.recent?.length ? `
+    <div class="card">
+      <div class="layer-tag mb-2">最近分配记录</div>
+      <pre class="text-xs overflow-auto max-h-48">${esc(JSON.stringify(acc.recent, null, 2))}</pre>
+    </div>` : ''}
+  </section>`
+}
+
+function renderUsage() {
+  const u = state.usage || {}
+  const s = u.totals || state.dashboard?.summary || {}
+  return `
+  <section class="space-y-4">
+    <div class="layer-tag">L4 · 官方 Claude stats（oauth/usage + unified headers）</div>
+    ${summaryCards({ ...s, vm_count: state.dashboard?.summary?.vm_count, account_count: state.dashboard?.summary?.account_count, peak_5h: s.peak_5h, peak_7d: s.peak_7d, near_limit: s.near_limit, requests: s.requests, tokens_in: s.tokens_in, tokens_out: s.tokens_out })}
+    <div class="card overflow-hidden p-0">
+      <table class="w-full text-sm">
+        <thead class="bg-muted/40 text-muted-foreground text-left">
+          <tr>
+            <th class="p-3 font-medium">账号 / VM</th>
+            <th class="p-3 font-medium">5h</th>
+            <th class="p-3 font-medium">7d</th>
+            <th class="p-3 font-medium">并发</th>
+            <th class="p-3 font-medium">请求</th>
+            <th class="p-3 font-medium">状态</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-border">
+          ${(u.accounts||[]).map(a => {
+            const p5=pct(a.utilization_5h), p7=pct(a.utilization_7d)
+            return `<tr class="hover:bg-muted/20">
+              <td class="p-3"><div>${esc(a.email||a.account_id)}</div><div class="text-xs text-muted-foreground">${esc(a.vm_id||'')}</div></td>
+              <td class="p-3 w-36"><div class="text-xs mb-1">${p5.toFixed(1)}%</div><div class="progress"><i style="width:${Math.min(100,p5)}%;background:${barColor(p5)}"></i></div></td>
+              <td class="p-3 w-36"><div class="text-xs mb-1">${p7.toFixed(1)}%</div><div class="progress"><i style="width:${Math.min(100,p7)}%;background:${barColor(p7)}"></i></div></td>
+              <td class="p-3">${a.inflight}/${a.max_concurrency}</td>
+              <td class="p-3">${a.requests||0}</td>
+              <td class="p-3">${a.near_limit?'<span class="badge border-red-800 text-red-400">near limit</span>':'<span class="badge">ok</span>'}</td>
+            </tr>`
+          }).join('') || '<tr><td class="p-3 text-muted-foreground" colspan="6">暂无数据，请先探测</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-muted-foreground">安全策略：utilization ≥ ${(Number(u.safety_ratio||0.95)*100).toFixed(0)}% 时拒绝新请求，避免打满 5h / 周限额。</p>
+  </section>`
+}
+
+function renderProtocol() {
+  const models = state.models?.items || []
+  return `
+  <section class="space-y-4">
+    <div class="layer-tag">L5 · 协议网关</div>
+    <div class="card text-sm space-y-2">
+      <div class="font-medium">入站 → 对齐 → VM Claude Code 转发</div>
+      <ul class="text-muted-foreground text-xs space-y-1 list-disc pl-4">
+        <li>OpenAI Chat Completions <code class="text-foreground">/v1/chat/completions</code></li>
+        <li>OpenAI Responses <code class="text-foreground">/v1/responses</code></li>
+        <li>Anthropic Messages <code class="text-foreground">/v1/messages</code></li>
+        <li>原则：对齐 Claude Code 官方请求标准（非伪装）</li>
+        <li>仅官方 Claude 模型名；system 外站归因可剥离</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="layer-tag mb-2">官方模型（${models.length}）· source=${esc(state.models?.source||'')}</div>
+      <div class="grid gap-2 sm:grid-cols-2">
+        ${models.map(m => `<div class="rounded-md border border-border px-3 py-2 text-sm"><div class="font-medium">${esc(m.label||m.id)}</div><div class="text-xs text-muted-foreground font-mono">${esc(m.id)}</div></div>`).join('') || '—'}
+      </div>
+    </div>
+  </section>`
+}
+
+function renderSettings() {
+  const r = state.routing || {}
+  return `
+  <section class="space-y-4">
+    <div class="layer-tag">L6 · 配置</div>
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="card">
+        <div class="font-medium text-sm mb-2">粘性路由</div>
+        <pre class="text-xs overflow-auto max-h-64 bg-background rounded-md p-3 border border-border">${esc(JSON.stringify(r.sticky||{}, null, 2))}</pre>
+      </div>
+      <div class="card">
+        <div class="font-medium text-sm mb-2">额度 / 并发</div>
+        <pre class="text-xs overflow-auto max-h-64 bg-background rounded-md p-3 border border-border">${esc(JSON.stringify({ quota: r.quota, concurrency: r.concurrency }, null, 2))}</pre>
+      </div>
+    </div>
+    <div class="card">
+      <div class="font-medium text-sm mb-2">活跃粘性会话</div>
+      <pre class="text-xs overflow-auto max-h-48 bg-background rounded-md p-3 border border-border">${esc(JSON.stringify(r.sessions||{}, null, 2))}</pre>
+    </div>
+    <p class="text-xs text-muted-foreground">修改请调用 <code>PUT /api/panel/routing</code>；契约见 PANEL_API.md</p>
+  </section>`
+}
+
+
+async function importProxies() {
+  const text = document.getElementById('proxyImport')?.value || ''
+  if (!text.trim()) { toast('请粘贴 SOCKS5 列表'); return }
+  try {
+    const r = await api('/api/panel/proxies/import', { method: 'POST', body: JSON.stringify({ text }) })
+    const d = r.data || r
+    toast(`导入 +${d.added} 跳过 ${d.skipped}`)
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function probeProxies() {
+  try {
+    toast('探测代理池…')
+    await api('/api/panel/proxies/probe', { method: 'POST' })
+    toast('探测完成')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function probeProxyOne(id) {
+  try {
+    await api('/api/panel/proxies/' + id + '/probe', { method: 'POST' })
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function enableProxy(id, on) {
+  try {
+    await api('/api/panel/proxies/' + id + '/' + (on ? 'enable' : 'disable'), { method: 'POST' })
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function unbindProxy(id) {
+  try {
+    await api('/api/panel/proxies/' + id + '/unbind', { method: 'POST' })
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function setProbeInterval(min) {
+  try {
+    await api('/api/panel/proxies/config', { method: 'PUT', body: JSON.stringify({ probe_interval_min: Number(min) }) })
+    toast('探测间隔 ' + min + ' 分钟')
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+async function allocateProxy(vmId) {
+  try {
+    const r = await api('/api/panel/vms/' + vmId + '/allocate-proxy', { method: 'POST' })
+    toast('已绑定 ' + (r.data?.id || ''))
+    await refresh()
+  } catch (e) { toast(e.message) }
+}
+
+function renderProxies() {
+  const px = state.proxies || {}
+  const cfg = px.config || {}
+  const tot = px.totals || {}
+  const list = px.proxies || []
+  const interval = cfg.probe_interval_min || 10
+  return `
+  <section class="space-y-4">
+    <div class="layer-tag">L1/L6 · SOCKS5 代理池 · 一代理绑定一虚拟机</div>
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      ${card('总数', tot.total??0, '池容量')}
+      ${card('空闲', tot.free??0, '可自动分配')}
+      ${card('已绑定', tot.bound??0, '1:1 VM')}
+      ${card('健康', tot.ok??0, 'status=ok')}
+      ${card('停用', tot.dead??0, 'fail→停用调度')}
+    </div>
+
+    <div class="card space-y-3">
+      <div class="font-medium text-sm">自动探测间隔</div>
+      <div class="flex flex-wrap gap-2">
+        ${[5,10,30,60].map(m => `
+          <button class="btn ${interval===m?'btn-primary':'btn-outline'}" onclick="setProbeInterval(${m})">${m} 分钟</button>
+        `).join('')}
+        <button class="btn btn-outline" onclick="probeProxies()">立即全量探测</button>
+      </div>
+      <p class="text-xs text-muted-foreground">连续失败 ≥ ${cfg.max_failures||2} 次 → 停用该代理，并<strong>暂停绑定 VM 的调度</strong></p>
+    </div>
+
+    <div class="card space-y-3">
+      <div class="font-medium text-sm">批量导入</div>
+      <textarea id="proxyImport" class="input h-28 py-2 font-mono text-xs" placeholder="每行一条：&#10;socks5://user:pass@host:port&#10;host:port&#10;host:port:user:pass"></textarea>
+      <button class="btn btn-primary" onclick="importProxies()">导入到代理池</button>
+    </div>
+
+    <div class="card overflow-hidden p-0">
+      <table class="w-full text-sm">
+        <thead class="bg-muted/40 text-muted-foreground text-left">
+          <tr>
+            <th class="p-3 font-medium">代理</th>
+            <th class="p-3 font-medium">状态</th>
+            <th class="p-3 font-medium">延迟</th>
+            <th class="p-3 font-medium">绑定 VM</th>
+            <th class="p-3 font-medium">失败</th>
+            <th class="p-3 text-right font-medium">操作</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-border">
+          ${list.map(p => `
+            <tr class="hover:bg-muted/20">
+              <td class="p-3">
+                <div class="font-mono text-xs">${esc(p.host)}:${p.port}</div>
+                <div class="text-[10px] text-muted-foreground">${esc(p.id)}${p.has_auth?' · auth':''}</div>
+              </td>
+              <td class="p-3"><span class="badge ${p.status==='ok'?'border-emerald-700 text-emerald-400':p.status==='dead'?'border-red-800 text-red-400':''}">${esc(p.status)}</span> ${p.enabled?'':'· off'}</td>
+              <td class="p-3">${p.latency_ms!=null?p.latency_ms+'ms':'—'}</td>
+              <td class="p-3 font-mono text-xs">${esc(p.bound_vm_id||'—')}</td>
+              <td class="p-3">${p.consecutive_failures||0}${p.last_error?' <span class="text-xs text-muted-foreground">'+esc(p.last_error)+'</span>':''}</td>
+              <td class="p-3 text-right space-x-1">
+                <button class="btn btn-ghost h-8 text-xs" onclick="probeProxyOne('${p.id}')">探测</button>
+                ${p.enabled
+                  ? `<button class="btn btn-ghost h-8 text-xs" onclick="enableProxy('${p.id}', false)">停用</button>`
+                  : `<button class="btn btn-ghost h-8 text-xs" onclick="enableProxy('${p.id}', true)">启用</button>`}
+                ${p.bound_vm_id?`<button class="btn btn-ghost h-8 text-xs" onclick="unbindProxy('${p.id}')">解绑</button>`:''}
+              </td>
+            </tr>
+          `).join('') || '<tr><td class="p-3 text-muted-foreground" colspan="6">池为空，请先导入</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <p class="text-xs text-muted-foreground">虚拟机创建/分配：<code>POST /api/panel/vms/:id/allocate-proxy</code> 自动领取一台空闲 SOCKS5（优先 status=ok）。</p>
+  </section>`
+}
+
+
+document.getElementById('apiKey').value = localStorage.getItem(LS) || ''
+if (key()) refresh()
+else document.getElementById('main').innerHTML = '<p class="text-sm text-muted-foreground">在左下角填入 API Key 后点击保存</p>'
+</script>
+</body>
+</html>

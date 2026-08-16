@@ -1,0 +1,21 @@
+{
+  "base_url": "http://172.16.0.2:8787",
+  "api_key": "sk-REDACTED",
+  "rewrite_default": false,
+  "vm_id": "vm-2ba14a",
+  "version": "2.1",
+  "features": [
+    "passthrough",
+    "stream",
+    "tools",
+    "intercept-admin"
+  ],
+  "endpoints": {
+    "health": "http://172.16.0.2:8787/health",
+    "chat": "http://172.16.0.2:8787/v1/chat/completions",
+    "responses": "http://172.16.0.2:8787/v1/responses",
+    "messages": "http://172.16.0.2:8787/v1/messages",
+    "intercept_rules": "http://172.16.0.2:8787/admin/intercept/rules",
+    "cc_update": "http://172.16.0.2:8787/admin/vm/claude-code/update"
+  }
+}
