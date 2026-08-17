@@ -51,10 +51,15 @@ function fixture() {
   }
 }
 
-test('capabilities are honest: no tools / images / claude session / kvm', () => {
-  assert.equal(GATEWAY_CAPABILITIES.client_tools, false)
-  assert.equal(GATEWAY_CAPABILITIES.images, false)
+test('capabilities are honest: client-workspace tools/images, no native session/kvm', () => {
+  // client-workspace forwards tools + active-turn images and executes tools on the caller
+  assert.equal(GATEWAY_CAPABILITIES.client_tools, true)
+  assert.equal(GATEWAY_CAPABILITIES.images, true)
+  assert.equal(GATEWAY_CAPABILITIES.tool_execution, 'client')
+  assert.equal(GATEWAY_CAPABILITIES.workspace_default, 'client')
+  // context is preserved via flatten/--resume, not native per-turn resume
   assert.equal(GATEWAY_CAPABILITIES.multi_turn_native, false)
+  // gateway never owns a Claude session; kernel is metadata-only
   assert.equal(GATEWAY_CAPABILITIES.claude_session, false)
   assert.equal(GATEWAY_CAPABILITIES.kernel, 'metadata-only')
   assert.equal(GATEWAY_CAPABILITIES.runtime, 'host-cli-slot')

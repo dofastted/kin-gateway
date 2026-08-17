@@ -52,18 +52,19 @@ import {
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/anthropic-messages.mjs'
 import { loadVmIdentity, persistVmSettings, persistVmFingerprint } from './lib/vm-identity.mjs'
+import { withVmLock, atomicWriteJson } from './lib/vm-file.mjs'
 import { resolveForwardMode, applyForwardReplace, modeSpec } from './lib/forward-mode.mjs'
 import { callClientWorkspaceCli, streamClientWorkspaceCli } from './lib/client-cli-hop.mjs'
 
 const FEATURES = ['passthrough', 'stream', 'protocol-convert', 'cli-forward', 'tools', 'client-workspace', 'forward-cli', 'forward-relay']
 const LIMITATIONS = {
   client_tools: 'kept and forwarded in official Messages; executed on the client. VM tools only with x-kin-workspace: vm',
-  images: 'forwarded in official Messages hop',
-  multi_turn_native: 'client-workspace keeps messages/tool_use/tool_result; vm-workspace still flattens',
+  images: 'active-turn image blocks forwarded natively into the CLI hop; images in older turns are flattened to [image] in the context transcript',
+  multi_turn_native: 'context preserved: prior turns flattened into a transcript block, or replayed via sticky --resume when a session is bound. Not native per-turn resume without sticky',
   claude_session: 'sticky binds vm+account; Claude session is the client process',
   kernel: 'metadata-only; start/stop flip JSON flags, no KVM/QEMU',
   workspace: 'default client; opt-in vm via header x-kin-workspace: vm',
-  forward: 'both modes: full VM-standard identity replace (creds+fingerprint+settings+session). transport differs via x-kin-forward: cli|relay',
+  forward: 'both modes do full VM-standard identity replace (creds+fingerprint+settings+session). relay is a label: same slot-CLI transport as cli today; no independent HTTP relay (Anthropic HTTP hop is 501)',
   oauth: 'single writer persistOauthToVm (harvest from CLI or admin sessionKey import). never HTTP Claude with OAuth',
 }
 
@@ -241,6 +242,25 @@ function capture(entry) {
   )
 }
 
+// Per-request diff artifacts are debug-only. Sample them so the captures dir
+// does not grow without bound (T13). KIN_DIFF_CAPTURE: 0/off, 1/all, or a 0..1 rate.
+const DIFF_CAPTURE_RATE = (() => {
+  const v = String(process.env.KIN_DIFF_CAPTURE ?? '').trim().toLowerCase()
+  if (v === '' ) return 0.05
+  if (v === '0' || v === 'off' || v === 'false') return 0
+  if (v === '1' || v === 'on' || v === 'true' || v === 'all') return 1
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.05
+})()
+
+function diffCapture(dir, name, obj) {
+  if (DIFF_CAPTURE_RATE <= 0) return
+  if (DIFF_CAPTURE_RATE < 1 && Math.random() > DIFF_CAPTURE_RATE) return
+  try {
+    fs.writeFileSync(path.join(dir, `${Date.now()}-${name}.json`), JSON.stringify(obj, null, 2))
+  } catch {}
+}
+
 function rulesFile() {
   return path.join(cfg.paths.root, 'config', 'intercept-rules.json')
 }
@@ -400,27 +420,24 @@ async function handleProtocol(req, res, protocol, pathName) {
     // Preserve full official body; only identity fields were replaced above.
     const officialBody = applyForwardReplace(forwardMode, officialMessagesBody(ctx.body), identity)
     const officialClient = isOfficialClaudeClient(fp.client_class)
-    fs.writeFileSync(
-      path.join(diffDir, `${Date.now()}-client-workspace.json`),
-      JSON.stringify({
-        client_class: fp.client_class,
-        protocol,
-        workspace,
-        forward_mode: forwardMode,
-        replace: modeSpec(forwardMode).replace,
-        official_client: officialClient,
-        has_tools: Array.isArray(officialBody.tools) && officialBody.tools.length > 0,
-        message_roles: (officialBody.messages || []).map((m) => m.role),
-        model: officialBody.model,
-        stream: !!wantStream,
-        via: 'vm-cli-forward',
-        vm_id: identity.vmId,
-        session_id: identity.sessionId,
-        settings_theme: identity.settings?.theme || null,
-        timezone: identity.timezone,
-        locale: identity.locale,
-      }, null, 2),
-    )
+    diffCapture(diffDir, 'client-workspace', {
+      client_class: fp.client_class,
+      protocol,
+      workspace,
+      forward_mode: forwardMode,
+      replace: modeSpec(forwardMode).replace,
+      official_client: officialClient,
+      has_tools: Array.isArray(officialBody.tools) && officialBody.tools.length > 0,
+      message_roles: (officialBody.messages || []).map((m) => m.role),
+      model: officialBody.model,
+      stream: !!wantStream,
+      via: 'vm-cli-forward',
+      vm_id: identity.vmId,
+      session_id: identity.sessionId,
+      settings_theme: identity.settings?.theme || null,
+      timezone: identity.timezone,
+      locale: identity.locale,
+    })
     const resumeSessionId = exec.stickyBound?.sessionId || null
     const hopBase = {
       ...buildCliOptsFromExec(exec, officialBody, { timeoutMs: cfg.limits.upstream_timeout_ms }),
@@ -497,6 +514,7 @@ async function handleProtocol(req, res, protocol, pathName) {
         upstream_status: result?.status || 0,
         via: result?.via || 'vm-cli-forward-stream',
         stream: true,
+        hop_meta: result?.hop_meta || null,
       })
       return res.end()
     }
@@ -504,7 +522,10 @@ async function handleProtocol(req, res, protocol, pathName) {
     // ---- non-stream ----
     let upstream
     try {
-      upstream = await callClientWorkspaceCli(hopBase)
+      upstream = await callClientWorkspaceCli({
+        ...hopBase,
+        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
+      })
       ingestCliHopQuota(accountId, upstream)
       if (stickyKey && upstream.session_id) {
         stickyRouter.bind(stickyKey, { accountId, vmId, sessionId: upstream.session_id })
@@ -523,6 +544,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       upstream_status: upstream.status,
       via: upstream.via || 'vm-cli-forward',
       stop_reason: upstream.body?.stop_reason || null,
+      hop_meta: upstream.hop_meta || null,
     })
     if (upstream.status !== 200) {
       stats.errors++
@@ -1300,38 +1322,41 @@ const server = http.createServer(async (req, res) => {
           } else {
             return json(res, 400, { ok: false, error: { message: 'sessionKey or access_token required' } })
           }
-          // Single OAuth writer: persistOauthToVm only
-          persistOauthToVm(vmPath, {
-            access_token: oauth.access_token || oauth.accessToken,
-            refresh_token: oauth.refresh_token || oauth.refreshToken || null,
-            expires_at: oauth.expires_at || oauth.expiresAt || null,
-            email: oauth.email || oauth.email_address || oauth.profile?.email || existing.claude?.email || null,
-            account_uuid: oauth.account_uuid || oauth.accountUuid || null,
-            org_uuid: oauth.org_uuid || oauth.orgUuid || null,
-            source: oauth.source || 'sessionKey-cookie-auth',
-            session_key: sessionKey ? String(sessionKey).trim() : (existing.claude?.session_key || null),
-            mode: 'oauth',
+          // Serialize the token read-modify-write against concurrent harvests (T7).
+          await withVmLock(vmPath, () => {
+            // Single OAuth writer: persistOauthToVm only
+            persistOauthToVm(vmPath, {
+              access_token: oauth.access_token || oauth.accessToken,
+              refresh_token: oauth.refresh_token || oauth.refreshToken || null,
+              expires_at: oauth.expires_at || oauth.expiresAt || null,
+              email: oauth.email || oauth.email_address || oauth.profile?.email || existing.claude?.email || null,
+              account_uuid: oauth.account_uuid || oauth.accountUuid || null,
+              org_uuid: oauth.org_uuid || oauth.orgUuid || null,
+              source: oauth.source || 'sessionKey-cookie-auth',
+              session_key: sessionKey ? String(sessionKey).trim() : (existing.claude?.session_key || null),
+              mode: 'oauth',
+            })
+            // Reload after single-writer persist
+            const refreshed = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+            existing.claude = refreshed.claude || existing.claude
+            if (body.name) existing.name = body.name
+            existing.updated_at = new Date().toISOString()
+            if (body.start !== false) {
+              existing.status = 'running'
+              existing.schedulable = true
+              existing.schedule_disabled_reason = null
+            }
+            // Non-oauth fields only (status/name) — tokens already written by persistOauthToVm
+            atomicWriteJson(vmPath, {
+              ...refreshed,
+              name: existing.name,
+              status: existing.status,
+              schedulable: existing.schedulable,
+              schedule_disabled_reason: existing.schedule_disabled_reason,
+              updated_at: existing.updated_at,
+              claude: existing.claude,
+            })
           })
-          // Reload after single-writer persist
-          const refreshed = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-          existing.claude = refreshed.claude || existing.claude
-          if (body.name) existing.name = body.name
-          existing.updated_at = new Date().toISOString()
-          if (body.start !== false) {
-            existing.status = 'running'
-            existing.schedulable = true
-            existing.schedule_disabled_reason = null
-          }
-          // Non-oauth fields only (status/name) — tokens already written by persistOauthToVm
-          fs.writeFileSync(vmPath, JSON.stringify({
-            ...refreshed,
-            name: existing.name,
-            status: existing.status,
-            schedulable: existing.schedulable,
-            schedule_disabled_reason: existing.schedule_disabled_reason,
-            updated_at: existing.updated_at,
-            claude: existing.claude,
-          }, null, 2))
           try {
             seedCliCredentials({
               homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),

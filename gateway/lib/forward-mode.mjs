@@ -13,7 +13,15 @@
  *   Transport: official Messages shape.
  *   Identity: full VM standard replace.
  *
- * Mode difference is transport only, not what is replaced.
+ * Mode difference is nominal today: relay is a label with the SAME replace set
+ * as cli. There is no independent HTTP relay — the Anthropic HTTP hop is
+ * permanently 501 (see anthropic-messages.mjs), so both modes run the slot CLI.
+ *
+ * NOTE on where identity is enforced: for the `cli` transport the effective
+ * identity comes from cli-home seeding (credentials/settings/fingerprint written
+ * to the slot). The body-level metadata.user_id replace here is for audit and
+ * consistency assertions; `claude -p` does not forward the body `metadata` to
+ * api.anthropic.com verbatim.
  *
  * VM standard profile:
  *   credentials, session_id, device_id, metadata.user_id,
@@ -90,41 +98,6 @@ export function applyVmStandardReplace(body, identity) {
   return out
 }
 
-/** @deprecated use applyVmStandardReplace */
-export function applyCliReplace(body, identity) {
-  return applyVmStandardReplace(body, identity)
-}
-
-/** @deprecated use applyVmStandardReplace */
-export function applyRelayReplace(body, identity) {
-  return applyVmStandardReplace(body, identity)
-}
-
 export function applyForwardReplace(_mode, body, identity) {
   return applyVmStandardReplace(body, identity)
-}
-
-/** Always apply VM fingerprint headers (both modes). */
-export function applyVmFingerprintHeaders(headers, identity) {
-  const fp = identity.fingerprint || {}
-  return {
-    ...headers,
-    'user-agent': fp.user_agent || identity.userAgent,
-    'x-app': fp.x_app || 'cli',
-    'x-stainless-lang': fp.stainless_lang || 'js',
-    'x-stainless-package-version': fp.stainless_package_version || '0.94.0',
-    'x-stainless-os': fp.stainless_os || 'Linux',
-    'x-stainless-arch': fp.stainless_arch || 'x64',
-    'x-stainless-runtime': fp.stainless_runtime || 'node',
-    'x-stainless-runtime-version': fp.stainless_runtime_version || 'v24.3.0',
-    'x-claude-code-session-id': identity.sessionId,
-  }
-}
-
-export function applyRelayFingerprintHeaders(headers, identity) {
-  return applyVmFingerprintHeaders(headers, identity)
-}
-
-export function applyCliSessionHeader(headers, identity) {
-  return applyVmFingerprintHeaders(headers, identity)
 }

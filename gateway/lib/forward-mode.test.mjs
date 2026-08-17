@@ -2,8 +2,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   resolveForwardMode,
-  applyCliReplace,
-  applyRelayReplace,
   applyForwardReplace,
   FORWARD_MODES,
   VM_STANDARD_REPLACE,
@@ -30,8 +28,8 @@ test('cli and relay both full-replace identity (consistency)', () => {
     sessionId: 'vm-sess',
     metadataUserId: JSON.stringify({ device_id: 'vm-dev', account_uuid: 'vm-acc', session_id: 'vm-sess' }),
   }
-  const a = applyCliReplace(body, id)
-  const b = applyRelayReplace(body, id)
+  const a = applyForwardReplace('cli', body, id)
+  const b = applyForwardReplace('relay', body, id)
   const uidA = JSON.parse(a.metadata.user_id)
   const uidB = JSON.parse(b.metadata.user_id)
   assert.equal(uidA.session_id, 'vm-sess')

@@ -17,6 +17,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { atomicWriteJson } from './vm-file.mjs'
 
 /** Kept for status / diagnostics only — not used to trigger gateway refresh. */
 export const REFRESH_SKEW_MS = 5 * 60 * 1000
@@ -109,7 +110,7 @@ export function persistOauthToVm(vmPath, cred) {
   vm.claude.refreshed_at = new Date().toISOString()
   vm.claude._token_version = Date.now()
   vm.updated_at = new Date().toISOString()
-  fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2), { mode: 0o600 })
+  atomicWriteJson(vmPath, vm, { mode: 0o600 })
   return vm
 }
 
@@ -141,7 +142,7 @@ export function persistRefreshError(vmPath, err) {
       need_reimport: !!err?.need_reimport,
     }
     vm.updated_at = new Date().toISOString()
-    fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2), { mode: 0o600 })
+    atomicWriteJson(vmPath, vm, { mode: 0o600 })
   } catch {}
 }
 

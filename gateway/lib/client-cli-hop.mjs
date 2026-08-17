@@ -12,12 +12,74 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeCliHome } from './cli-runner.mjs'
+import { consumeCliNdjson } from './cli-probe.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BRIDGE = path.join(__dirname, 'mcp-bridge.mjs')
-const BUILTIN_BLOCK = 'Read,Write,Edit,Bash,Grep,Glob,WebFetch,WebSearch,Agent,Skill,NotebookEdit,Task,ToolSearch'
+
+// Defense-in-depth denylist. The real guard is permission-mode=default (T5):
+// in non-interactive `-p`, any tool that is not pre-approved fails closed.
+const BUILTIN_TOOLS = [
+  'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'NotebookRead',
+  'Bash', 'BashOutput', 'KillBash', 'KillShell',
+  'Grep', 'Glob', 'LS',
+  'WebFetch', 'WebSearch',
+  'Agent', 'Task', 'Skill', 'ToolSearch', 'SlashCommand', 'ExitPlanMode',
+  'TodoWrite', 'ListMcpResources', 'ReadMcpResource',
+]
+const BUILTIN_BLOCK = BUILTIN_TOOLS.join(',')
+const MAX_SYSTEM_CHARS = 24000
+
+// Request params we cannot faithfully forward through `claude -p`.
+// Tracked so the gateway can report them honestly instead of silently dropping.
+const UNMAPPABLE_PARAMS = ['max_tokens', 'temperature', 'top_p', 'top_k', 'stop_sequences', 'stop', 'tool_choice']
 
 function ensureDir(p) { fs.mkdirSync(p, { recursive: true }) }
+
+/**
+ * Build CLI args for the client-workspace hop.
+ * T5: fail-closed permissions — deny every built-in, only allow the non-executing
+ *     MCP stub tools, and use permission-mode=default (no bypass) so unknown/new
+ *     built-ins are refused in non-interactive mode.
+ * T8: record system-prompt truncation instead of a silent slice.
+ * T4: forward what `claude -p` supports (model, thinking via env); record the rest.
+ */
+export function buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial = false }) {
+  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
+  if (includePartial) args.push('--include-partial-messages')
+  args.push('--model', mdl, '--mcp-config', mcpCfg)
+
+  args.push('--disallowedTools', BUILTIN_BLOCK)
+  const allow = tools.map((t) => `mcp__kinclient__${t.name || t.function?.name}`).filter(Boolean)
+  if (allow.length) args.push('--allowedTools', allow.join(','))
+  args.push('--permission-mode', 'default')
+
+  const sysMeta = { truncated: false }
+  const sys = systemToPrompt(body?.system)
+  if (sys) {
+    sysMeta.orig_len = sys.length
+    let kept = sys
+    if (sys.length > MAX_SYSTEM_CHARS) {
+      kept = sys.slice(0, MAX_SYSTEM_CHARS)
+      sysMeta.truncated = true
+      sysMeta.kept_len = kept.length
+    }
+    args.push('--append-system-prompt', kept)
+  }
+
+  const paramMeta = { dropped: [], thinking_budget: null }
+  for (const k of UNMAPPABLE_PARAMS) {
+    if (body?.[k] !== undefined && body?.[k] !== null) paramMeta.dropped.push(k)
+  }
+  const think = body?.thinking
+  if (think && (think.type === 'enabled' || think.budget_tokens)) {
+    const n = Number(think.budget_tokens) || 0
+    if (n > 0) paramMeta.thinking_budget = n
+  }
+
+  if (resumeSessionId) args.push('--resume', String(resumeSessionId))
+  return { args, sysMeta, paramMeta }
+}
 
 function textOf(content) {
   if (typeof content === 'string') return content
@@ -34,43 +96,6 @@ export function systemToPrompt(system) {
   if (typeof system === 'string') return system.trim()
   if (Array.isArray(system)) {
     return system.map((b) => (typeof b === 'string' ? b : b?.text || '')).filter(Boolean).join('\n\n').trim()
-  }
-  return ''
-}
-
-export function extractLatestToolResults(messages = []) {
-  const out = []
-  for (const m of messages) {
-    if (m?.role === 'tool') {
-      out.push({
-        type: 'tool_result',
-        tool_use_id: m.tool_call_id || m.id,
-        content: textOf(m.content),
-      })
-      continue
-    }
-    if (!Array.isArray(m?.content)) continue
-    for (const b of m.content) {
-      if (b?.type === 'tool_result') {
-        out.push({
-          type: 'tool_result',
-          tool_use_id: b.tool_use_id,
-          content: typeof b.content === 'string' ? b.content : JSON.stringify(b.content || ''),
-        })
-      }
-    }
-  }
-  return out
-}
-
-export function lastUserText(messages = []) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m?.role !== 'user') continue
-    const t = textOf(m.content)
-    if (t && !String(t).includes('tool_result')) return t
-    if (Array.isArray(m.content) && m.content.every((b) => b?.type === 'tool_result')) continue
-    if (t) return t
   }
   return ''
 }
@@ -101,6 +126,184 @@ function collectToolUses(obj) {
   return found
 }
 
+function safeParseArgs(v) {
+  if (v == null) return {}
+  if (typeof v === 'object') return v
+  try { return JSON.parse(String(v)) } catch { return { _raw: String(v) } }
+}
+
+/** Convert an OpenAI data:/http image URL into an Anthropic image block. */
+export function openAiImageToAnthropic(url) {
+  if (!url) return null
+  const m = String(url).match(/^data:([^;]+);base64,(.+)$/)
+  if (m) return { type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } }
+  if (/^https?:\/\//.test(String(url))) return { type: 'image', source: { type: 'url', url: String(url) } }
+  return null
+}
+
+/**
+ * Normalize a message's `content` into Anthropic content blocks, preserving
+ * text / images / tool_use / tool_result / documents across OpenAI + Anthropic shapes.
+ */
+export function toAnthropicBlocks(content) {
+  if (content == null) return []
+  if (typeof content === 'string') return content ? [{ type: 'text', text: content }] : []
+  if (!Array.isArray(content)) {
+    if (content.type) return [content]
+    if (content.text) return [{ type: 'text', text: content.text }]
+    return []
+  }
+  const out = []
+  for (const b of content) {
+    if (b == null) continue
+    if (typeof b === 'string') { if (b) out.push({ type: 'text', text: b }); continue }
+    const t = b.type
+    if (t === 'text' || t === 'input_text' || t === 'output_text') {
+      if (b.text) out.push({ type: 'text', text: b.text })
+      continue
+    }
+    if (t === 'image' || t === 'input_image') {
+      if (b.source) { out.push({ type: 'image', source: b.source }); continue }
+      const url = typeof b.image_url === 'string' ? b.image_url : (b.image_url?.url || b.url)
+      const conv = openAiImageToAnthropic(url)
+      if (conv) out.push(conv)
+      continue
+    }
+    if (t === 'image_url') {
+      const url = typeof b.image_url === 'string' ? b.image_url : b.image_url?.url
+      const conv = openAiImageToAnthropic(url)
+      if (conv) out.push(conv)
+      continue
+    }
+    if (t === 'tool_use') {
+      out.push({ type: 'tool_use', id: b.id, name: b.name, input: b.input || {} })
+      continue
+    }
+    if (t === 'tool_result') {
+      out.push({
+        type: 'tool_result',
+        tool_use_id: b.tool_use_id,
+        content: typeof b.content === 'string' || Array.isArray(b.content)
+          ? b.content
+          : JSON.stringify(b.content || ''),
+      })
+      continue
+    }
+    if (t === 'document') { out.push(b); continue }
+    if (b.text) { out.push({ type: 'text', text: b.text }); continue }
+  }
+  return out
+}
+
+function blockToTranscriptSeg(b) {
+  if (!b) return ''
+  if (b.type === 'text') return b.text || ''
+  if (b.type === 'image') return '[image]'
+  if (b.type === 'document') return '[document]'
+  if (b.type === 'tool_use') return `[tool_use ${b.name}(${JSON.stringify(b.input || {})})]`
+  if (b.type === 'tool_result') {
+    const c = typeof b.content === 'string' ? b.content
+      : Array.isArray(b.content) ? b.content.map((x) => x?.text || '').filter(Boolean).join('\n')
+        : JSON.stringify(b.content || '')
+    return `[tool_result ${b.tool_use_id || ''}: ${c}]`
+  }
+  return ''
+}
+
+function messageToBlocks(m) {
+  const blocks = toAnthropicBlocks(m?.content)
+  // OpenAI assistant tool_calls → native tool_use blocks
+  if (Array.isArray(m?.tool_calls)) {
+    for (const tc of m.tool_calls) {
+      blocks.push({ type: 'tool_use', id: tc.id, name: tc.function?.name || tc.name, input: safeParseArgs(tc.function?.arguments ?? tc.arguments) })
+    }
+  }
+  // OpenAI tool role → tool_result block
+  if (m?.role === 'tool') {
+    blocks.unshift({ type: 'tool_result', tool_use_id: m.tool_call_id || m.id, content: textOf(m.content) })
+  }
+  return blocks
+}
+
+function renderHistoryTranscript(history) {
+  const parts = []
+  for (const m of history) {
+    const role = m?.role
+    if (role === 'system' || role === 'developer') continue
+    const label = role === 'assistant' ? 'Assistant' : role === 'tool' ? 'Tool' : 'Human'
+    const segs = messageToBlocks(m).map(blockToTranscriptSeg).filter(Boolean)
+    if (segs.length) parts.push(`${label}: ${segs.join('\n')}`)
+  }
+  return parts.join('\n\n')
+}
+
+/**
+ * Build stream-json input turn line(s) for the client-workspace hop.
+ *
+ * - resumeSessionId present: send only the trailing user/tool turn natively;
+ *   the CLI already holds prior history via --resume.
+ * - no resume: preserve full multi-turn CONTEXT. Prior turns are rendered into a
+ *   transcript text block; the trailing turn's native blocks (text/images/tool_result)
+ *   are attached so images and tool results survive.
+ *
+ * Returns { lines: string[], meta: { turns, had_images, had_tool_results, history_flattened } }
+ */
+export function buildStreamJsonTurns(messages = [], { resumeSessionId = null } = {}) {
+  const list = (Array.isArray(messages) ? messages : []).filter((m) => m && m.role !== 'system' && m.role !== 'developer')
+  const meta = { turns: 0, had_images: false, had_tool_results: false, history_flattened: false }
+
+  const userLine = (blocks) => JSON.stringify({ type: 'user', message: { role: 'user', content: blocks } })
+
+  const markMedia = (blocks) => {
+    for (const b of blocks) {
+      if (b?.type === 'image') meta.had_images = true
+      if (b?.type === 'tool_result') meta.had_tool_results = true
+    }
+  }
+
+  // Trailing input = last user/tool message; everything before is history.
+  let splitIdx = -1
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].role === 'user' || list[i].role === 'tool') { splitIdx = i; break }
+  }
+
+  // Resume: only the trailing turn is needed.
+  if (resumeSessionId) {
+    const trailing = splitIdx >= 0 ? list.slice(splitIdx) : []
+    const blocks = []
+    for (const m of trailing) blocks.push(...messageToBlocks(m))
+    if (!blocks.length) blocks.push({ type: 'text', text: 'Hello' })
+    markMedia(blocks)
+    meta.turns = 1
+    return { lines: [userLine(blocks)], meta }
+  }
+
+  const trailingMsgs = splitIdx >= 0 ? list.slice(splitIdx) : []
+  const history = splitIdx >= 0 ? list.slice(0, splitIdx) : list
+
+  const trailingBlocks = []
+  for (const m of trailingMsgs) trailingBlocks.push(...messageToBlocks(m))
+
+  // Single effective turn (common case): send its native blocks directly.
+  if (history.length === 0) {
+    const blocks = trailingBlocks.length ? trailingBlocks : [{ type: 'text', text: 'Hello' }]
+    markMedia(blocks)
+    meta.turns = 1
+    return { lines: [userLine(blocks)], meta }
+  }
+
+  // Multi-turn: flatten prior context to text, keep trailing native blocks.
+  meta.history_flattened = true
+  const transcript = renderHistoryTranscript(history)
+  const blocks = []
+  if (transcript) blocks.push({ type: 'text', text: `Conversation so far:\n${transcript}` })
+  if (trailingBlocks.length) blocks.push(...trailingBlocks)
+  if (!blocks.length) blocks.push({ type: 'text', text: 'Hello' })
+  markMedia(blocks)
+  meta.turns = 1
+  return { lines: [userLine(blocks)], meta }
+}
+
 export async function callClientWorkspaceCli({
   accessToken,
   refreshToken,
@@ -114,6 +317,7 @@ export async function callClientWorkspaceCli({
   body,
   resumeSessionId = null,
   timeoutMs = 180000,
+  onRateLimit,
 }) {
   if (!accessToken) {
     return {
@@ -153,22 +357,7 @@ export async function callClientWorkspaceCli({
   } catch {}
 
   const mdl = body?.model || 'claude-haiku-4-5-20251001'
-  const args = [
-    '-p',
-    '--input-format', 'stream-json',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--model', mdl,
-    '--mcp-config', mcpCfg,
-    '--disallowedTools', BUILTIN_BLOCK,
-    '--permission-mode', 'bypassPermissions',
-  ]
-  if (tools.length) {
-    args.push('--allowedTools', tools.map((t) => `mcp__kinclient__${t.name || t.function?.name}`).filter(Boolean).join(','))
-  }
-  const sys = systemToPrompt(body?.system)
-  if (sys) args.push('--append-system-prompt', sys.slice(0, 12000))
-  if (resumeSessionId) args.push('--resume', String(resumeSessionId))
+  const { args, sysMeta, paramMeta } = buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial: false })
 
   const env = {
     ...process.env,
@@ -178,33 +367,20 @@ export async function callClientWorkspaceCli({
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DO_NOT_TRACK: '1',
   }
+  if (paramMeta.thinking_budget) env.MAX_THINKING_TOKENS = String(paramMeta.thinking_budget)
   if (proxyUrl) {
     // SOCKS hangs the claude binary historically — leave unset unless explicitly enabled
   }
 
-  const stdinLines = []
-  const results = extractLatestToolResults(body?.messages || [])
-  if (resumeSessionId && results.length) {
-    stdinLines.push(JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content: results },
-    }))
-  } else {
-    const userText = lastUserText(body?.messages || []) || 'Hello'
-    const content = []
-    if (results.length) content.push(...results)
-    if (userText) content.push({ type: 'text', text: userText })
-    stdinLines.push(JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content: content.length === 1 && content[0].type === 'text' ? userText : content },
-    }))
-  }
+  const { lines: stdinLines, meta: turnMeta } = buildStreamJsonTurns(body?.messages || [], { resumeSessionId })
 
   const acc = {
     session_id: resumeSessionId || null,
     tool_uses: [],
     text: '',
     usage: null,
+    rate_limit: null,
+    rate_limits: [],
   }
 
   const result = await spawnCli({
@@ -216,6 +392,10 @@ export async function callClientWorkspaceCli({
     onLine: (line) => {
       const obj = parseStreamLine(line)
       if (!obj) return
+      consumeCliNdjson(line, acc)
+      if (obj.type === 'rate_limit_event' && typeof onRateLimit === 'function' && acc.rate_limit) {
+        try { onRateLimit(acc.rate_limit, obj) } catch {}
+      }
       if (obj.type === 'system' && obj.subtype === 'init' && obj.session_id) acc.session_id = obj.session_id
       if (obj.session_id && !acc.session_id) acc.session_id = obj.session_id
       for (const tu of collectToolUses(obj)) {
@@ -254,6 +434,8 @@ export async function callClientWorkspaceCli({
     })
   }
 
+  const hopMeta = { ...turnMeta, system: sysMeta, params: paramMeta }
+
   if (acc.tool_uses.length) {
     return {
       status: 200,
@@ -261,6 +443,9 @@ export async function callClientWorkspaceCli({
       via: 'cli-client-workspace',
       session_id: acc.session_id,
       usage: acc.usage,
+      rate_limit: acc.rate_limit,
+      rate_limits: acc.rate_limits,
+      hop_meta: hopMeta,
       body: {
         id: `msg_${acc.session_id || Date.now()}`,
         type: 'message',
@@ -290,6 +475,9 @@ export async function callClientWorkspaceCli({
     via: 'cli-client-workspace',
     session_id: acc.session_id,
     usage: acc.usage,
+    rate_limit: acc.rate_limit,
+    rate_limits: acc.rate_limits,
+    hop_meta: hopMeta,
     body: {
       id: `msg_${acc.session_id || Date.now()}`,
       type: 'message',
@@ -363,23 +551,7 @@ export async function streamClientWorkspaceCli({
   } catch {}
 
   const mdl = body?.model || 'claude-haiku-4-5-20251001'
-  const args = [
-    '-p',
-    '--input-format', 'stream-json',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--include-partial-messages',
-    '--model', mdl,
-    '--mcp-config', mcpCfg,
-    '--disallowedTools', BUILTIN_BLOCK,
-    '--permission-mode', 'bypassPermissions',
-  ]
-  if (tools.length) {
-    args.push('--allowedTools', tools.map((t) => `mcp__kinclient__${t.name || t.function?.name}`).filter(Boolean).join(','))
-  }
-  const sys = systemToPrompt(body?.system)
-  if (sys) args.push('--append-system-prompt', sys.slice(0, 12000))
-  if (resumeSessionId) args.push('--resume', String(resumeSessionId))
+  const { args, sysMeta, paramMeta } = buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial: true })
 
   const env = {
     ...process.env,
@@ -389,24 +561,9 @@ export async function streamClientWorkspaceCli({
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DO_NOT_TRACK: '1',
   }
+  if (paramMeta.thinking_budget) env.MAX_THINKING_TOKENS = String(paramMeta.thinking_budget)
 
-  const stdinLines = []
-  const results = extractLatestToolResults(body?.messages || [])
-  if (resumeSessionId && results.length) {
-    stdinLines.push(JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content: results },
-    }))
-  } else {
-    const userText = lastUserText(body?.messages || []) || 'Hello'
-    const content = []
-    if (results.length) content.push(...results)
-    if (userText) content.push({ type: 'text', text: userText })
-    stdinLines.push(JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content: content.length === 1 && content[0].type === 'text' ? userText : content },
-    }))
-  }
+  const { lines: stdinLines, meta: turnMeta } = buildStreamJsonTurns(body?.messages || [], { resumeSessionId })
 
   if (typeof onHeaders === 'function') {
     try {
@@ -438,6 +595,10 @@ export async function streamClientWorkspaceCli({
     onLine: (line) => {
       let obj
       try { obj = JSON.parse(line) } catch { return }
+      consumeCliNdjson(line, acc)
+      if (obj.type === 'rate_limit_event' && typeof onRateLimit === 'function' && acc.rate_limit) {
+        try { onRateLimit(acc.rate_limit, obj) } catch {}
+      }
       if (obj.type === 'system' && obj.subtype === 'init' && obj.session_id) acc.session_id = obj.session_id
       if (obj.session_id && !acc.session_id) acc.session_id = obj.session_id
 
@@ -515,25 +676,38 @@ export async function streamClientWorkspaceCli({
     rate_limit: acc.rate_limit,
     rate_limits: acc.rate_limits,
     tool_uses: acc.tool_uses,
+    hop_meta: { ...turnMeta, system: sysMeta, params: paramMeta },
   }
 }
 
 
 function spawnCli({ args, env, cwd, timeoutMs, stdin, onLine, shouldStop }) {
   return new Promise((resolve) => {
+    // detached:true → new process group (setsid), so we can signal the whole
+    // sudo→claude subtree and avoid orphaned CLI processes on early stop (T6).
     const child = spawn('sudo', ['-u', 'kincli', '-E', 'claude', ...args], {
       env,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true,
     })
     let stdout = ''
     let stderr = ''
     let buf = ''
     let killed = false
-    const timer = setTimeout(() => {
-      killed = true
-      try { child.kill('SIGKILL') } catch {}
-    }, timeoutMs)
+    let done = false
+
+    // Kill the whole process group; fall back to the direct child pid.
+    const killTree = (sig) => {
+      try { process.kill(-child.pid, sig) }
+      catch { try { child.kill(sig) } catch {} }
+    }
+    const hardKill = () => {
+      killTree('SIGTERM')
+      setTimeout(() => { if (!done) killTree('SIGKILL') }, 500)
+    }
+
+    const timer = setTimeout(() => { killed = true; hardKill() }, timeoutMs)
 
     const feed = (chunk) => {
       buf += chunk
@@ -545,14 +719,14 @@ function spawnCli({ args, env, cwd, timeoutMs, stdin, onLine, shouldStop }) {
       }
       if (shouldStop?.()) {
         killed = true
-        try { child.kill('SIGTERM') } catch {}
-        setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 400)
+        hardKill()
       }
     }
 
     child.stdout.on('data', (c) => feed(String(c)))
     child.stderr.on('data', (c) => { stderr += String(c) })
     child.on('close', (code) => {
+      done = true
       clearTimeout(timer)
       if (buf.trim()) {
         try { onLine(buf.trim()) } catch {}
@@ -560,6 +734,7 @@ function spawnCli({ args, env, cwd, timeoutMs, stdin, onLine, shouldStop }) {
       resolve({ code: code ?? 1, stdout, stderr, killed })
     })
     child.on('error', (err) => {
+      done = true
       clearTimeout(timer)
       resolve({ code: 127, stdout, stderr: String(err.message || err), killed })
     })
