@@ -440,6 +440,33 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
 .chip-check input{margin:0}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 
+
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.table th.th-sort{cursor:pointer;user-select:none;white-space:nowrap}
+.table th.th-sort:hover{color:var(--fg)}
+.table th.th-sort.on{color:var(--fg)}
+.table th.th-sort .dir{color:var(--faint);font-weight:500;margin-left:3px}
+.view-tog{display:inline-flex;border:1px solid var(--line-2);border-radius:var(--r-sm);overflow:hidden}
+.view-tog button{height:32px;padding:0 10px;background:transparent;border:0;border-right:1px solid var(--line);color:var(--faint);cursor:pointer}
+.view-tog button:last-child{border-right:0}
+.view-tog button.on{background:rgba(248,250,252,.08);color:var(--fg)}
+.vm-list{border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--panel)}
+.vm-row{display:grid;grid-template-columns:minmax(140px,1.2fr) minmax(120px,1fr) 110px 88px 72px auto;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer;min-height:44px}
+.vm-row:last-child{border-bottom:0}
+.vm-row:hover{background:var(--panel-2)}
+.vm-row .nm{display:flex;align-items:center;gap:8px;min-width:0;font-weight:550}
+.vm-row .nm .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vm-row .em{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font-size:12px}
+.vm-row .ops{display:flex;justify-content:flex-end;gap:2px;opacity:0}
+.vm-row:hover .ops,.vm-row:focus-within .ops{opacity:1}
+@media(hover:none){.vm-row .ops{opacity:1}}
+@media(max-width:760px){
+  .vm-row{grid-template-columns:1fr auto;gap:6px 10px}
+  .vm-row .em,.vm-row .k-tag{display:none}
+}
+.modal .opt{align-items:center}
+.modal .opt em{display:none}
+
 /* ── page reconstruction ────────────────────────────────── */
 .cmd-strip{display:flex;align-items:stretch;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .cmd-strip .score{min-width:100px;padding:16px 18px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
@@ -583,7 +610,7 @@ function kernelTag(id) {
   return `<span class="k-tag" title="${esc(p.id)}${p.base?' · '+esc(p.base):''}"><i></i>${esc(p.name)}${p.size?' · '+esc(p.size):''}</span>`
 }
 
-let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null, clusterQ: '', clusterFilter: 'all', vmTab: 'overview', loading: false, kernel: 'unikernel-min', createName: '', advOpen: false }
+let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null, clusterQ: '', clusterFilter: 'all', clusterView: 'list', vmTab: 'overview', loading: false, kernel: 'unikernel-min', createName: '', advOpen: false, usageSort: 'u5', usageDir: 'desc', proxySort: 'status', proxyDir: 'asc' }
 let bootstrapped = false
 
 function apiBase() {
@@ -776,6 +803,51 @@ function skeleton(kind) {
   return `<div class="sk-grid">${'<div class="skeleton sk-card"></div>'.repeat(6)}</div>`
 }
 function emptyBox(msg, act) { return `<div class="empty-box"><div>${esc(msg)}</div>${act||''}</div>` }
+function sortDir(cur, key, dir) { return cur === key ? (dir === 'asc' ? 'desc' : 'asc') : 'desc' }
+function thSort(label, key, cur, dir, fn) {
+  const on = cur === key
+  const aria = on ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'
+  return `<th class="th-sort ${on ? 'on' : ''}" aria-sort="${aria}" tabindex="0" onclick="${fn}('${key}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${fn}('${key}')}">${esc(label)}${on ? `<span class="dir">${dir === 'asc' ? '↑' : '↓'}</span>` : ''}</th>`
+}
+function cmp(a, b, dir) {
+  if (a == null && b == null) return 0
+  if (a == null) return 1
+  if (b == null) return -1
+  if (typeof a === 'number' && typeof b === 'number') return dir === 'asc' ? a - b : b - a
+  const as = String(a), bs = String(b)
+  return dir === 'asc' ? as.localeCompare(bs) : bs.localeCompare(as)
+}
+function setClusterView(v) { state.clusterView = v; render() }
+function setUsageSort(key) {
+  state.usageDir = sortDir(state.usageSort, key, state.usageDir)
+  state.usageSort = key
+  render()
+}
+function setProxySort(key) {
+  state.proxyDir = sortDir(state.proxySort, key, state.proxyDir)
+  state.proxySort = key
+  render()
+}
+function vmListRow(v) {
+  const acc = accountStatus(v)
+  const u5 = pct(v.utilization_5h)
+  return `<div class="vm-row" onclick="openVm('${esc(v.id)}')">
+    <div class="nm"><span class="status-dot ${statusDot(v)}"></span><span class="txt">${esc(v.name || v.id)}</span></div>
+    <div class="em">${esc(v.email || '—')}</div>
+    <div>${meter('', u5)}</div>
+    <span class="acc-pill ${acc.cls}">${acc.text}</span>
+    ${kernelTag(v.kernel)}
+    <div class="ops">
+      <button class="btn btn-ghost btn-xs faint" onclick="event.stopPropagation();openResetVm('${esc(v.id)}')">重置</button>
+      <button class="btn btn-ghost btn-xs danger" onclick="event.stopPropagation();openDeleteVm('${esc(v.id)}')">删除</button>
+    </div>
+  </div>`
+}
+function renderVmCollection(vms, emptyMsg) {
+  if (!vms.length) return emptyBox(emptyMsg || '空')
+  if (state.clusterView === 'grid') return `<div class="vm-grid">${vms.map(vmCard).join('')}</div>`
+  return `<div class="vm-list">${vms.map(vmListRow).join('')}</div>`
+}
 
 document.getElementById('loginPassInput') && document.getElementById('loginPassInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin() })
 
@@ -1083,10 +1155,10 @@ function filteredVms() {
 function setClusterFilter(f) { state.clusterFilter = f; render() }
 function onClusterSearch(el) {
   state.clusterQ = el.value || ''
-  const grid = document.getElementById('clusterGrid')
-  if (!grid) { render(); return }
+  const box = document.getElementById('clusterBox')
+  if (!box) { render(); return }
   const vms = filteredVms()
-  grid.innerHTML = vms.map(vmCard).join('') || emptyBox('无匹配节点')
+  box.innerHTML = vms.length ? (state.clusterView === 'grid' ? `<div class="vm-grid">${vms.map(vmCard).join('')}</div>` : `<div class="vm-list">${vms.map(vmListRow).join('')}</div>`) : emptyBox('无匹配')
 }
 function renderCluster() {
   const d = state.dashboard || {}
@@ -1111,10 +1183,14 @@ function renderCluster() {
       <div class="toolbar">
         <input class="input" placeholder="搜索" aria-label="搜索" value="${esc(state.clusterQ || '')}" oninput="onClusterSearch(this)" />
         <div class="seg">${segs.map(([k, lab]) => `<button class="${f === k ? 'on' : ''}" onclick="setClusterFilter('${k}')">${lab} ${counts[k]}</button>`).join('')}</div>
+        <div class="view-tog" role="group" aria-label="视图">
+          <button class="${state.clusterView!=='grid'?'on':''}" onclick="setClusterView('list')">列表</button>
+          <button class="${state.clusterView==='grid'?'on':''}" onclick="setClusterView('grid')">网格</button>
+        </div>
         <button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>
       </div>
     </div>
-    <div class="vm-grid" id="clusterGrid">${vms.map(vmCard).join('') || emptyBox(all.length ? '无匹配' : '暂无节点', all.length ? '' : `<button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>`)}</div>
+    <div id="clusterBox">${vms.length ? (state.clusterView==='grid' ? `<div class="vm-grid">${vms.map(vmCard).join('')}</div>` : `<div class="vm-list">${vms.map(vmListRow).join('')}</div>`) : emptyBox(all.length ? '无匹配' : '空', all.length ? '' : `<button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>`)}</div>
   </section>`
 }
 
@@ -1318,7 +1394,7 @@ function renderVm() {
   if (!state.selectedVm && !det) {
     return `<section class="section">
       ${create}
-      <div class="vm-grid">${vms.map(vmCard).join('') || emptyBox('暂无节点')}</div>
+      ${renderVmCollection(vms, '空')}
     </section>`
   }
   const vm = det?.vm || vms.find(x => x.id === state.selectedVm) || {}
@@ -1506,11 +1582,22 @@ function statTile(k, v, s) {
 function renderUsage() {
   const u = state.usage || {}
   if (u.error) return emptyBox('加载失败: ' + u.error)
-  const accounts = u.accounts || []
+  const accounts = (u.accounts || []).slice()
   const s = u.totals || state.dashboard?.summary || {}
   const near = accounts.filter(a => a.near_limit || pct(a.utilization_5h) >= 95).length
   const peak5 = pct(s.peak_5h ?? s.peak_5h_utilization)
   const peak7 = pct(s.peak_7d ?? s.peak_7d_utilization)
+  const sk = state.usageSort || 'u5'
+  const sd = state.usageDir || 'desc'
+  const keyOf = {
+    name: a => (a.email || a.account_id || '').toLowerCase(),
+    u5: a => pct(a.utilization_5h),
+    u7: a => pct(a.utilization_7d),
+    conc: a => Number(a.inflight || 0),
+    req: a => Number(a.requests || 0),
+    st: a => (a.near_limit || pct(a.utilization_5h) >= 95) ? 1 : 0,
+  }
+  accounts.sort((a, b) => cmp(keyOf[sk](a), keyOf[sk](b), sd))
   return `
   <section class="section">
     <div class="stat-hero">
@@ -1523,9 +1610,9 @@ function renderUsage() {
       <div class="section-title">${accounts.length}</div>
       <button class="btn btn-outline btn-sm" onclick="probeAll()">CLI 探测</button>
     </div>
-    <div class="card" style="padding:8px 10px 4px">
+    <div class="card table-wrap" style="padding:8px 10px 4px">
       <table class="table">
-        <thead><tr><th>账号</th><th style="width:140px">5h</th><th style="width:140px">7d</th><th>并发</th><th>请求</th><th class="right">状态</th></tr></thead>
+        <thead><tr>${thSort('账号','name',sk,sd,'setUsageSort')}${thSort('5h','u5',sk,sd,'setUsageSort')}${thSort('7d','u7',sk,sd,'setUsageSort')}${thSort('并发','conc',sk,sd,'setUsageSort')}${thSort('请求','req',sk,sd,'setUsageSort')}${thSort('状态','st',sk,sd,'setUsageSort')}</tr></thead>
         <tbody>
           ${accounts.map(a => {
             const p5 = pct(a.utilization_5h), p7 = pct(a.utilization_7d)
@@ -1770,11 +1857,22 @@ function renderProxies() {
         <div><button class="btn btn-primary btn-sm" onclick="importProxies()">导入</button></div>
       </div>
     </details>
-    <div class="card" style="padding:8px 10px 4px">
+    <div class="card table-wrap" style="padding:8px 10px 4px">
       <table class="table">
-        <thead><tr><th>代理</th><th>状态</th><th>延迟</th><th>节点</th><th>失败</th><th class="right"></th></tr></thead>
+        <thead><tr>${thSort('代理','host',state.proxySort,state.proxyDir,'setProxySort')}${thSort('状态','status',state.proxySort,state.proxyDir,'setProxySort')}${thSort('延迟','lat',state.proxySort,state.proxyDir,'setProxySort')}${thSort('节点','vm',state.proxySort,state.proxyDir,'setProxySort')}${thSort('失败','fail',state.proxySort,state.proxyDir,'setProxySort')}<th class="right"></th></tr></thead>
         <tbody>
-          ${list.map(prx => {
+          ${list.slice().sort((a,b)=>{
+            const k = state.proxySort || 'status'
+            const d = state.proxyDir || 'asc'
+            const val = {
+              host: x => (x.host||'')+':'+(x.port||''),
+              status: x => x.status || '',
+              lat: x => Number(x.latency_ms ?? 1e9),
+              vm: x => x.bound_vm_id || '',
+              fail: x => Number(x.consecutive_failures || 0),
+            }[k]
+            return cmp(val(a), val(b), d)
+          }).map(prx => {
             const dead = prx.status === 'dead' || prx.enabled === false
             return `<tr class="${dead ? 'dead-row' : ''}">
               <td>
@@ -1922,15 +2020,15 @@ function vmLabel(id) {
 function openResetVm(id) {
   modalVmId = id
   openModal(`
-    <h3>重置虚拟机</h3>
+    <h3>重置</h3>
     <p class="who">${vmLabel(id)}</p>
-    <label class="opt"><input id="rsStats" type="checkbox" checked /><span><b>清统计</b><em>用量、请求计数归零</em></span></label>
-    <label class="opt"><input id="rsFp" type="checkbox" checked /><span><b>重置指纹</b><em>重新生成 device_id / session_id</em></span></label>
-    <label class="opt"><input id="rsSeed" type="checkbox" checked /><span><b>重写种子 settings</b><em>按当前策略重建 cli-home</em></span></label>
-    <label class="opt"><input id="rsOauth" type="checkbox" /><span><b>清除 OAuth</b><em>删除凭证并停机，需重新导入</em></span></label>
+    <label class="opt"><input id="rsStats" type="checkbox" checked /><span>清统计</span></label>
+    <label class="opt"><input id="rsFp" type="checkbox" checked /><span>指纹</span></label>
+    <label class="opt"><input id="rsSeed" type="checkbox" checked /><span>种子</span></label>
+    <label class="opt"><input id="rsOauth" type="checkbox" /><span>清凭证</span></label>
     <div class="foot">
       <button class="btn btn-outline btn-sm" onclick="closeModal()">取消</button>
-      <button class="btn btn-danger btn-sm" id="rsGo" onclick="doResetVm()">执行重置</button>
+      <button class="btn btn-danger btn-sm" id="rsGo" onclick="doResetVm()">重置</button>
     </div>`)
 }
 async function doResetVm() {
@@ -1952,7 +2050,7 @@ async function doResetVm() {
     if (state.selectedVm === id) openVm(id)
   } catch (e) {
     toast(e.message, 'err')
-    if (btn) { btn.disabled = false; btn.textContent = '执行重置' }
+    if (btn) { btn.disabled = false; btn.textContent = '重置' }
   }
 }
 
@@ -1960,17 +2058,14 @@ function openDeleteVm(id) {
   modalVmId = id
   const active = isActiveVm(id)
   openModal(`
-    <h3 class="danger">删除虚拟机</h3>
+    <h3 class="danger">删除</h3>
     <p class="who">${vmLabel(id)}</p>
-    <div class="danger-box">将永久删除 <b class="mono">${esc(id)}</b> 的记录与 cli-home（含 OAuth 凭证），不可恢复。</div>
-    ${active ? `<p class="text-xs faint" style="margin:0">该节点为当前活跃节点，需先把活跃切到其它节点。</p>` : ''}
-    <label class="text-xs faint" style="display:flex;flex-direction:column;gap:6px">输入 <span class="mono">${esc(id)}</span> 以确认
-      <input id="delConfirm" class="input mono" autocomplete="off" spellcheck="false" placeholder="${esc(id)}"
-             oninput="syncDeleteBtn()" onkeydown="if(event.key==='Enter')doDeleteVm()" />
-    </label>
+    ${active ? `<div class="danger-box">活跃节点，先切换后再删</div>` : ''}
+    <input id="delConfirm" class="input mono" autocomplete="off" spellcheck="false" placeholder="${esc(id)}" aria-label="确认 ID"
+           oninput="syncDeleteBtn()" onkeydown="if(event.key==='Enter')doDeleteVm()" />
     <div class="foot">
       <button class="btn btn-outline btn-sm" onclick="closeModal()">取消</button>
-      <button class="btn btn-danger btn-sm" id="delGo" disabled onclick="doDeleteVm()">永久删除</button>
+      <button class="btn btn-danger btn-sm" id="delGo" disabled onclick="doDeleteVm()">删除</button>
     </div>`)
   setTimeout(() => document.getElementById('delConfirm')?.focus(), 0)
 }
@@ -2000,7 +2095,7 @@ async function doDeleteVm() {
     render()
   } catch (e) {
     toast(e.message, 'err')
-    if (btn) { btn.disabled = false; btn.textContent = '永久删除' }
+    if (btn) { btn.disabled = false; btn.textContent = '删除' }
   }
 }
 
