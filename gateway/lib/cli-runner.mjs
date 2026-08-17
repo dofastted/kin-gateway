@@ -117,14 +117,15 @@ function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone,
     settings = { env, theme: pol.theme || 'dark' }
   }
   fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify(settings, null, 2))
-  // Minimal .claude.json without host machine identity
-  const minimal = {
-    firstStartTime: new Date().toISOString(),
-    migrationVersion: 13,
-    hasCompletedOnboarding: true,
-    // no machineID / userID / oauthAccount — credentials file is the auth source
+  // Do not clobber an existing .claude.json (CLI stores machine/session ids there).
+  const claudeJson = path.join(homeDir, '.claude.json')
+  if (!fs.existsSync(claudeJson)) {
+    fs.writeFileSync(claudeJson, JSON.stringify({
+      firstStartTime: new Date().toISOString(),
+      migrationVersion: 13,
+      hasCompletedOnboarding: true,
+    }, null, 2))
   }
-  fs.writeFileSync(path.join(homeDir, '.claude.json'), JSON.stringify(minimal, null, 2))
   // marker for ops
   fs.writeFileSync(
     path.join(claudeDir, 'kin-seed.json'),
@@ -167,8 +168,6 @@ function buildEnv({ workHome, accessToken, proxyUrl, timezone, locale, seedPolic
     LOGNAME: 'kincli',
     SHELL: '/bin/bash',
     CLAUDE_CONFIG_DIR: path.join(workHome, '.claude'),
-    ANTHROPIC_AUTH_TOKEN: accessToken,
-    CLAUDE_CODE_OAUTH_TOKEN: accessToken,
     CI: '1',
     NO_COLOR: '1',
     TERM: 'dumb',
@@ -189,6 +188,11 @@ function buildEnv({ workHome, accessToken, proxyUrl, timezone, locale, seedPolic
   }
   delete env.ANTHROPIC_API_KEY
   delete env.ANTHROPIC_BASE_URL
+  // Official CLI refreshes via CLAUDE_CONFIG_DIR credentials.json.
+  // Injecting a stale access token as ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN
+  // skips that refresh and 401s (file-oauth still works).
+  delete env.ANTHROPIC_AUTH_TOKEN
+  delete env.CLAUDE_CODE_OAUTH_TOKEN
   delete env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR
   return env
 }

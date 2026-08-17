@@ -2,7 +2,7 @@
 
 KIN 不给每个 Agent 写特例。未知请求走同一条管道：协议识别 → 字段白名单 → 人设改写 → `claude -p`。
 
-对照 sub2api 只借**转换**，不借**伪装**。
+对照 sub2api 只借**转换**，不借**伪装**。OAuth 导入/续期见 [OAUTH.md](./OAUTH.md)。
 
 ## 1. sub2api 怎么处理「不是官方 Claude Code」的请求
 

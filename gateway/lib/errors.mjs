@@ -60,6 +60,8 @@ export const ErrorCode = {
   // resource
   VM_NOT_FOUND: 'vm_not_found',
   NOT_FOUND: 'not_found',
+  OAUTH_NEED_REIMPORT: 'oauth_need_reimport',
+  OAUTH_REFRESH_FAILED: 'oauth_refresh_failed',
 }
 
 export function makeError({

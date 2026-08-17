@@ -24,6 +24,7 @@ import {
 import { callClaudeCli, streamClaudeCli, sanitizeInboundBody, defaultSeedPolicy } from './lib/cli-runner.mjs'
 import { updateVmClaudeCode, fetchLatestClaudeCodeVersion } from './lib/claude-code-update.mjs'
 import { sessionKeyToOAuth } from '../session-to-oauth.mjs'
+import { createOauthGuard } from './lib/oauth-refresh.mjs'
 import crypto from 'node:crypto'
 import { fingerprintRequest, alignToClaudeCodeStandard, officializeToClaudeCli, classifyClient } from './lib/client-fingerprint.mjs'
 import { extractSystemAudit } from './lib/system-prompt-policy.mjs'
@@ -42,6 +43,7 @@ import { ProxyPool } from './lib/proxy-pool.mjs'
 
 const cfg = loadConfig()
 fs.mkdirSync(cfg.paths.captures, { recursive: true })
+const oauthGuard = createOauthGuard(cfg)
 
 const allowRate = createRateLimiter({
   capacity: cfg.limits.rate_capacity,
@@ -313,6 +315,21 @@ async function handleProtocol(req, res, protocol, pathName) {
   accountQuota.acquire(accountId)
   if (stickyKey) stickyRouter.bind(stickyKey, { accountId, vmId })
 
+  const oauth = await oauthGuard.ensureFresh()
+  if (!oauth.ok) {
+    accountQuota.release(accountId)
+    stats.errors++
+    return json(res, 401, makeError({
+      type: ErrorType.AUTH,
+      code: oauth.need_reimport ? ErrorCode.OAUTH_NEED_REIMPORT : ErrorCode.OAUTH_REFRESH_FAILED,
+      message: oauth.need_reimport
+        ? 'VM OAuth expired and refresh_token is invalid. Re-import sessionKey.'
+        : `VM OAuth refresh failed: ${oauth.error || 'unknown'}`,
+      status: 401,
+      details: { vm_id: cfg.vm.id, need_reimport: !!oauth.need_reimport },
+    }).body)
+  }
+
   const { claude, mode } = toClaudeMessages(protocol, ctx.body, {
     rewrite: rewriteEnabled,
     model_map: false, // aliases disabled
@@ -379,7 +396,10 @@ async function handleProtocol(req, res, protocol, pathName) {
   // -------- streaming path --------
   if (wantStream) {
     stats.stream++
-    const releaseStream = () => { try { accountQuota.release(accountId) } catch {} }
+    const releaseStream = () => {
+      try { harvestCliHome() } catch {}
+      try { accountQuota.release(accountId) } catch {}
+    }
     if (protocol === 'anthropic.messages') {
       // Official Anthropic SSE requires both event: and data: (RikkaHub uses event.event)
       writeSSEHeaders(res)
@@ -450,6 +470,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       accountQuota.ingestHeaders(accountId, upstream.headers, upstream.body?.usage)
     }
   } finally {
+    try { harvestCliHome() } catch {}
     accountQuota.release(accountId)
   }
 
@@ -493,6 +514,11 @@ async function handleProtocol(req, res, protocol, pathName) {
 }
 
 
+
+function harvestCliHome() {
+  const homeDir = path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home')
+  return oauthGuard.harvestFromHome(homeDir)
+}
 
 function buildCliOpts(cfg, body) {
   const px = resolveVmProxyUrl(cfg)
@@ -1076,12 +1102,16 @@ const server = http.createServer(async (req, res) => {
             return json(res, 400, { ok: false, error: { message: 'sessionKey or access_token required' } })
           }
           existing.claude = {
+            ...(existing.claude || {}),
+            mode: 'oauth',
             access_token: oauth.access_token || oauth.accessToken,
             refresh_token: oauth.refresh_token || oauth.refreshToken || null,
             expires_at: oauth.expires_at || oauth.expiresAt || null,
-            email: oauth.email || oauth.profile?.email || existing.claude?.email || null,
+            email: oauth.email || oauth.email_address || oauth.profile?.email || existing.claude?.email || null,
             account_uuid: oauth.account_uuid || oauth.accountUuid || null,
             org_uuid: oauth.org_uuid || oauth.orgUuid || null,
+            source: oauth.source || 'sessionKey-cookie-auth',
+            refresh_error: null,
           }
           if (body.name) existing.name = body.name
           existing.updated_at = new Date().toISOString()
@@ -1094,6 +1124,17 @@ const server = http.createServer(async (req, res) => {
           if (body.activate !== false) {
             try { setActiveVm(cfg.paths.project, vmId) } catch {}
           }
+          if (existing.id === cfg.vm.id || body.activate !== false) {
+            oauthGuard.noteImported({
+              access_token: existing.claude.access_token,
+              refresh_token: existing.claude.refresh_token,
+              expires_at: existing.claude.expires_at,
+              email: existing.claude.email,
+              account_uuid: existing.claude.account_uuid,
+              org_uuid: existing.claude.org_uuid,
+              source: existing.claude.source || 'sessionKey-cookie-auth',
+            })
+          }
           return json(res, 200, panel.ok({
             vm: summarizeVm(existing),
             proxy_used: !!proxyUrl,
@@ -1102,6 +1143,14 @@ const server = http.createServer(async (req, res) => {
         } catch (e) {
           return json(res, 500, { ok: false, error: { message: String(e.message || e) } })
         }
+      }
+
+      if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/oauth\/refresh$/.test(p)) {
+        const result = await oauthGuard.ensureFresh({ force: true })
+        return json(res, result.ok ? 200 : 401, panel.ok({ ...result, ...oauthGuard.status() }))
+      }
+      if (req.method === 'GET' && p === '/api/panel/oauth') {
+        return json(res, 200, panel.ok(oauthGuard.status()))
       }
 
       // POST /api/panel/probe
@@ -1298,6 +1347,17 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    if (req.method === 'GET' && p === '/admin/vm/oauth') {
+      if (!requireAuth(req, res)) return
+      return json(res, 200, oauthGuard.status())
+    }
+    if (req.method === 'POST' && p === '/admin/vm/oauth/refresh') {
+      if (!requireAuth(req, res)) return
+      const body = await readBody(req, 4096).catch(() => ({}))
+      const result = await oauthGuard.ensureFresh({ force: body?.force === true })
+      return json(res, result.ok ? 200 : 401, { ok: result.ok, ...result, ...oauthGuard.status() })
+    }
+
     // ---- Claude Code update ----
     if (req.method === 'GET' && p === '/admin/vm/claude-code/version') {
       if (!requireAuth(req, res)) return
@@ -1350,6 +1410,7 @@ process.on('uncaughtException', (e) => console.error('[uncaught]', e))
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
 
 server.listen(cfg.port, cfg.host, () => {
+  oauthGuard.startLoop(60_000)
   console.log(JSON.stringify({
     event: 'kin-gateway-v2.1-started',
     base_url: cfg.base_url,

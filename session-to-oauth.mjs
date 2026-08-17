@@ -207,6 +207,76 @@ async function exchangeCodeForToken(fullCode, codeVerifier) {
 }
 
 /**
+ * Refresh an existing OAuth credential.
+ * grant_type=refresh_token — same as sub2api ClaudeTokenRefresher.
+ * Hits api.anthropic.com first (no CF). sessionKey is NOT used here.
+ */
+export async function refreshOAuthToken(refreshToken, { proxyUrl = null } = {}) {
+  const rt = String(refreshToken || '').trim()
+  if (!rt) {
+    const err = new Error('refresh_token required')
+    err.code = 'no_refresh_token'
+    throw err
+  }
+  const prev = _activeProxyUrl
+  _activeProxyUrl = proxyUrl || null
+  const reqBody = {
+    grant_type: 'refresh_token',
+    refresh_token: rt,
+    client_id: CLIENT_ID,
+  }
+  const urls = [
+    'https://api.anthropic.com/v1/oauth/token',
+    'https://platform.claude.com/v1/oauth/token',
+  ]
+  let lastErr
+  try {
+    for (const tokenURL of urls) {
+      try {
+        const { ok, status, body } = await fetchJson(tokenURL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'User-Agent': 'axios/1.13.6',
+          },
+          body: JSON.stringify(reqBody),
+        })
+        if (!ok) {
+          const snippet = typeof body === 'string' ? body.slice(0, 240) : JSON.stringify(body || {}).slice(0, 240)
+          lastErr = new Error(`token refresh failed @ ${tokenURL}: ${status} ${snippet}`)
+          if (status === 400 && /invalid_grant/i.test(snippet)) {
+            lastErr.code = 'invalid_grant'
+            break
+          }
+          continue
+        }
+        if (!body?.access_token) {
+          lastErr = new Error(`no access_token in refresh response: ${JSON.stringify(body).slice(0, 240)}`)
+          continue
+        }
+        const expiresIn = Number(body.expires_in || 0)
+        const now = Math.floor(Date.now() / 1000)
+        return {
+          access_token: body.access_token,
+          refresh_token: body.refresh_token || rt,
+          token_type: body.token_type || 'Bearer',
+          expires_in: expiresIn,
+          expires_at: now + (expiresIn || 28800),
+          scope: body.scope || null,
+          source: 'refresh_token',
+        }
+      } catch (e) {
+        lastErr = e
+      }
+    }
+  } finally {
+    _activeProxyUrl = prev
+  }
+  throw lastErr || new Error('token refresh failed on all endpoints')
+}
+
+/**
  * Full conversion: sessionKey → OAuth credential object
  */
 export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
