@@ -244,8 +244,7 @@ tr.dead-row{opacity:.6}
 .fact b{font-weight:550;color:var(--fg);font-variant-numeric:tabular-nums}
 .fact .v{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-.alert-bar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 4px}
-.alert-item{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;border:1px solid oklch(0.65 0.14 70 / 35%);background:oklch(0.28 0.04 70 / 40%);color:oklch(0.82 0.1 70);font-size:12px;line-height:1.35}
+.alert-item{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.12);color:#F6D38B;font-size:11.5px;line-height:1.3;cursor:pointer;font-family:inherit}
 
 .stat-hero{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 
@@ -440,6 +439,48 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
 .chip-check:has(input:checked){border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.1);color:var(--fg)}
 .chip-check input{margin:0}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* ── page reconstruction ────────────────────────────────── */
+.cmd-strip{display:flex;align-items:stretch;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.cmd-strip .score{min-width:100px;padding:16px 18px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
+.cmd-strip .score .n{display:flex;align-items:baseline;gap:2px}
+.cmd-strip .score .n b{font-size:36px;font-weight:600;letter-spacing:-.04em;font-variant-numeric:tabular-nums;line-height:1}
+.cmd-strip .score .n i{font-style:normal;font-size:13px;color:var(--faint)}
+.cmd-strip .score .l{font-size:11px;color:var(--faint);margin-top:4px}
+.cmd-strip .mid{flex:1;min-width:0;padding:14px 16px;display:flex;flex-direction:column;justify-content:center;gap:10px}
+.workbench{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel);overflow:hidden}
+.wb-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.wb-id{display:flex;flex-direction:column;gap:3px;min-width:0}
+.wb-id .nm{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;letter-spacing:-.02em}
+.wb-id .hid{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.wb-body{padding:16px}
+.fact-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.fact-cell{padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:rgba(248,250,252,.02);min-width:0}
+.fact-cell .k{font-size:11px;color:var(--faint);margin-bottom:6px}
+.fact-cell .v{font-size:14px;font-weight:550;letter-spacing:-.01em}
+.fact-cell .m{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:4px;word-break:break-all}
+.set-list{display:flex;flex-direction:column}
+.set-row{display:grid;grid-template-columns:108px minmax(0,1fr);gap:8px 16px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.set-row:last-child{border-bottom:none}
+.set-row>span{font-size:12px;color:var(--faint)}
+.set-row .input{max-width:260px}
+.set-row .chip-check{height:30px}
+.ep-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}
+.ep-row:last-child{border-bottom:0}
+.ep-row .nm{width:132px;flex-shrink:0;font-size:12.5px}
+.ep-row code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dock{display:grid;grid-template-columns:minmax(220px,1fr) minmax(280px,1.45fr);gap:16px;align-items:start}
+.zone{border:1px solid var(--line);border-radius:var(--r-md);padding:12px;display:flex;flex-direction:column;gap:10px}
+.zone.danger{border-color:rgba(239,68,68,.3)}
+.empty-box .btn{margin-top:12px}
+@media(max-width:760px){
+  .cmd-strip{flex-direction:column}
+  .cmd-strip .score{border-right:none;border-bottom:1px solid var(--line)}
+  .dock,.fact-grid{grid-template-columns:1fr}
+  .set-row{grid-template-columns:1fr}
+  .sidebar-nav{flex-wrap:nowrap;overflow-x:auto}
+  .nav-item{flex:0 0 auto}
+}
   </style>
 </head>
 <body class="login-only">
@@ -734,7 +775,7 @@ function skeleton(kind) {
   if (kind === 'table') return `<div class="card">${'<div class="skeleton sk-row"></div>'.repeat(8)}</div>`
   return `<div class="sk-grid">${'<div class="skeleton sk-card"></div>'.repeat(6)}</div>`
 }
-function emptyBox(msg) { return `<div class="empty-box">${esc(msg)}</div>` }
+function emptyBox(msg, act) { return `<div class="empty-box"><div>${esc(msg)}</div>${act||''}</div>` }
 
 document.getElementById('loginPassInput') && document.getElementById('loginPassInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin() })
 
@@ -962,31 +1003,27 @@ function renderOverview() {
   const score = healthScore(vms)
   const scoreColor = score >= 80 ? 'var(--ok)' : score >= 50 ? 'var(--warn)' : 'var(--bad)'
   const alerts = []
-  if (available === 0 && vms.length) alerts.push('当前无可用节点（需在线 + 有凭证 + 未近限额）')
-  if (nearLimit > 0) alerts.push(`${nearLimit} 个账号近限额，新请求可能被拦截`)
-  if (noToken > 0 && withToken === 0) alerts.push('全部节点无凭证，请到「导入」粘贴 sessionKey')
-  if (errs > 0) alerts.push(`网关近期错误 ${errs} 次`)
+  if (available === 0 && vms.length) alerts.push({ t: '无可用节点', go: 'import' })
+  if (nearLimit > 0) alerts.push({ t: `${nearLimit} 近限额`, go: 'usage' })
+  if (noToken > 0 && withToken === 0) alerts.push({ t: '无凭证', go: 'import' })
+  if (errs > 0) alerts.push({ t: `错误 ${errs}`, go: 'overview' })
   return `
   <section class="section">
-    <div class="hcard">
+    <div class="cmd-strip">
       <div class="score">
         <div class="n"><b style="color:${scoreColor}">${score}</b><i>%</i></div>
-        <div class="l">集群健康</div>
+        <div class="l">健康</div>
       </div>
-      <div class="body">
+      <div class="mid">
         ${healthBar(buckets, vms.length)}
         ${healthLegend(buckets)}
+        <div class="facts">
+          <span class="fact"><span class="status-dot ${ok ? 'on' : 'danger'}"></span>${esc(health.status || 'ok')}</span>
+          <span class="fact"><span class="status-dot ${s.active_vm ? 'on' : 'off'}"></span>${esc(s.active_vm || '未指定')}</span>
+          <span class="fact">请求 <b>${fmtNum(gstat.requests || 0)}</b></span>
+          ${alerts.map(a => `<button class="alert-item" onclick="go('${a.go}')">${esc(a.t)}</button>`).join('')}
+        </div>
       </div>
-    </div>
-
-    ${alerts.length ? `<div class="alert-bar">${alerts.map(a => `<span class="alert-item">⚠ ${esc(a)}</span>`).join('')}</div>` : ''}
-
-    <div class="facts">
-      <span class="fact"><span class="status-dot ${ok ? 'on' : 'danger'}"></span>网关 <b>${esc(health.status || 'ok')}</b></span>
-      <span class="fact" title="${esc(health.base_url || location.origin)}">Base <span class="v">${esc(health.base_url || location.origin)}</span></span>
-      <span class="fact"><span class="status-dot ${s.active_vm ? 'on' : 'off'}"></span>活跃 <span class="v">${esc(s.active_vm || '未指定')}</span></span>
-      <span class="fact"><span class="status-dot ${errs > 0 ? 'danger' : 'on'}"></span>错误 <b>${errs}</b></span>
-      <span class="fact">请求 <b>${fmtNum(gstat.requests || 0)}</b></span>
     </div>
 
     <div class="stat-hero">
@@ -999,17 +1036,17 @@ function renderOverview() {
       <div class="stat-tile">
         <div class="k">在线</div>
         <div class="v">${running}<small> / ${vms.length}</small></div>
-        <div class="s">停止 ${vms.length - running}</div>
+        <div class="s">停 ${vms.length - running}</div>
         ${quotaRing(vms.length ? running / vms.length * 100 : 0)}
       </div>
       <div class="stat-tile">
         <div class="k">Tokens</div>
         <div class="v">${fmtNum(tokensIn)}<small> / ${fmtNum(tokensOut)}</small></div>
-        <div class="s">请求 ${fmtNum(reqs)}</div>
-        <div class="edge"><i style="width:${Math.min(100, (tokensIn + tokensOut) ? tokensOut / (tokensIn + tokensOut) * 100 : 0)}%;background:oklch(0.6 0.12 200)"></i></div>
+        <div class="s">${fmtNum(reqs)} 请求</div>
+        <div class="edge"><i style="width:${Math.min(100, (tokensIn + tokensOut) ? tokensOut / (tokensIn + tokensOut) * 100 : 0)}%"></i></div>
       </div>
       <div class="stat-tile">
-        <div class="k">5h 峰值</div>
+        <div class="k">5h</div>
         <div class="v">${peak5.toFixed(0)}<small>%</small></div>
         <div class="s">7d ${peak7.toFixed(0)}%</div>
         ${quotaRing(peak5)}
@@ -1017,13 +1054,13 @@ function renderOverview() {
     </div>
 
     <div class="head">
-      <div><div class="section-title">节点</div><div class="sub">${running} / ${vms.length}</div></div>
+      <div class="section-title">${running}/${vms.length}</div>
       <div class="actions">
         <button class="btn btn-outline btn-sm" onclick="go('import')">导入</button>
         <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部</button>
       </div>
     </div>
-    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无节点')}</div>
+    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无节点', `<button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>`)}</div>
   </section>`
 }
 
@@ -1070,22 +1107,17 @@ function renderCluster() {
   return `
   <section class="section">
     <div class="head">
-      <div><div class="section-title">集群</div><div class="sub">${b.ok} 可用 · ${all.length} 节点</div></div>
+      <div class="section-title">${b.ok}/${all.length}</div>
       <div class="toolbar">
-        <input class="input" placeholder="搜索" value="${esc(state.clusterQ || '')}" oninput="onClusterSearch(this)" />
-        <div class="seg">${segs.map(([k, t]) => `<button class="${f === k ? 'on' : ''}" onclick="setClusterFilter('${k}')">${t}<span class="num faint" style="margin-left:5px">${counts[k]}</span></button>`).join('')}</div>
+        <input class="input" placeholder="搜索" aria-label="搜索" value="${esc(state.clusterQ || '')}" oninput="onClusterSearch(this)" />
+        <div class="seg">${segs.map(([k, lab]) => `<button class="${f === k ? 'on' : ''}" onclick="setClusterFilter('${k}')">${lab} ${counts[k]}</button>`).join('')}</div>
+        <button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>
       </div>
     </div>
-    <div class="hcard" style="padding:14px 18px">
-      <div class="score" style="min-width:88px;padding-right:18px">
-        <div class="n"><b style="font-size:30px">${healthScore(all)}</b><i>%</i></div>
-        <div class="l">健康</div>
-      </div>
-      <div class="body">${healthBar(b, all.length)}${healthLegend(b)}</div>
-    </div>
-    <div class="vm-grid" id="clusterGrid">${vms.map(vmCard).join('') || emptyBox(all.length ? '无匹配节点' : '暂无节点')}</div>
+    <div class="vm-grid" id="clusterGrid">${vms.map(vmCard).join('') || emptyBox(all.length ? '无匹配' : '暂无节点', all.length ? '' : `<button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>`)}</div>
   </section>`
 }
+
 
 /* ── vm: create + detail ─────────────────────────────────── */
 function kernelPickerHTML() {
@@ -1286,7 +1318,6 @@ function renderVm() {
   if (!state.selectedVm && !det) {
     return `<section class="section">
       ${create}
-      <div class="head"><div><div class="section-title">节点列表</div><div class="sub">${vms.length} 台</div></div></div>
       <div class="vm-grid">${vms.map(vmCard).join('') || emptyBox('暂无节点')}</div>
     </section>`
   }
@@ -1299,147 +1330,121 @@ function renderVm() {
   const st = accountStatus(vm)
   const running = vmRunning(vm)
   const kp = kernelProfile(vm.kernel)
+  const tabs = [['overview','概览'],['account','账号'],['proxy','代理'],['ops','运维'],['seed','种子']]
   return `
   <section class="section">
     ${create}
-
-    <div class="card card-pad-lg stack-md">
-      <div class="head">
-        <div>
-          <div style="display:flex;align-items:center;gap:9px">
-            <span class="status-dot ${statusDot(vm)}"></span>
-            <span style="font-size:15px;font-weight:600;letter-spacing:-0.01em">${esc(vm.name || vm.id || '—')}</span>
-            <span class="acc-pill ${st.cls}">${st.text}</span>
-          </div>
-          <div class="sub mono">${esc(vm.id || '')} · ${running ? '运行中' : '已停止'}</div>
+    <div class="workbench">
+      <div class="wb-head">
+        <div class="wb-id">
+          <div class="nm"><span class="status-dot ${statusDot(vm)}"></span>${esc(vm.name || vm.id || '—')}<span class="acc-pill ${st.cls}">${st.text}</span></div>
+          <div class="hid">${esc(vm.id || '')} · ${running ? '运行' : '停止'}</div>
         </div>
         <div class="actions">
-          <select class="input" style="width:170px;height:32px" onchange="if(this.value)openVm(this.value)">
+          <select class="input" style="width:168px;height:32px" aria-label="切换节点" onchange="if(this.value)openVm(this.value)">
             ${vms.map(v => `<option value="${esc(v.id)}" ${v.id === vm.id ? 'selected' : ''}>${esc(v.name || v.id)}</option>`).join('')}
           </select>
           <button class="btn btn-outline btn-sm" onclick="startVm('${esc(vm.id)}')">开机</button>
           <button class="btn btn-outline btn-sm" onclick="stopVm('${esc(vm.id)}')">关机</button>
-          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')" title="claude auth status + 官方 hop">CLI 探测</button>
+          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')">CLI 探测</button>
         </div>
       </div>
       <div class="tabs">
-        <button class="${tab === 'overview' ? 'on' : ''}" onclick="setVmTab('overview')">概览</button>
-        <button class="${tab === 'account' ? 'on' : ''}" onclick="setVmTab('account')">账号</button>
-        <button class="${tab === 'proxy' ? 'on' : ''}" onclick="setVmTab('proxy')">代理</button>
-        <button class="${tab === 'ops' ? 'on' : ''}" onclick="setVmTab('ops')">运维</button>
-        <button class="${tab === 'seed' ? 'on' : ''}" onclick="setVmTab('seed');loadSeedSettings()">种子策略</button>
+        ${tabs.map(([k,l]) => `<button class="${tab===k?'on':''}" onclick="setVmTab('${k}')${k==='seed'?';loadSeedSettings()':''}">${l}</button>`).join('')}
       </div>
-
+      <div class="wb-body">
       ${tab === 'overview' ? `
-      <div class="grid-3">
-        <div class="card stack-md">
-          <div class="section-title">内核</div>
-          <div>
-            <div style="font-size:14px;font-weight:600">${esc(kp ? kp.name : '未指定')}</div>
-            <div class="text-xs faint mono" style="margin-top:3px">${esc(kp ? kp.id : '—')}${kp && kp.base ? ' · ' + esc(kp.base) : ''}</div>
-          </div>
-          <div class="kc-feats">${kernelFeats(kp).map(f => `<span>${esc(f)}</span>`).join('') || '<span class="faint text-xs">无特性档案</span>'}</div>
-          <dl class="kv">
-            <dt>体积</dt><dd class="num">${esc(kp?.size || '—')}</dd>
-            <dt>Claude Code</dt><dd>${esc(vm.claude_code_version || '—')}</dd>
-          </dl>
+      <div class="fact-grid">
+        <div class="fact-cell">
+          <div class="k">内核</div>
+          <div class="v">${esc(kp ? kp.name : '—')}</div>
+          <div class="m">${esc(kp ? kp.id : '')}${kp?.size ? ' · '+esc(kp.size) : ''}</div>
+          <div class="kc-feats" style="margin-top:8px">${kernelFeats(kp).map(f => `<span>${esc(f)}</span>`).join('')}</div>
         </div>
-        <div class="card stack-md">
-          <div class="section-title">用量</div>
+        <div class="fact-cell">
+          <div class="k">用量</div>
           <div class="stack-sm">${meter('5h', u5)}${meter('7d', u7)}</div>
-          <dl class="kv"><dt>并发</dt><dd class="num">${vm.inflight || 0} / ${vm.max_concurrency || 2}</dd></dl>
+          <div class="m" style="margin-top:8px">${vm.inflight || 0}/${vm.max_concurrency || 2} 并发 · CLI ${esc(vm.claude_code_version || '—')}</div>
         </div>
-        <div class="card stack-md">
-          <div class="section-title">账号</div>
-          <div class="text-sm" style="word-break:break-all">${esc(vm.email || '未绑定')}</div>
-          <div><span class="acc-pill ${st.cls}">${st.text}</span></div>
-          <dl class="kv">
-            <dt>代理</dt><dd class="mono">${esc(proxy.host || proxy.id || vm.proxy_id || '未绑定')}</dd>
-            <dt>区域</dt><dd>${esc(vmRegion(vm))}</dd>
-          </dl>
+        <div class="fact-cell">
+          <div class="k">绑定</div>
+          <div class="v">${esc(vm.email || '未绑定')}</div>
+          <div class="m">${esc(proxy.host || proxy.id || vm.proxy_id || '无代理')} · ${esc(vmRegion(vm))}</div>
         </div>
       </div>` : ''}
 
       ${tab === 'account' ? `
-      <div class="card stack-md">
-        <dl class="kv">
-          <dt>邮箱</dt><dd>${esc(vm.email || '—')}</dd>
-          <dt>UUID</dt><dd class="mono">${esc(vm.account_uuid || '—')}</dd>
-          <dt>凭证</dt><dd>${vm.has_token ? '<span class="acc-pill ok">已绑定</span>' : '<span class="acc-pill off">未绑定</span>'}</dd>
-          <dt>5h / 7d</dt><dd class="num">${u5.toFixed(1)}% / ${u7.toFixed(1)}%</dd>
-        </dl>
-        <div class="actions"><button class="btn btn-outline btn-sm" onclick="go('import')">导入</button></div>
-      </div>` : ''}
+      <dl class="kv">
+        <dt>邮箱</dt><dd>${esc(vm.email || '—')}</dd>
+        <dt>UUID</dt><dd class="mono">${esc(vm.account_uuid || '—')}</dd>
+        <dt>凭证</dt><dd>${vm.has_token ? '<span class="acc-pill ok">已绑定</span>' : '<span class="acc-pill off">未绑定</span>'}</dd>
+        <dt>5h / 7d</dt><dd class="num">${u5.toFixed(1)}% / ${u7.toFixed(1)}%</dd>
+      </dl>
+      <div class="actions" style="margin-top:14px"><button class="btn btn-primary btn-sm" onclick="go('import')">导入</button></div>` : ''}
 
       ${tab === 'proxy' ? `
-      <div class="card stack-md">
-        <dl class="kv">
-          <dt>绑定</dt><dd class="mono">${esc(proxy.id || vm.proxy_id || '—')}</dd>
-          <dt>Host</dt><dd class="mono">${esc(proxy.host || '—')}</dd>
-          <dt>Port</dt><dd class="mono">${esc(proxy.port || '—')}</dd>
-          <dt>状态</dt><dd>${esc(proxy.status || '—')}</dd>
-        </dl>
-        <div class="actions"><button class="btn btn-outline btn-sm" onclick="allocateProxy('${esc(vm.id)}')">分配 / 更换 SOCKS5</button></div>
-      </div>` : ''}
+      <dl class="kv">
+        <dt>绑定</dt><dd class="mono">${esc(proxy.id || vm.proxy_id || '—')}</dd>
+        <dt>Host</dt><dd class="mono">${esc(proxy.host || '—')}</dd>
+        <dt>Port</dt><dd class="mono">${esc(proxy.port || '—')}</dd>
+        <dt>状态</dt><dd>${esc(proxy.status || '—')}</dd>
+      </dl>
+      <div class="actions" style="margin-top:14px"><button class="btn btn-outline btn-sm" onclick="allocateProxy('${esc(vm.id)}')">分配 SOCKS5</button></div>` : ''}
 
       ${tab === 'ops' ? `
-      <div class="card stack-md">
+      <div class="zone">
         <div class="actions">
-          <button class="btn btn-outline btn-sm" onclick="startVm('${esc(vm.id)}')">开机</button>
-          <button class="btn btn-outline btn-sm" onclick="stopVm('${esc(vm.id)}')">关机</button>
           <button class="btn btn-outline btn-sm" onclick="activateVm('${esc(vm.id)}')">设为活跃</button>
-          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')" title="从官方 Claude Code 探测">CLI 探测</button>
-          <button class="btn btn-outline btn-sm" onclick="updateClaudeCode('${esc(vm.id)}')">更新 Claude Code</button>
+          <button class="btn btn-outline btn-sm" onclick="updateClaudeCode('${esc(vm.id)}')">更新 CLI</button>
+          <button class="btn btn-outline btn-sm" onclick="resetFingerprint('${esc(vm.id)}')">重置指纹</button>
         </div>
         <dl class="kv">
-          <dt>Claude Code</dt><dd>${esc(vm.claude_code_version || '—')}</dd>
-          <dt>device_id</dt><dd class="mono">${esc((vm.fingerprint && vm.fingerprint.device_id) || '—')}</dd>
-          <dt>session_id</dt><dd class="mono">${esc((vm.fingerprint && vm.fingerprint.session_id) || '—')}</dd>
+          <dt>CLI</dt><dd>${esc(vm.claude_code_version || '—')}</dd>
+          <dt>device</dt><dd class="mono">${esc((vm.fingerprint && vm.fingerprint.device_id) || '—')}</dd>
+          <dt>session</dt><dd class="mono">${esc((vm.fingerprint && vm.fingerprint.session_id) || '—')}</dd>
         </dl>
-        <div style="border-top:1px solid var(--line);padding-top:12px">
-          <div class="section-title">重置与删除</div>
-          <p class="text-xs faint" style="margin:4px 0 10px">重置保留虚拟机；删除会移除记录与 cli-home。${isActiveVm(vm.id) ? '当前为活跃节点，不可删除。' : ''}</p>
-          <div class="actions">
-            <button class="btn btn-outline btn-sm" onclick="resetFingerprint('${esc(vm.id)}')">重置指纹</button>
-            <button class="btn btn-outline btn-sm" onclick="openResetVm('${esc(vm.id)}')">重置…</button>
-            <button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="openDeleteVm('${esc(vm.id)}')">删除虚拟机</button>
-          </div>
+      </div>
+      <div class="zone danger" style="margin-top:12px">
+        <div class="actions">
+          <button class="btn btn-outline btn-sm" onclick="openResetVm('${esc(vm.id)}')">重置</button>
+          <button class="btn btn-danger btn-sm" ${isActiveVm(vm.id) ? 'disabled title="活跃节点不可删"' : ''} onclick="openDeleteVm('${esc(vm.id)}')">删除</button>
         </div>
       </div>` : ''}
-    ${tab === 'seed' ? `
-      <div class="card stack-md">
-        <div class="section-title">种子</div>
-        <div class="switch-row">
-          <label class="chip-check"><input id="seedTel" type="checkbox" ${state.seedSettings?.seed_policy?.telemetry_disabled!==false?'checked':''}/> 关遥测</label>
-          <label class="chip-check"><input id="seedNonEss" type="checkbox" ${state.seedSettings?.seed_policy?.disable_nonessential_traffic!==false?'checked':''}/> 关非必要</label>
-          <label class="chip-check"><input id="seedDnt" type="checkbox" ${state.seedSettings?.seed_policy?.do_not_track!==false?'checked':''}/> DNT</label>
-          <label class="chip-check"><input id="seedRejSet" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_settings!==false?'checked':''}/> 拒 settings</label>
-          <label class="chip-check"><input id="seedRejMeta" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_metadata_identity!==false?'checked':''}/> 拒身份</label>
+
+      ${tab === 'seed' ? `
+      <div class="switch-row">
+        <label class="chip-check"><input id="seedTel" type="checkbox" ${state.seedSettings?.seed_policy?.telemetry_disabled!==false?'checked':''}/> 关遥测</label>
+        <label class="chip-check"><input id="seedNonEss" type="checkbox" ${state.seedSettings?.seed_policy?.disable_nonessential_traffic!==false?'checked':''}/> 关非必要</label>
+        <label class="chip-check"><input id="seedDnt" type="checkbox" ${state.seedSettings?.seed_policy?.do_not_track!==false?'checked':''}/> DNT</label>
+        <label class="chip-check"><input id="seedRejSet" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_settings!==false?'checked':''}/> 拒 settings</label>
+        <label class="chip-check"><input id="seedRejMeta" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_metadata_identity!==false?'checked':''}/> 拒身份</label>
+      </div>
+      <div class="set-row" style="margin-top:8px">
+        <span>主题</span>
+        <select id="seedTheme" class="input">
+          <option value="dark" ${(state.seedSettings?.seed_policy?.theme||'dark')==='dark'?'selected':''}>深色</option>
+          <option value="light" ${state.seedSettings?.seed_policy?.theme==='light'?'selected':''}>浅色</option>
+        </select>
+      </div>
+      <details class="import-box" style="margin-top:12px">
+        <summary>JSON</summary>
+        <div class="body">
+          <textarea id="seedOverride" class="input" placeholder='{"env":{}}'>${esc(state.seedSettings?.seed_policy?.settings_json_override ? JSON.stringify(state.seedSettings.seed_policy.settings_json_override, null, 2) : '')}</textarea>
         </div>
-        <label>主题
-          <select id="seedTheme" class="input" style="max-width:160px">
-            <option value="dark" ${(state.seedSettings?.seed_policy?.theme||'dark')==='dark'?'selected':''}>深色</option>
-            <option value="light" ${state.seedSettings?.seed_policy?.theme==='light'?'selected':''}>浅色</option>
-          </select>
-        </label>
-        <details class="import-box">
-          <summary>JSON 覆盖</summary>
-          <div class="body">
-            <textarea id="seedOverride" class="input" placeholder='{"env":{}}'>${esc(state.seedSettings?.seed_policy?.settings_json_override ? JSON.stringify(state.seedSettings.seed_policy.settings_json_override, null, 2) : '')}</textarea>
-          </div>
-        </details>
-        <div class="actions" style="margin-top:12px">
-          <button class="btn btn-primary" onclick="saveSeedSettings('${esc(vm.id)}')">保存</button>
-          <button class="btn btn-outline" onclick="loadSeedSettings()">刷新</button>
-        </div>
-        <details style="margin-top:12px">
-          <summary class="text-xs muted" style="cursor:pointer">当前 settings.json</summary>
-          <pre class="text-xs overflow-auto max-h-48 p-3 border" style="margin-top:8px">${esc(JSON.stringify(state.seedSettings?.settings_json || {}, null, 2))}</pre>
-        </details>
-      </div>` : ''}
+      </details>
+      <div class="actions" style="margin-top:12px">
+        <button class="btn btn-primary" onclick="saveSeedSettings('${esc(vm.id)}')">保存</button>
+        <button class="btn btn-outline" onclick="loadSeedSettings()">刷新</button>
+      </div>
+      <details class="import-box" style="margin-top:12px">
+        <summary>settings.json</summary>
+        <div class="body"><pre class="json">${esc(JSON.stringify(state.seedSettings?.settings_json || {}, null, 2))}</pre></div>
+      </details>` : ''}
+      </div>
     </div>
   </section>`
 }
+
 
 /* ── import ──────────────────────────────────────────────── */
 function renderImport() {
@@ -1453,35 +1458,46 @@ function renderImport() {
   return `
   <section class="section">
     <div class="stepper">
-      ${steps.map(([n, t], i) => `
+      ${steps.map(([n, lab], i) => `
         ${i ? '<span class="lnk"></span>' : ''}
         <span class="st ${step > n ? 'done' : ''} ${step === n ? 'cur' : ''}">
-          <span class="n">${step > n ? '✓' : n}</span><span class="t">${t}</span>
+          <span class="n">${step > n ? '✓' : n}</span><span class="t">${lab}</span>
         </span>`).join('')}
     </div>
-    <div class="card card-pad-lg stack-md">
-      <label class="text-xs faint" style="display:flex;flex-direction:column;gap:6px">虚拟机
-        <select id="importVmSelect" class="input" onchange="state.importVmId=this.value;render()">
-          <option value="">— 选择 —</option>
-          ${vms.map(v => `<option value="${esc(v.id)}" ${v.id === selected ? 'selected' : ''}>${esc(v.name || v.id)} · ${v.has_token ? '已有凭证' : '无凭证'} · ${v.proxy_id || v.proxy ? '有代理' : '无代理'}</option>`).join('')}
-        </select>
-      </label>
-      ${selected ? `
-      <div class="actions">
-        <span class="acc-pill ${accountStatus(vm).cls}">${accountStatus(vm).text}</span>
-        <span class="acc-pill ${hasProxy ? 'ok' : 'off'}">${hasProxy ? '代理已绑定' : '代理未绑定'}</span>
-        ${kernelTag(vm.kernel)}
-        <button class="btn btn-outline btn-sm" onclick="state.selectedVm='${esc(selected)}';allocateProxy('${esc(selected)}')">分配 SOCKS5</button>
+    <div class="dock">
+      <div class="workbench">
+        <div class="wb-body stack-md">
+          <label class="text-xs faint" style="display:flex;flex-direction:column;gap:6px">虚拟机
+            <select id="importVmSelect" class="input" onchange="state.importVmId=this.value;render()">
+              <option value="">选择</option>
+              ${vms.map(v => `<option value="${esc(v.id)}" ${v.id === selected ? 'selected' : ''}>${esc(v.name || v.id)} · ${v.has_token ? '有凭证' : '无凭证'}</option>`).join('')}
+            </select>
+          </label>
+          ${selected ? `
+          <div class="actions">
+            <span class="acc-pill ${accountStatus(vm).cls}">${accountStatus(vm).text}</span>
+            <span class="acc-pill ${hasProxy ? 'ok' : 'off'}">${hasProxy ? '有代理' : '无代理'}</span>
+            ${kernelTag(vm.kernel)}
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="state.selectedVm='${esc(selected)}';allocateProxy('${esc(selected)}')">分配 SOCKS5</button>
+          ` : emptyBox('先选虚拟机', `<button class="btn btn-outline btn-sm" onclick="go('vm')">创建</button>`)}
+        </div>
       </div>
-      <textarea id="importSessionKey" class="input" placeholder="粘贴最新 sessionKey（sk-ant-sid…）"></textarea>
-      <div class="actions">
-        <button class="btn btn-primary" onclick="importOAuthWorkflow()">导入并播种 CLI</button>
-        <button class="btn btn-outline" onclick="startVm('${esc(selected)}')">开机</button>
-        <button class="btn btn-outline" onclick="activateVm('${esc(selected)}')">设为活跃</button>
-      </div>` : emptyBox('先选虚拟机')}
+      <div class="workbench">
+        <div class="wb-body stack-md">
+          ${selected ? `
+          <textarea id="importSessionKey" class="input" placeholder="sessionKey" aria-label="sessionKey"></textarea>
+          <div class="actions">
+            <button class="btn btn-primary" onclick="importOAuthWorkflow()">导入</button>
+            <button class="btn btn-outline" onclick="startVm('${esc(selected)}')">开机</button>
+            <button class="btn btn-outline" onclick="activateVm('${esc(selected)}')">活跃</button>
+          </div>` : `<div class="empty-box">选左侧节点后粘贴凭证</div>`}
+        </div>
+      </div>
     </div>
   </section>`
 }
+
 
 /* ── usage ───────────────────────────────────────────────── */
 function statTile(k, v, s) {
@@ -1493,24 +1509,23 @@ function renderUsage() {
   const accounts = u.accounts || []
   const s = u.totals || state.dashboard?.summary || {}
   const near = accounts.filter(a => a.near_limit || pct(a.utilization_5h) >= 95).length
-  const safety = (Number(u.safety_ratio || 0.95) * 100).toFixed(0)
   const peak5 = pct(s.peak_5h ?? s.peak_5h_utilization)
   const peak7 = pct(s.peak_7d ?? s.peak_7d_utilization)
   return `
   <section class="section">
-    <div class="head">
-      <div><div class="section-title">用量</div><div class="sub">${accounts.length} · ${near} 近限额</div></div>
-      <button class="btn btn-outline btn-sm" onclick="probeAll()" title="claude auth status + 官方 hop">CLI 探测</button>
-    </div>
     <div class="stat-hero">
       ${statTile('账号', s.account_count ?? accounts.length, `${near} 近限额`)}
-      ${statTile('5h 峰值', peak5.toFixed(0) + '<small>%</small>', `7d ${peak7.toFixed(0)}%`)}
+      ${statTile('5h', peak5.toFixed(0) + '<small>%</small>', `7d ${peak7.toFixed(0)}%`)}
       ${statTile('请求', fmtNum(s.requests || 0), '')}
-      ${statTile('Tokens In / Out', `${fmtNum(s.tokens_in || 0)}<small> / ${fmtNum(s.tokens_out || 0)}</small>`, '')}
+      ${statTile('In / Out', `${fmtNum(s.tokens_in || 0)}<small> / ${fmtNum(s.tokens_out || 0)}</small>`, '')}
     </div>
-    <div class="card">
+    <div class="head">
+      <div class="section-title">${accounts.length}</div>
+      <button class="btn btn-outline btn-sm" onclick="probeAll()">CLI 探测</button>
+    </div>
+    <div class="card" style="padding:8px 10px 4px">
       <table class="table">
-        <thead><tr><th>账号 / 节点</th><th style="width:150px">5h</th><th style="width:150px">7d</th><th>并发</th><th>请求</th><th class="right">状态</th></tr></thead>
+        <thead><tr><th>账号</th><th style="width:140px">5h</th><th style="width:140px">7d</th><th>并发</th><th>请求</th><th class="right">状态</th></tr></thead>
         <tbody>
           ${accounts.map(a => {
             const p5 = pct(a.utilization_5h), p7 = pct(a.utilization_7d)
@@ -1522,7 +1537,7 @@ function renderUsage() {
               </td>
               <td>${meter('', p5)}</td>
               <td>${meter('', p7)}</td>
-              <td class="num">${a.inflight || 0} / ${a.max_concurrency || 2}</td>
+              <td class="num">${a.inflight || 0}/${a.max_concurrency || 2}</td>
               <td class="num">${fmtNum(a.requests || 0)}</td>
               <td class="right">${nearL ? '<span class="badge danger">近限额</span>' : '<span class="badge ok">正常</span>'}</td>
             </tr>`
@@ -1533,41 +1548,39 @@ function renderUsage() {
   </section>`
 }
 
+
 /* ── protocol ────────────────────────────────────────────── */
 function renderProtocol() {
   const models = state.models?.items || []
   const base = (state.dashboard?.health?.base_url) || (location.origin) || 'https://kin.fkcodex.com'
+  const root = base.replace(/\/$/, '')
   const endpoints = [
-    ['Chat Completions', '/v1/chat/completions'],
+    ['Chat', '/v1/chat/completions'],
     ['Responses', '/v1/responses'],
     ['Messages', '/v1/messages'],
     ['Models', '/v1/models'],
   ]
   return `
   <section class="section">
-    <div class="grid-3">
-      <div class="card stack-sm">
-        <div class="row"><span class="text-xs faint">Base URL</span><button class="btn btn-ghost btn-sm" onclick="copyText('${esc(base)}')">复制</button></div>
-        <div class="mono text-sm" style="word-break:break-all">${esc(base)}</div>
+    <div class="workbench">
+      <div class="wb-head">
+        <div class="wb-id">
+          <div class="nm">接入</div>
+          <div class="hid">Bearer / x-api-key · VM CLI</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="copyText('${esc(base)}')">复制 Base</button>
       </div>
-      <div class="card stack-sm">
-        <div class="text-xs faint">鉴权</div>
-        <div class="text-sm">Bearer / x-api-key</div>
-        <div class="text-xs faint">Cookie / token</div>
+      <div class="wb-body">
+        <div class="mono text-sm" style="word-break:break-all;margin-bottom:8px">${esc(base)}</div>
+        ${endpoints.map(([n, path]) => {
+          const url = root + path
+          return `<div class="ep-row"><span class="nm">${esc(n)}</span><code>${esc(url)}</code><button class="btn btn-ghost btn-sm" onclick="copyText('${esc(url)}')">复制</button></div>`
+        }).join('')}
       </div>
-      <div class="card stack-sm">
-        <div class="text-xs faint">上游</div>
-        <div class="text-sm">虚拟机官方 Claude Code</div>
-        <div class="text-xs faint">协议转换</div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="section-title" style="margin-bottom:6px">端点</div>
-      ${endpoints.map(([n, p]) => `<div class="endpoint-row"><span>${esc(n)}</span><code>${esc(base.replace(/\/$/, ''))}${esc(p)}</code></div>`).join('')}
     </div>
     <div class="head">
-      <div><div class="section-title">模型</div><div class="sub">${models.length}${state.models?.cli_version ? ' · ' + esc(state.models.cli_version) : ''}</div></div>
-      <button class="btn btn-outline btn-sm" onclick="refresh()">刷新目录</button>
+      <div class="section-title">模型 ${models.length}${state.models?.cli_version ? ' · ' + esc(state.models.cli_version) : ''}</div>
+      <button class="btn btn-outline btn-sm" onclick="refresh()">刷新</button>
     </div>
     ${state.models?.error || (state.models?.note && !models.length) ? `<p class="text-xs danger" style="margin:0">${esc(state.models.error || state.models.note)}</p>` : ''}
     <div class="model-grid">
@@ -1581,7 +1594,7 @@ function renderProtocol() {
 function renderSettings() {
   const r = state.routing || {}
   if (r.error) return emptyBox('加载失败: ' + r.error)
-  const st = r.sticky || {}
+  const sticky = r.sticky || {}
   const q = r.quota || {}
   const c = r.concurrency || {}
   const sessions = r.sessions || {}
@@ -1589,53 +1602,59 @@ function renderSettings() {
   const sessionCount = sessions.active_sessions ?? (active && typeof active === 'object' && !Array.isArray(active) ? Object.keys(active).length : 0)
   return `
   <section class="section">
-    <div class="card card-pad-lg stack-md">
-      <div class="section-title">粘性路由</div>
-      <div class="form-grid">
-        <label>模式
-          <select id="st_mode" class="input">
-            <option value="conversation" ${st.mode === 'conversation' ? 'selected' : ''}>会话</option>
-            <option value="session" ${st.mode === 'session' ? 'selected' : ''}>登录态</option>
-            <option value="ip" ${st.mode === 'ip' ? 'selected' : ''}>IP</option>
-          </select>
-        </label>
-        <label>TTL
-          <select id="st_ttl" class="input">
-            ${[ [3600,'1 小时'],[21600,'6 小时'],[86400,'24 小时'],[604800,'7 天'],[2592000,'30 天'] ].map(([v,l]) => `<option value="${v}" ${(Number(st.ttl_seconds ?? 86400)===v)?'selected':''}>${l}</option>`).join('')}
-          </select>
-        </label>
-        <label class="check"><input id="st_enabled" type="checkbox" ${st.enabled !== false ? 'checked' : ''}/> 启用</label>
+    <div class="workbench">
+      <div class="wb-head">
+        <div class="nm">路由</div>
+        <button class="btn btn-primary btn-sm" onclick="saveRouting()">保存</button>
       </div>
-    </div>
-    <div class="card card-pad-lg stack-md">
-      <div class="section-title">额度 / 并发</div>
-      <div class="form-grid">
-        <label>安全线
-          <select id="q_safety" class="input">
-            ${[ [0.80,'80%'],[0.85,'85%'],[0.90,'90%'],[0.95,'95%'],[0.98,'98%'] ].map(([v,l]) => `<option value="${v}" ${(Number(q.safety_ratio ?? 0.95)===v)?'selected':''}>${l}</option>`).join('')}
-          </select>
-        </label>
-        <label>警告线
-          <select id="q_warn" class="input">
-            ${[ [0.70,'70%'],[0.80,'80%'],[0.85,'85%'],[0.90,'90%'] ].map(([v,l]) => `<option value="${v}" ${(Number(q.warn_ratio ?? 0.85)===v)?'selected':''}>${l}</option>`).join('')}
-          </select>
-        </label>
-        <label>并发
-          <select id="c_max" class="input">
-            ${[1,2,4,8,16].map(v => `<option value="${v}" ${(Number(c.default_max_per_account ?? 2)===v)?'selected':''}>${v}</option>`).join('')}
-          </select>
-        </label>
-        <label class="check"><input id="q_block5" type="checkbox" ${q.block_on_5h !== false ? 'checked' : ''}/> 拦 5h</label>
-        <label class="check"><input id="q_block7" type="checkbox" ${q.block_on_7d !== false ? 'checked' : ''}/> 拦 7d</label>
+      <div class="wb-body">
+        <div class="set-list">
+          <div class="set-row"><span>粘性</span>
+            <label class="chip-check"><input id="st_enabled" type="checkbox" ${sticky.enabled !== false ? 'checked' : ''}/> 启用</label>
+          </div>
+          <div class="set-row"><span>模式</span>
+            <select id="st_mode" class="input">
+              <option value="conversation" ${sticky.mode === 'conversation' ? 'selected' : ''}>会话</option>
+              <option value="session" ${sticky.mode === 'session' ? 'selected' : ''}>登录态</option>
+              <option value="ip" ${sticky.mode === 'ip' ? 'selected' : ''}>IP</option>
+            </select>
+          </div>
+          <div class="set-row"><span>TTL</span>
+            <select id="st_ttl" class="input">
+              ${[[3600,'1 小时'],[21600,'6 小时'],[86400,'24 小时'],[604800,'7 天'],[2592000,'30 天']].map(([v,l]) => `<option value="${v}" ${(Number(sticky.ttl_seconds ?? 86400)===v)?'selected':''}>${l}</option>`).join('')}
+            </select>
+          </div>
+          <div class="set-row"><span>安全线</span>
+            <select id="q_safety" class="input">
+              ${[[0.80,'80%'],[0.85,'85%'],[0.90,'90%'],[0.95,'95%'],[0.98,'98%']].map(([v,l]) => `<option value="${v}" ${(Number(q.safety_ratio ?? 0.95)===v)?'selected':''}>${l}</option>`).join('')}
+            </select>
+          </div>
+          <div class="set-row"><span>警告线</span>
+            <select id="q_warn" class="input">
+              ${[[0.70,'70%'],[0.80,'80%'],[0.85,'85%'],[0.90,'90%']].map(([v,l]) => `<option value="${v}" ${(Number(q.warn_ratio ?? 0.85)===v)?'selected':''}>${l}</option>`).join('')}
+            </select>
+          </div>
+          <div class="set-row"><span>并发</span>
+            <select id="c_max" class="input">
+              ${[1,2,4,8,16].map(v => `<option value="${v}" ${(Number(c.default_max_per_account ?? 2)===v)?'selected':''}>${v}</option>`).join('')}
+            </select>
+          </div>
+          <div class="set-row"><span>拦截</span>
+            <div class="switch-row">
+              <label class="chip-check"><input id="q_block5" type="checkbox" ${q.block_on_5h !== false ? 'checked' : ''}/> 5h</label>
+              <label class="chip-check"><input id="q_block7" type="checkbox" ${q.block_on_7d !== false ? 'checked' : ''}/> 7d</label>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="actions"><button class="btn btn-primary" onclick="saveRouting()">保存</button></div>
     </div>
     <details class="import-box">
-      <summary>粘性会话 ${sessionCount}</summary>
+      <summary>会话 ${sessionCount}</summary>
       <div class="body"><pre class="json">${esc(JSON.stringify(sessions, null, 2))}</pre></div>
     </details>
   </section>`
 }
+
 
 async function saveRouting() {
   try {
@@ -1729,56 +1748,58 @@ function renderProxies() {
   const interval = cfg.probe_interval_min || 10
   return `
   <section class="section">
-    <div class="head">
-      <div><div class="section-title">代理池</div><div class="sub">${tot.total ?? list.length} 条 · ${tot.free ?? 0} 空闲 · ${tot.bound ?? 0} 已绑定</div></div>
-      <div class="toolbar">
-        <span class="text-xs faint">探测间隔</span>
-        <div class="seg">${[5, 10, 30, 60].map(m => `<button class="${interval === m ? 'on' : ''}" onclick="setProbeInterval(${m})">${m}m</button>`).join('')}</div>
-        <button class="btn btn-outline btn-sm" onclick="probeProxies()">代理全量探测</button>
-      </div>
-    </div>
     <div class="stat-hero">
       ${statTile('总数', tot.total ?? list.length, '')}
       ${statTile('空闲', tot.free ?? 0, '')}
-      ${statTile('已绑定', tot.bound ?? 0, '')}
-      ${statTile('健康 / 停用', `${tot.ok ?? 0}<small> / ${tot.dead ?? 0}</small>`, '')}
+      ${statTile('已绑', tot.bound ?? 0, '')}
+      ${statTile('健康', `${tot.ok ?? 0}<small> / ${tot.dead ?? 0}</small>`, '')}
+    </div>
+    <div class="head">
+      <div class="section-title">${tot.total ?? list.length}</div>
+      <div class="toolbar">
+        <select class="input" style="width:120px;height:32px" aria-label="探测间隔" onchange="setProbeInterval(this.value)">
+          ${[5,10,30,60].map(m => `<option value="${m}" ${Number(interval)===m?'selected':''}>${m} 分</option>`).join('')}
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="probeProxies()">测通</button>
+      </div>
     </div>
     <details class="import-box">
-      <summary>导入 SOCKS5</summary>
+      <summary>导入</summary>
       <div class="body">
-        <textarea id="proxyImport" class="input" placeholder="每行一条&#10;socks5://user:pass@host:port&#10;host:port:user:pass"></textarea>
+        <textarea id="proxyImport" class="input" placeholder="socks5://host:port" aria-label="代理列表"></textarea>
         <div><button class="btn btn-primary btn-sm" onclick="importProxies()">导入</button></div>
       </div>
     </details>
-    <div class="card">
+    <div class="card" style="padding:8px 10px 4px">
       <table class="table">
-        <thead><tr><th>代理</th><th>状态</th><th>延迟</th><th>绑定节点</th><th>失败</th><th class="right">操作</th></tr></thead>
+        <thead><tr><th>代理</th><th>状态</th><th>延迟</th><th>节点</th><th>失败</th><th class="right"></th></tr></thead>
         <tbody>
-          ${list.map(p => {
-            const dead = p.status === 'dead' || p.enabled === false
+          ${list.map(prx => {
+            const dead = prx.status === 'dead' || prx.enabled === false
             return `<tr class="${dead ? 'dead-row' : ''}">
               <td>
-                <div class="mono">${esc(p.host)}:${esc(p.port)}</div>
-                <div class="text-xs faint">${esc(p.id)}${p.has_auth ? ' · auth' : ''}</div>
+                <div class="mono">${esc(prx.host)}:${esc(prx.port)}</div>
+                <div class="text-xs faint">${esc(prx.id)}</div>
               </td>
-              <td><span class="badge ${p.status === 'ok' ? 'ok' : dead ? 'danger' : 'warn'}">${esc(p.status || '—')}</span>${p.enabled === false ? ' <span class="text-xs faint">停用</span>' : ''}</td>
-              <td class="num">${p.latency_ms != null ? p.latency_ms + 'ms' : '—'}</td>
-              <td class="text-xs">${p.bound_vm_id ? `<a href="#/vm/${esc(p.bound_vm_id)}">${esc(vmNameById(p.bound_vm_id))}</a>` : '—'}</td>
-              <td class="num">${p.consecutive_failures || 0}${p.last_error ? ` <span class="text-xs faint">${esc(p.last_error)}</span>` : ''}</td>
+              <td><span class="badge ${prx.status === 'ok' ? 'ok' : dead ? 'danger' : 'warn'}">${esc(prx.status || '—')}</span></td>
+              <td class="num">${prx.latency_ms != null ? prx.latency_ms + 'ms' : '—'}</td>
+              <td class="text-xs">${prx.bound_vm_id ? `<a href="#/vm/${esc(prx.bound_vm_id)}">${esc(vmNameById(prx.bound_vm_id))}</a>` : '—'}</td>
+              <td class="num">${prx.consecutive_failures || 0}</td>
               <td class="right">
-                <button class="btn btn-ghost btn-sm" onclick="probeProxyOne('${esc(p.id)}')">测通</button>
-                ${p.enabled
-                  ? `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(p.id)}', false)">停用</button>`
-                  : `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(p.id)}', true)">启用</button>`}
-                ${p.bound_vm_id ? `<button class="btn btn-ghost btn-sm" onclick="unbindProxy('${esc(p.id)}')">解绑</button>` : ''}
+                <button class="btn btn-ghost btn-sm" onclick="probeProxyOne('${esc(prx.id)}')">测</button>
+                ${prx.enabled
+                  ? `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(prx.id)}', false)">停</button>`
+                  : `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(prx.id)}', true)">启</button>`}
+                ${prx.bound_vm_id ? `<button class="btn btn-ghost btn-sm" onclick="unbindProxy('${esc(prx.id)}')">解绑</button>` : ''}
               </td>
             </tr>`
-          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">池为空 · 展开上方导入 SOCKS5</td></tr>`}
+          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">空</td></tr>`}
         </tbody>
       </table>
     </div>
   </section>`
 }
+
 
 
 /* ── vm actions ──────────────────────────────────────────── */
