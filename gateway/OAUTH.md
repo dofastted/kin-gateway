@@ -39,10 +39,11 @@ harvest credentials.json → 回写 vm + 内存
 | 用量探测 | `GET /api/oauth/usage` + 伪装 UA | 官方 hop 的 `rate_limit_event` |
 | 恢复 | invalid_grant → 人工 | 存盘 sessionKey → CookieAuth 再导入 |
 | 环境变量 | access 当 Bearer | **禁止** `ANTHROPIC_AUTH_TOKEN` |
+| `refreshOAuthToken()` | 自己换票 | **永久抛错**（`refresh_token_disabled`） |
 
 ## 探测必须走虚拟机 Claude Code
 
-网关**禁止**再自己 `fetch` Anthropic 用量接口或伪装 CLI UA。模型列表同样只信 VM 官方 Claude Code 的目录，不打 `/v1/models`。
+网关**禁止**再自己 `fetch` Anthropic 用量接口或伪装 CLI UA。模型列表同样只信 VM 官方 Claude Code 的目录，不打 Anthropic models。`refreshOAuthToken` 已禁用，恢复只走 sessionKey CookieAuth。
 
 | 能力 | 官方入口 | 频率 |
 |---|---|---|

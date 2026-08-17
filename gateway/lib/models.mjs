@@ -137,10 +137,8 @@ export function resolveCliModel(raw, ids = cache.ids) {
   if (ids.length && ids.some((x) => x.toLowerCase() === id.toLowerCase())) {
     return { ok: true, model: id }
   }
-  if (!ids.length && /^claude-/i.test(id)) {
-    return { ok: true, model: id, unverified: true }
-  }
-  return { ok: false, model: id, reason: 'not_in_cli_catalog' }
+  // Fail closed: empty catalog or unknown id → reject. Never passthrough unverified claude-*.
+  return { ok: false, model: id, reason: ids.length ? 'not_in_cli_catalog' : 'cli_catalog_unavailable' }
 }
 
 function binCacheKey(bin) {

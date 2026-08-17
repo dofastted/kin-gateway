@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { prepareForVmClaude, classifySystemText, remapCodexTools } from './prepare-cli.mjs'
 import { classifyClient } from './client-fingerprint.mjs'
-import { validateOfficialModel } from './models.mjs'
+import { validateOfficialModel, setCliModelCatalogForTest } from './models.mjs'
 
 test('strips official identity/billing, keeps official CWD + user', () => {
   const { prompt, decisions, body } = prepareForVmClaude({
@@ -129,6 +129,7 @@ test('Hermes / OpenClaw 人设 appended as official system; unknown keys dropped
 })
 
 test('unknown harness model prefix + client class', () => {
+  setCliModelCatalogForTest(['claude-sonnet-5', 'claude-opus-4-6', 'claude-haiku-4-5-20251001'])
   assert.equal(validateOfficialModel('anthropic/claude-sonnet-5').ok, true)
   assert.equal(validateOfficialModel('anthropic/claude-sonnet-5').model, 'claude-sonnet-5')
   assert.equal(validateOfficialModel('openrouter/anthropic/claude-opus-4-6').model, 'claude-opus-4-6')

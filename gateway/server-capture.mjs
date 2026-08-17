@@ -1,7 +1,9 @@
 /**
- * KIN Gateway with outbound packet capture
- * Logs every upstream request body to prove multi-protocol → unified Claude Messages egress
+ * DISABLED — legacy capture gateway that hit Anthropic HTTP directly.
+ * Production entrypoint is server-v2.mjs (VM Claude Code only).
  */
+throw new Error('DISABLED: use server-v2.mjs. Direct Anthropic HTTP proxy is not allowed.')
+
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'

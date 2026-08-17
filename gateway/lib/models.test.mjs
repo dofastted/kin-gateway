@@ -57,6 +57,14 @@ test('validateOfficialModel only accepts CLI catalog', () => {
   assert.equal(validateOfficialModel('claude-opus-4-1').ok, false)
 })
 
+test('empty catalog fails closed — no unverified claude-* passthrough', () => {
+  setCliModelCatalogForTest([])
+  const r = resolveCliModel('claude-sonnet-5', [])
+  assert.equal(r.ok, false)
+  assert.equal(r.reason, 'cli_catalog_unavailable')
+  assert.equal(validateOfficialModel('claude-sonnet-5').ok, false)
+})
+
 test('models module does not spoof Anthropic HTTP', () => {
   const src = fs.readFileSync(new URL('./models.mjs', import.meta.url), 'utf8')
   assert.equal(src.includes('api.anthropic.com'), false)

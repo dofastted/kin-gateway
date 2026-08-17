@@ -1,14 +1,8 @@
 /**
- * KIN Protocol Gateway
- * Base URL + API Key → multi-protocol → Claude OAuth (VM credential)
- *
- * Endpoints:
- *   GET  /health
- *   GET  /v1/models
- *   POST /v1/chat/completions   (OpenAI)
- *   POST /v1/responses          (OpenAI Responses)
- *   POST /v1/messages           (Anthropic)
+ * DISABLED — legacy direct-Anthropic gateway.
+ * Production entrypoint is server-v2.mjs (VM Claude Code only).
  */
+throw new Error('DISABLED: use server-v2.mjs. Direct Anthropic HTTP proxy is not allowed.')
 
 import http from 'node:http'
 import fs from 'node:fs'

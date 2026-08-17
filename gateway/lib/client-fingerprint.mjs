@@ -114,20 +114,13 @@ export function alignToClaudeCodeStandard(body, inboundHeaders = {}) {
     out.thinking = body.thinking
   }
 
-  // Headers for the VM → Claude Code / Anthropic hop (official Claude Code contract)
-  const headers = {
-    'content-type': 'application/json',
-    'anthropic-version': '2023-06-01',
-    'anthropic-beta': pickOfficialBetas(inboundHeaders['anthropic-beta']),
-    'user-agent': 'claude-cli/2.1.233 (external, sdk-cli)',
-    'x-app': 'cli',
-    'anthropic-dangerous-direct-browser-access': 'true',
-    'x-stainless-lang': 'js',
-    'x-stainless-runtime': 'node',
-    'x-stainless-package-version': '0.112.1',
+  // Body-only alignment. Egress is always VM `claude -p` — never invent a
+  // spoofed claude-cli User-Agent or Anthropic HTTP headers here.
+  return {
+    body: out,
+    headers: null,
+    alignment: 'claude_code_body_only',
   }
-
-  return { body: out, headers, alignment: 'claude_code_official_standard' }
 }
 
 // Backward-compatible alias

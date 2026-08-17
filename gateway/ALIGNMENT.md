@@ -20,6 +20,18 @@
 4. 第三方 / 未知 harness（Pi、Codex、ChatGPT、Hermes、OpenClaw）：协议转换；人设改写成官方 `system` 文本块并追加。不给每个 Agent 开分支。
 5. 这是接入，不是伪装。未知顶层字段白名单丢弃。详见 [COMPAT.md](COMPAT.md)。
 
+## 收紧规则（硬约束）
+
+| 规则 | 行为 |
+|---|---|
+| 对话 / 流式 / 模型列表 / 用量探测 | **只**经 VM `claude -p` 或 `claude auth status` / CLI 目录 |
+| 网关 `grant_type=refresh_token` | **永久禁用**（会和 CLI 抢票） |
+| 网关打 Anthropic Messages / models / oauth/usage | **禁止** |
+| 未知模型 id | **400**，不 hop |
+| CLI 目录为空 | **拒绝**（fail closed），不放行未校验的 `claude-*` |
+| 未知请求体顶层字段 | 白名单外丢弃 |
+| 旧 `server.mjs` / `server-capture.mjs` | 启动即抛错，禁止直连 Anthropic |
+
 ## 清洗（借鉴 sub2api 的转换，不用它的 mimicry）
 
 | 项 | 处理 |
