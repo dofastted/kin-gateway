@@ -71,10 +71,12 @@
 
 | 模式 | Header | 说明 |
 |------|--------|------|
-| **cli**（默认） | `x-kin-forward: cli` | Claude Code 传输 |
-| **relay** | `x-kin-forward: relay` | 协议中继标签；身份替换集与 cli **相同** |
+| **cli**（默认） | `x-kin-forward: cli` | Claude Code 传输（槽内官方 CLI） |
+| **relay** | `x-kin-forward: relay` | 协议中继**标签**；当前与 cli 同传输，身份替换集相同 |
 
 两者都做全量 VM 标准身份替换：`credentials / session_id / device_id / metadata.user_id / characteristics / fingerprint / settings`。
+
+> 说明：Anthropic HTTP hop 永久 501，故不存在独立的 HTTP relay；`relay` 仅为标签。`cli` 传输下真正生效的身份来自槽内 cli-home（credentials/settings/fingerprint）；body 的 `metadata.user_id` 替换用于审计与一致性，`claude -p` 不会把 body `metadata` 原样发往官方。
 
 ---
 
@@ -133,7 +135,7 @@ ExecStart=/usr/bin/node server-v2.mjs
 
 ```bash
 cd /opt/kin-gateway/gateway/lib
-node --test acceptance.test.mjs forward-mode.test.mjs oauth-refresh.test.mjs
+node --test          # 整个 lib 套件（含 client-cli-hop / vm-file / execution-context）
 ```
 
 夹具：`gateway/fixtures/`（抓包脱敏 + 合成 tools/metadata）。

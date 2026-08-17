@@ -1,6 +1,8 @@
 gateway/config/test.key
 gateway/config/gateway-v2.json
 gateway/gateway.json
+gateway/config/gateway-v2.public.json
+gateway/gateway.public.json
 **/*.key
 **/node_modules/
 **/.credentials.json

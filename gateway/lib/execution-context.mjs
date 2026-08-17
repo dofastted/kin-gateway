@@ -13,9 +13,10 @@ import { harvestHomeToVm, readCliOauth } from './oauth-refresh.mjs'
 export const GATEWAY_CAPABILITIES = {
   runtime: 'host-cli-slot',
   kernel: 'metadata-only',
-  client_tools: true,
-  images: true,
-  multi_turn_native: true,
+  // Honest capability surface (see LIMITATIONS in server-v2 for wording):
+  client_tools: true,            // forwarded in official Messages; executed on the caller
+  images: true,                  // active-turn image blocks forwarded natively into the CLI hop
+  multi_turn_native: false,      // context preserved via history flatten + sticky --resume, not native turns
   sticky: 'vm-account',
   claude_session: false,
   workspace_default: 'client',

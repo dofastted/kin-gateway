@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatMetadataUserId, applyVmIdentityToBody, loadVmIdentity } from './vm-identity.mjs'
+import { formatMetadataUserId, loadVmIdentity } from './vm-identity.mjs'
+import { applyForwardReplace } from './forward-mode.mjs'
 
 test('metadata.user_id is official JSON for current CLI', () => {
   const s = formatMetadataUserId({
@@ -14,11 +15,11 @@ test('metadata.user_id is official JSON for current CLI', () => {
   assert.equal(o.session_id, 'sess')
 })
 
-test('applyVmIdentityToBody overwrites client metadata with VM', () => {
+test('applyForwardReplace overwrites client metadata with VM identity', () => {
   const id = {
     metadataUserId: formatMetadataUserId({ deviceId: 'd'.repeat(64), accountUuid: 'u', sessionId: 's' }),
   }
-  const out = applyVmIdentityToBody({ model: 'x', metadata: { user_id: 'windows-client' } }, id)
+  const out = applyForwardReplace('cli', { model: 'x', metadata: { user_id: 'windows-client' } }, id)
   assert.notEqual(out.metadata.user_id, 'windows-client')
   assert.ok(String(out.metadata.user_id).includes('account_uuid'))
 })

@@ -5,6 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { atomicWriteJson, writeJsonIfChanged } from './vm-file.mjs'
 
 export function readJsonSafe(p, fallback = null) {
   try {
@@ -103,47 +104,34 @@ export function persistVmSettings(exec, identity) {
   if (!exec?.homeDir || !identity) return { wrote: false }
   const claudeDir = path.join(exec.homeDir, '.claude')
   fs.mkdirSync(claudeDir, { recursive: true })
-  fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify(identity.settings, null, 2))
-  fs.writeFileSync(path.join(claudeDir, 'kin-identity.json'), JSON.stringify({
-    vm_id: identity.vmId,
-    cli_version: identity.cliVersion,
-    timezone: identity.timezone,
-    locale: identity.locale,
-    kernel: identity.kernel,
-    account_uuid: identity.accountUuid,
-    org_uuid: identity.orgUuid,
-    device_id: identity.deviceId,
-    session_id: identity.sessionId,
-    written_at: new Date().toISOString(),
-  }, null, 2))
-  fs.writeFileSync(path.join(claudeDir, 'kin-seed.json'), JSON.stringify({
-    pure: true,
-    kernel: identity.kernel,
-    timezone: identity.timezone,
-    locale: identity.locale,
-    telemetry: 'disabled',
-    cli_version: identity.cliVersion,
-    seeded_at: new Date().toISOString(),
-  }, null, 2))
-  return { wrote: true }
-}
-
-export function applyVmIdentityToBody(body, identity) {
-  const out = { ...(body || {}) }
-  const md = { ...(out.metadata && typeof out.metadata === 'object' ? out.metadata : {}) }
-  md.user_id = identity.metadataUserId
-  out.metadata = md
-  return out
-}
-
-export function applyVmIdentityToHeaders(headers, identity, inbound = {}) {
-  const h = { ...headers }
-  h['user-agent'] = identity.userAgent
-  h['x-claude-code-session-id'] = identity.sessionId
-  if (!h['x-client-request-id'] && !inbound['x-client-request-id']) {
-    h['x-client-request-id'] = crypto.randomUUID()
+  // Only settings.json affects CLI behavior — skip rewrite when unchanged (T7).
+  const wrote = writeJsonIfChanged(path.join(claudeDir, 'settings.json'), identity.settings)
+  // Descriptive sidecars carry timestamps; write atomically only when settings changed
+  // to avoid per-request churn.
+  if (wrote) {
+    atomicWriteJson(path.join(claudeDir, 'kin-identity.json'), {
+      vm_id: identity.vmId,
+      cli_version: identity.cliVersion,
+      timezone: identity.timezone,
+      locale: identity.locale,
+      kernel: identity.kernel,
+      account_uuid: identity.accountUuid,
+      org_uuid: identity.orgUuid,
+      device_id: identity.deviceId,
+      session_id: identity.sessionId,
+      written_at: new Date().toISOString(),
+    })
+    atomicWriteJson(path.join(claudeDir, 'kin-seed.json'), {
+      pure: true,
+      kernel: identity.kernel,
+      timezone: identity.timezone,
+      locale: identity.locale,
+      telemetry: 'disabled',
+      cli_version: identity.cliVersion,
+      seeded_at: new Date().toISOString(),
+    })
   }
-  return h
+  return { wrote }
 }
 
 /** Persist fingerprint onto vm.json only. Never touches oauth tokens. */
@@ -152,15 +140,24 @@ export function persistVmFingerprint(exec, identity) {
   let vm
   try { vm = JSON.parse(fs.readFileSync(exec.vmPath, 'utf8')) } catch { return { wrote: false } }
   const prev = vm.fingerprint && typeof vm.fingerprint === 'object' ? vm.fingerprint : {}
-  vm.fingerprint = {
+  const merged = {
     ...prev,
     ...identity.fingerprint,
     device_id: prev.device_id || identity.fingerprint.device_id,
     session_id: prev.session_id || identity.fingerprint.session_id,
     reset_at: prev.reset_at || new Date().toISOString(),
-    updated_at: new Date().toISOString(),
   }
-  fs.writeFileSync(exec.vmPath, JSON.stringify(vm, null, 2))
+  // Write-only-on-change (T7): compare ignoring the volatile updated_at stamp so
+  // steady-state requests don't rewrite vm.json every call.
+  const { updated_at: _prevStamp, ...prevCmp } = prev
+  const changed = JSON.stringify(prevCmp) !== JSON.stringify(merged)
+  if (!changed) {
+    if (exec.vm) exec.vm.fingerprint = prev
+    return { wrote: false }
+  }
+  merged.updated_at = new Date().toISOString()
+  vm.fingerprint = merged
+  atomicWriteJson(exec.vmPath, vm)
   if (exec.vm) exec.vm.fingerprint = vm.fingerprint
   return { wrote: true }
 }

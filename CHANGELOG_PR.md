@@ -69,11 +69,11 @@
 
 ### E. 死代码清理
 
+> 说明：`.bak` 历史快照与 `lib/server-v2.mjs` 在本 PR 的基线（`c5c4180`）上**已不存在**，由更早的提交清理，本 PR 未再删除文件。下表仅列本 PR 实际改动。
+
 | 项 | 处理 |
 |----|------|
-| `*.bak*`（5 个历史快照） | 删除 |
-| `lib/server-v2.mjs`（与根入口重复 ~66KB） | 删除 |
-| `server.mjs` / `server-capture.mjs` | 缩为一次性 throw stub |
+| `server.mjs` / `server-capture.mjs`（各 ~383 行） | 缩为一次性 throw stub |
 | `anthropic-messages` 无用 Headers/fetch 实现 | 删除，保留 501 哨兵 |
 | 未使用的 `officializeToClaudeCli` / `classifyClient` import | 移除 |
 
@@ -89,7 +89,7 @@
 | OAuth 写入 | 导入可能直接改 json | **仅 `persistOauthToVm`** |
 | Anthropic HTTP + OAuth | 曾存在 hop | **永久 501** |
 | 控制台凭证 | 导入向导为主 | **统一凭证页可维护** |
-| 仓库体积 | 重复 server + bak | **删除无用约 90KB+** |
+| 冗余入口 | `server.mjs`/`server-capture.mjs` 383 行旧实现 | **收敛为 throw stub** |
 
 ---
 
@@ -99,8 +99,8 @@
 
 ```bash
 cd gateway/lib
-node --test acceptance.test.mjs forward-mode.test.mjs oauth-refresh.test.mjs vm-identity.test.mjs workspace-mode.test.mjs
-# 预期：全部 pass
+node --test          # 整个 lib 套件（含 execution-context/client-cli-hop/vm-file）
+# 预期：全部 pass（75+ 用例）
 ```
 
 ### 人工（需有效 sessionKey，本 PR 不强制）
@@ -155,4 +155,36 @@ systemctl restart kin-gateway
 curl -sS https://kin.fkcodex.com/health
 # capabilities.workspace_default == client
 # limitations.oauth 含 never HTTP Claude with OAuth
+```
+
+---
+
+## 补强（审查跟进 / review follow-up）
+
+针对首轮实现与需求/文档不符的缺口做的加固，均在 `gateway/lib` 有对应单测：
+
+| 项 | 改动 | 文件 |
+|----|------|------|
+| 多轮上下文丢失 | `buildStreamJsonTurns`：无 `--resume` 时把历史轮次展开为 transcript，尾轮原样保留（不再只发最后一句） | `client-cli-hop.mjs` |
+| 图片被丢弃 | `toAnthropicBlocks` 保留 image/tool_result/document，OpenAI `image_url`→Anthropic image | `client-cli-hop.mjs` |
+| 工具越权风险 | client 工作区改 **fail-closed**：`--permission-mode default`（去 `bypassPermissions`）+ 只允许 `mcp__kinclient__*` + 扩充内置 denylist | `client-cli-hop.mjs` |
+| CLI 孤儿进程 | `spawn(detached)` + 进程组 `process.kill(-pid)` 组杀，早停不留残留 | `client-cli-hop.mjs` |
+| 请求参数被忽略 | `thinking.budget_tokens`→`MAX_THINKING_TOKENS`；无法映射的 `max_tokens/temperature/...` 记入 `hop_meta.params.dropped` | `client-cli-hop.mjs` |
+| system 静默截断 | 超长按 `MAX_SYSTEM_CHARS` 截断并记 `hop_meta.system.truncated` | `client-cli-hop.mjs` |
+| 流式 rate-limit 未采集 | 两条 hop 均 `consumeCliNdjson` + 调 `onRateLimit`，返回 `rate_limit(s)` 供配额入账 | `client-cli-hop.mjs` |
+| vm.json 写竞态/放大 | 原子写（temp+rename）、per-VM 锁、指纹/settings 仅变更时写 | `vm-file.mjs` / `oauth-refresh.mjs` / `vm-identity.mjs` |
+| capabilities 不诚实 | `multi_turn_native=false`（靠 flatten/resume）；`images` 限定“当前轮原样”；修复对应测试 | `execution-context.mjs` |
+| 抓包无界增长 | client-diff 抓包按 `KIN_DIFF_CAPTURE`(0/1/0..1，默认 5%) 采样 | `server-v2.mjs` |
+| 覆盖回补 | 恢复 `harvestHomeToVm` 断言 | `acceptance.test.mjs` |
+
+### forward 模式与身份替换澄清（T10/T14）
+
+- `cli` 与 `relay` 目前**同一传输**（官方 slot CLI）。Anthropic HTTP hop 永久 501，故不存在独立的 HTTP relay；`relay` 仅作标签，替换集与 `cli` 一致。
+- `cli` 传输下真正生效的身份来自 **cli-home seeding**（credentials/settings/fingerprint）；body 上的 `metadata.user_id` 替换服务于审计与一致性断言，`claude -p` 不会把 body 的 `metadata` 直接发往 Anthropic。
+
+### 新增测试
+
+```bash
+cd gateway/lib
+node --test client-cli-hop.test.mjs vm-file.test.mjs
 ```

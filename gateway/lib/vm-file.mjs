@@ -1,0 +1,50 @@
+/**
+ * Safe vm.json / slot-file writes (T7).
+ *
+ * - atomicWriteJson: write to a temp file in the same dir then rename, so a
+ *   concurrent reader (or a crash mid-write) never sees a torn/partial file.
+ * - withVmLock: per-path async mutex to serialize read-modify-write sequences
+ *   that span `await` boundaries (e.g. the admin sessionKey import path).
+ * - writeJsonIfChanged: skip the write entirely when the on-disk content is
+ *   byte-identical, cutting per-request write amplification.
+ */
+import fs from 'node:fs'
+import path from 'node:path'
+import crypto from 'node:crypto'
+
+const locks = new Map()
+
+export function withVmLock(key, fn) {
+  const prev = locks.get(key) || Promise.resolve()
+  const run = prev.then(fn, fn)
+  // Keep the chain alive but never reject the stored promise.
+  locks.set(key, run.then(() => {}, () => {}))
+  return run
+}
+
+export function atomicWriteJson(filePath, obj, { mode } = {}) {
+  const dir = path.dirname(filePath)
+  const tmp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`)
+  const data = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)
+  const opts = mode ? { mode } : undefined
+  fs.writeFileSync(tmp, data, opts)
+  try {
+    fs.renameSync(tmp, filePath)
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }) } catch {}
+    throw e
+  }
+  if (mode) { try { fs.chmodSync(filePath, mode) } catch {} }
+  return true
+}
+
+export function writeJsonIfChanged(filePath, obj, { mode } = {}) {
+  const data = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)
+  try {
+    if (fs.existsSync(filePath) && fs.readFileSync(filePath, 'utf8') === data) {
+      return false
+    }
+  } catch {}
+  atomicWriteJson(filePath, data, { mode })
+  return true
+}
