@@ -1,0 +1,11 @@
+{
+  "name": "kin-gateway",
+  "install": "npm install && (cd gateway && npm install) && node scripts/dev-bootstrap.mjs",
+  "terminals": [
+    {
+      "name": "gateway",
+      "command": "CLAUDE_CLI_PATH=\"$PWD/node_modules/@anthropic-ai/claude-code/bin/claude.exe\" PORT=8787 HOST=0.0.0.0 node gateway/server-v2.mjs"
+    }
+  ],
+  "ports": [8787]
+}
