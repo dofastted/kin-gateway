@@ -424,7 +424,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
     <div class="login-card">
       <div class="brand"><div class="mark">核</div><div><div class="t">种核 KIN</div></div></div>
       <h2>登录管理台</h2>
-      <p class="hint">多虚拟机 · Claude Code 网关</p>
+      <p class="hint">多虚拟机 · 官方 Claude Code 转发</p>
       <div class="stack">
         <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
         <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
@@ -442,7 +442,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
           <div class="mark">核</div>
           <div>
             <div class="t">种核 KIN</div>
-            <div class="s">Claude Code 网关</div>
+            <div class="s">VM · 官方 Claude Code</div>
           </div>
         </div>
       </div>
@@ -471,7 +471,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
         <div class="topbar-actions">
           <span id="healthPill" class="badge">—</span>
           <button class="btn btn-outline" onclick="refresh()">刷新</button>
-          <button class="btn btn-outline" onclick="probeAll()">全量探测</button>
+          <button class="btn btn-outline" onclick="probeAll()" title="从虚拟机官方 Claude Code 探测登录态与限流">CLI 探测</button>
         </div>
       </header>
       <main class="content" id="main"></main>
@@ -487,12 +487,12 @@ const LS_USER = 'kin_console_user'
 const LS_BASE = 'kin_api_base'
 const COOKIE = 'kin_panel_token'
 const titles = {
-  overview: ['总览', '平台健康'],
+  overview: ['总览', '平台健康 · 只走虚拟机 CLI'],
   cluster: ['集群', '节点与账号'],
   vm: ['虚拟机', '创建与运维'],
-  import: ['导入', 'OAuth 凭证'],
-  usage: ['用量', '额度与限流'],
-  protocol: ['协议', '接入端点'],
+  import: ['导入', 'sessionKey 导入 · CLI 续期'],
+  usage: ['用量', '官方 CLI 探测'],
+  protocol: ['协议', '只经虚拟机 Claude Code'],
   proxies: ['代理池', 'SOCKS5'],
   settings: ['设置', '路由策略'],
 }
@@ -732,7 +732,13 @@ async function refresh() {
     state.usage = usage?.__error ? { error: usage.__error } : (usage.data || usage)
     let m = models?.__error ? null : (models.data || models)
     if (m && Array.isArray(m.data) && !m.items) {
-      m = { items: m.data.map(x => ({ id: x.id, label: x.display_name || x.id })), source: m.source, total: m.data.length }
+      m = {
+        items: m.data.map(x => ({ id: x.id, label: x.display_name || x.id })),
+        source: m.source || 'claude_cli_catalog',
+        total: m.data.length,
+        cli_version: m.cli_version || null,
+        note: m.note || null,
+      }
     }
     if (m && !m.items && Array.isArray(m)) {
       m = { items: m.map(x => ({ id: x.id || x, label: x.label || x.display_name || x.id || x })), source: 'list' }
@@ -761,19 +767,19 @@ async function refresh() {
 
 async function probeAll() {
   try {
-    toast('全量探测中…')
-    await api('/api/panel/probe', { method: 'POST' })
-    toast('探测完成')
+    toast('正在用官方 Claude Code 探测…')
+    await api('/api/panel/probe', { method: 'POST', body: JSON.stringify({ hop: true }) })
+    toast('CLI 探测完成')
     await refresh()
-  } catch (e) { toast(e.message) }
+  } catch (e) { toast(e.message, 'err') }
 }
 async function probeOne(id) {
   try {
-    toast('探测 ' + id)
-    await api('/api/panel/vms/' + id + '/probe', { method: 'POST' })
-    toast('完成')
+    toast('CLI 探测 ' + id)
+    await api('/api/panel/vms/' + id + '/probe', { method: 'POST', body: JSON.stringify({ hop: true }) })
+    toast('探测完成')
     await refresh()
-  } catch (e) { toast(e.message) }
+  } catch (e) { toast(e.message, 'err') }
 }
 async function openVm(id) {
   const switched = state.selectedVm !== id
@@ -977,7 +983,7 @@ function renderOverview() {
     <div class="head">
       <div><div class="section-title">节点</div><div class="sub">${running} / ${vms.length} 在线</div></div>
       <div class="actions">
-        <button class="btn btn-outline btn-sm" onclick="go('import')">导入凭证</button>
+        <button class="btn btn-outline btn-sm" onclick="go('import')">导入 sessionKey</button>
         <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部</button>
       </div>
     </div>
@@ -1248,7 +1254,7 @@ function renderVm() {
           </select>
           <button class="btn btn-outline btn-sm" onclick="startVm('${esc(vm.id)}')">开机</button>
           <button class="btn btn-outline btn-sm" onclick="stopVm('${esc(vm.id)}')">关机</button>
-          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')">探测</button>
+          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')" title="claude auth status + 官方 hop">CLI 探测</button>
         </div>
       </div>
       <div class="tabs">
@@ -1297,7 +1303,8 @@ function renderVm() {
           <dt>凭证</dt><dd>${vm.has_token ? '<span class="acc-pill ok">已绑定</span>' : '<span class="acc-pill off">未绑定</span>'}</dd>
           <dt>5h / 7d</dt><dd class="num">${u5.toFixed(1)}% / ${u7.toFixed(1)}%</dd>
         </dl>
-        <div class="actions"><button class="btn btn-outline btn-sm" onclick="go('import')">去导入 OAuth</button></div>
+        <div class="actions"><button class="btn btn-outline btn-sm" onclick="go('import')">去导入 sessionKey</button></div>
+        <p class="text-xs faint" style="margin:0">续期由虚拟机官方 Claude Code 负责；网关只 harvest，不抢 refresh_token。</p>
       </div>` : ''}
 
       ${tab === 'proxy' ? `
@@ -1317,7 +1324,7 @@ function renderVm() {
           <button class="btn btn-outline btn-sm" onclick="startVm('${esc(vm.id)}')">开机</button>
           <button class="btn btn-outline btn-sm" onclick="stopVm('${esc(vm.id)}')">关机</button>
           <button class="btn btn-outline btn-sm" onclick="activateVm('${esc(vm.id)}')">设为活跃</button>
-          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')">探测</button>
+          <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')" title="从官方 Claude Code 探测">CLI 探测</button>
           <button class="btn btn-outline btn-sm" onclick="updateClaudeCode('${esc(vm.id)}')">更新 Claude Code</button>
         </div>
         <dl class="kv">
@@ -1376,10 +1383,10 @@ function renderImport() {
   const hasProxy = !!(vm.proxy || vm.proxy_id)
   const hasTok = !!vm.has_token
   const step = !selected ? 1 : (!hasProxy ? 2 : (!hasTok ? 3 : 4))
-  const steps = [[1, '选择虚拟机'], [2, '分配 SOCKS5'], [3, 'sessionKey → OAuth'], [4, '开机']]
+  const steps = [[1, '选择虚拟机'], [2, '分配 SOCKS5'], [3, 'sessionKey 导入'], [4, 'CLI 接管续期']]
   return `
   <section class="section">
-    <div class="head"><div><div class="section-title">OAuth 导入</div><div class="sub">经代理转换凭证并写入虚拟机</div></div></div>
+    <div class="head"><div><div class="section-title">sessionKey 导入</div><div class="sub">CookieAuth 换票后写入虚拟机 · 之后由官方 Claude Code 自行续期</div></div></div>
     <div class="stepper">
       ${steps.map(([n, t], i) => `
         ${i ? '<span class="lnk"></span>' : ''}
@@ -1388,6 +1395,7 @@ function renderImport() {
         </span>`).join('')}
     </div>
     <div class="card card-pad-lg stack-md">
+      <p class="text-xs faint" style="margin:0">sessionKey 只用于导入 / 恢复。网关不会调用 grant_type=refresh_token，避免和虚拟机 CLI 抢票。</p>
       <label class="text-xs faint" style="display:flex;flex-direction:column;gap:6px">虚拟机
         <select id="importVmSelect" class="input" onchange="state.importVmId=this.value;render()">
           <option value="">— 选择 —</option>
@@ -1401,9 +1409,9 @@ function renderImport() {
         ${kernelTag(vm.kernel)}
         <button class="btn btn-outline btn-sm" onclick="state.selectedVm='${esc(selected)}';allocateProxy('${esc(selected)}')">分配 SOCKS5</button>
       </div>
-      <textarea id="importSessionKey" class="input" placeholder="sessionKey (sk-ant-sid…) 或 access_token"></textarea>
+      <textarea id="importSessionKey" class="input" placeholder="粘贴最新 sessionKey（sk-ant-sid…）"></textarea>
       <div class="actions">
-        <button class="btn btn-primary" onclick="importOAuthWorkflow()">经代理转换 OAuth</button>
+        <button class="btn btn-primary" onclick="importOAuthWorkflow()">导入并播种 CLI</button>
         <button class="btn btn-outline" onclick="startVm('${esc(selected)}')">开机</button>
         <button class="btn btn-outline" onclick="activateVm('${esc(selected)}')">设为活跃</button>
       </div>` : emptyBox('请选择虚拟机 · 没有可用节点请先到「虚拟机」创建')}
@@ -1427,8 +1435,8 @@ function renderUsage() {
   return `
   <section class="section">
     <div class="head">
-      <div><div class="section-title">用量</div><div class="sub">${accounts.length} 账号 · ${near} 近限额 · 安全线 ${safety}%</div></div>
-      <button class="btn btn-outline btn-sm" onclick="probeAll()">全量探测</button>
+      <div><div class="section-title">用量</div><div class="sub">${accounts.length} 账号 · ${near} 近限额 · 安全线 ${safety}% · 数据来自官方 CLI</div></div>
+      <button class="btn btn-outline btn-sm" onclick="probeAll()" title="claude auth status + 官方 hop">CLI 探测</button>
     </div>
     <div class="stat-hero">
       ${statTile('账号', s.account_count ?? accounts.length, `${near} 近限额`)}
@@ -1454,11 +1462,11 @@ function renderUsage() {
               <td class="num">${fmtNum(a.requests || 0)}</td>
               <td class="right">${nearL ? '<span class="badge danger">近限额</span>' : '<span class="badge ok">正常</span>'}</td>
             </tr>`
-          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">暂无数据，请先探测</td></tr>`}
+          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">暂无数据 · 点「CLI 探测」从虚拟机官方 Claude Code 拉取</td></tr>`}
         </tbody>
       </table>
     </div>
-    <div class="text-xs faint">utilization ≥ ${safety}% 时拒绝新请求，避免打满 5h / 周限额。</div>
+    <div class="text-xs faint">限流状态来自官方 hop 的 rate_limit_event；utilization ≥ ${safety}% 或 CLI 标记 rejected 时拒绝新请求。网关不伪装打 Anthropic 用量接口。</div>
   </section>`
 }
 
@@ -1486,21 +1494,23 @@ function renderProtocol() {
       </div>
       <div class="card stack-sm">
         <div class="text-xs faint">上游</div>
-        <div class="text-sm">VM · Claude Code CLI</div>
-        <div class="text-xs faint">真流式 · thinking 透传</div>
+        <div class="text-sm">虚拟机官方 Claude Code</div>
+        <div class="text-xs faint">不伪装 · 只协议转换 + 转发</div>
       </div>
     </div>
     <div class="card">
       <div class="section-title" style="margin-bottom:6px">接入端点</div>
+      <p class="text-xs faint" style="margin:0 0 8px">Messages / Chat / Responses 全部进入虚拟机 <code>claude -p</code>，不经网关直连 Anthropic。</p>
       ${endpoints.map(([n, p]) => `<div class="endpoint-row"><span>${esc(n)}</span><code>${esc(base.replace(/\/$/, ''))}${esc(p)}</code></div>`).join('')}
     </div>
     <div class="head">
-      <div><div class="section-title">模型</div><div class="sub">${models.length} 个可用</div></div>
-      <button class="btn btn-outline btn-sm" onclick="refresh()">刷新</button>
+      <div><div class="section-title">模型</div><div class="sub">${models.length} 个 · ${esc(state.models?.source || 'claude_cli_catalog')}${state.models?.cli_version ? ' · CLI ' + esc(state.models.cli_version) : ''}</div></div>
+      <button class="btn btn-outline btn-sm" onclick="refresh()">刷新目录</button>
     </div>
+    <p class="text-xs faint" style="margin:0">只展示这份虚拟机 Claude Code 认识的模型；未知 id 会在网关直接 400，不会 hop。</p>
     ${state.models?.error || (state.models?.note && !models.length) ? `<p class="text-xs danger" style="margin:0">${esc(state.models.error || state.models.note)}</p>` : ''}
     <div class="model-grid">
-      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型')}
+      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型 · 检查虚拟机 CLI 是否可读')}
     </div>
   </section>`
 }
@@ -1733,7 +1743,7 @@ async function importOAuthWorkflow() {
     else body.access_token = sessionKey
     const r = await api('/api/panel/vms/import', { method: 'POST', body: JSON.stringify(body) })
     const d = r.data || r
-    toast('已导入 ' + (d.oauth_email || id) + (d.proxy_used ? ' · SOCKS' : ''))
+    toast('已导入 ' + (d.oauth_email || id) + (d.proxy_used ? ' · SOCKS' : '') + ' · CLI 将自行续期')
     const el = document.getElementById('importSessionKey')
     if (el) el.value = ''
     await refresh()
