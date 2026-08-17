@@ -3,41 +3,51 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>种核 KIN · 管理台</title>
+  <title>种核 KIN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
 /* ── tokens ─────────────────────────────────────────────── */
 :root{
-  --bg:oklch(0.155 0.006 265);
-  --panel:oklch(0.196 0.007 265);
-  --panel-2:oklch(0.232 0.008 265);
-  --sidebar:oklch(0.172 0.006 265);
-  --fg:oklch(0.975 0.002 265);
-  --muted:oklch(0.72 0.012 265);
-  --faint:oklch(0.575 0.012 265);
-  --line:oklch(1 0 0 / 8%);
-  --line-2:oklch(1 0 0 / 15%);
-  --ok:oklch(0.76 0.15 152);
-  --warn:oklch(0.83 0.14 78);
-  --bad:oklch(0.68 0.19 25);
-  --primary:oklch(0.97 0 0);
-  --primary-fg:oklch(0.2 0.01 265);
-  --destructive:oklch(0.68 0.19 25);
+  --bg:#020617;
+  --panel:#0E1223;
+  --panel-2:#14192C;
+  --sidebar:#070B16;
+  --fg:#F8FAFC;
+  --muted:#94A3B8;
+  --faint:#64748B;
+  --line:rgba(248,250,252,.08);
+  --line-2:rgba(248,250,252,.14);
+  --ok:#22C55E;
+  --warn:#F59E0B;
+  --bad:#EF4444;
+  --primary:#E8ECF2;
+  --primary-fg:#0A0E18;
+  --accent:#22C55E;
+  --destructive:#EF4444;
   --muted-foreground:var(--muted);
   --border:var(--line);
-  --r-lg:14px;
-  --r-md:12px;
+  --r-lg:16px;
+  --r-md:10px;
   --r-sm:8px;
+  --r-xs:6px;
   --sp:16px;
+  --font: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --motion-quick:150ms;
+  --motion-fast:220ms;
+  --ease:cubic-bezier(.22,1,.36,1);
 }
 *,*::before,*::after{box-sizing:border-box}
 html{color-scheme:dark;height:100%}
 body{
   margin:0;min-height:100%;
   background:var(--bg);color:var(--fg);
-  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
-  font-size:13.5px;line-height:1.5;
+  font-family:var(--font);
+  font-size:13px;line-height:1.45;
   -webkit-font-smoothing:antialiased;
-  letter-spacing:-0.005em;
+  letter-spacing:-0.01em;
 }
 button,input,textarea,select{font:inherit;color:inherit}
 a{color:inherit;text-decoration:none}
@@ -57,8 +67,8 @@ a{color:inherit;text-decoration:none}
 .brand{display:flex;align-items:center;gap:9px}
 .brand .mark{
   width:26px;height:26px;border-radius:8px;flex-shrink:0;
-  background:linear-gradient(145deg,oklch(0.82 0.14 152),oklch(0.6 0.12 200));
-  display:grid;place-items:center;font-size:12px;font-weight:700;color:oklch(0.18 0.02 265);
+  background:var(--primary);color:var(--primary-fg);
+  display:grid;place-items:center;font-size:12px;font-weight:700;font-family:var(--mono);
 }
 .brand .t{font-size:14px;font-weight:600;letter-spacing:-0.01em}
 .brand .s{font-size:11px;color:var(--faint);margin-top:1px}
@@ -69,10 +79,10 @@ a{color:inherit;text-decoration:none}
   color:var(--muted);user-select:none;font-size:13px;
   transition:background .12s,color .12s;
 }
-.nav-item::before{content:'';width:4px;height:4px;border-radius:99px;background:currentColor;opacity:.3}
+.nav-item .ni{width:16px;height:16px;flex-shrink:0;opacity:.72}
+.nav-item.active .ni{opacity:1;color:var(--ok)}
 .nav-item:hover{background:oklch(1 0 0/5%);color:var(--fg)}
-.nav-item.active{background:oklch(1 0 0/8%);color:var(--fg);font-weight:500}
-.nav-item.active::before{opacity:1;color:var(--ok)}
+.nav-item.active{background:rgba(248,250,252,.08);color:var(--fg);font-weight:500}
 .sidebar-foot{padding:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
 .topbar{
@@ -82,7 +92,7 @@ a{color:inherit;text-decoration:none}
   background:oklch(0.155 0.006 265 / 82%);backdrop-filter:blur(12px);
 }
 .topbar h1{margin:0;font-size:14px;font-weight:600;letter-spacing:-0.01em}
-.topbar p{margin:1px 0 0;font-size:11.5px;color:var(--faint)}
+.topbar p{margin:1px 0 0;font-size:11.5px;color:var(--faint)}.topbar p:empty{display:none}
 .topbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .content{flex:1;overflow:auto;padding:24px;max-width:1440px;width:100%}
 
@@ -90,10 +100,11 @@ a{color:inherit;text-decoration:none}
 #loginGate{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:20px;background:var(--bg)}
 #loginGate.hidden{display:none!important}
 body.login-only .app{visibility:hidden;pointer-events:none}
-.login-card{width:100%;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:24px}
-.login-card h2{margin:14px 0 2px;font-size:17px;letter-spacing:-0.02em}
-.login-card .hint{margin:0 0 18px;font-size:12px;color:var(--faint)}
-.login-card .stack{display:flex;flex-direction:column;gap:9px}
+.login-card{width:100%;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:22px}
+.login-card .stack{display:flex;flex-direction:column;gap:8px;margin-top:16px}
+.login-card details{margin:0}
+.login-card details summary{cursor:pointer;font-size:11.5px;color:var(--faint);list-style:none}
+.login-card details summary::-webkit-details-marker{display:none}
 
 /* ── primitives ─────────────────────────────────────────── */
 .btn{
@@ -121,7 +132,7 @@ body.login-only .app{visibility:hidden;pointer-events:none}
   transition:border-color .12s,box-shadow .12s;font-size:13px;
 }
 select.input{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.5' stroke-linecap='round'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 10px center;padding-right:30px}
-textarea.input{height:auto;min-height:92px;padding:9px 11px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6}
+textarea.input{height:auto;min-height:92px;padding:9px 11px;resize:vertical;font-family:var(--mono);font-size:12px;line-height:1.6}
 .input:focus{border-color:oklch(1 0 0/30%);box-shadow:0 0 0 3px oklch(1 0 0/6%)}
 .input::placeholder{color:var(--faint)}
 input[type=checkbox]{width:15px;height:15px;accent-color:oklch(0.76 0.15 152);cursor:pointer}
@@ -170,7 +181,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:oklch(0.76 0.15 152);cu
 .stack-md{display:flex;flex-direction:column;gap:12px}
 .grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
 .grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.mono{font-family:var(--mono);font-size:12px}
 .muted{color:var(--muted)}
 .faint{color:var(--faint)}
 .danger{color:var(--bad)}
@@ -180,7 +191,7 @@ input[type=checkbox]{width:15px;height:15px;accent-color:oklch(0.76 0.15 152);cu
 .font-medium{font-weight:500}
 .font-semibold{font-weight:600}
 .num{font-variant-numeric:tabular-nums}
-code{font-family:ui-monospace,monospace;font-size:11.5px;background:oklch(1 0 0/6%);padding:2px 6px;border-radius:6px;color:var(--muted)}
+code{font-family:var(--mono);font-size:11.5px;background:oklch(1 0 0/6%);padding:2px 6px;border-radius:6px;color:var(--muted)}
 ul{margin:0;padding-left:18px}
 
 .kv{display:grid;grid-template-columns:auto 1fr;gap:9px 18px;margin:0;font-size:13px;align-items:baseline}
@@ -321,7 +332,7 @@ tr.dead-row{opacity:.6}
 .kernel-card .kc-name{font-size:12.5px;font-weight:600;letter-spacing:-0.01em}
 .kernel-card .kc-size{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;flex-shrink:0}
 .kernel-card.on .kc-size{color:var(--ok)}
-.kernel-card .kc-id{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--faint);margin-top:-4px}
+.kernel-card .kc-id{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:-4px}
 .kc-feats{display:flex;flex-wrap:wrap;gap:4px}
 .kc-feats span{font-size:10.5px;color:var(--muted);background:oklch(1 0 0/6%);border-radius:5px;padding:2px 6px;white-space:nowrap}
 .kernel-card.on .kc-feats span{background:oklch(0.76 0.15 152/14%)}
@@ -360,7 +371,7 @@ tr.dead-row{opacity:.6}
 .endpoint-row:last-child{border-bottom:none;padding-bottom:0}
 .model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
 .model-card{border:1px solid var(--line);border-radius:var(--r-md);padding:12px;background:var(--panel)}
-.model-card .id{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--faint);margin-top:4px;word-break:break-all}
+.model-card .id{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:4px;word-break:break-all}
 details.import-box{border:1px solid var(--line);border-radius:var(--r-md);padding:11px 13px;background:var(--panel)}
 details.import-box summary{cursor:pointer;font-size:12.5px;font-weight:500;list-style:none;color:var(--muted)}
 details.import-box summary::-webkit-details-marker{display:none}
@@ -421,19 +432,28 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
   .hcard .score{border-right:none;border-bottom:1px solid var(--line);padding:0 0 12px;min-width:0}
   .kernel-panel{left:0;right:0;width:auto}
 }
+
+.btn:active:not(:disabled){transform:scale(.98)}
+.btn,.nav-item,.kpick-trigger,.seg button,.tabs button,.vm-viz{transition:background var(--motion-quick) var(--ease),border-color var(--motion-quick) var(--ease),color var(--motion-quick) var(--ease),opacity var(--motion-quick) var(--ease),transform var(--motion-quick) var(--ease)}
+.switch-row{display:flex;flex-wrap:wrap;gap:6px}
+.chip-check{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border:1px solid var(--line-2);border-radius:var(--r-sm);background:rgba(248,250,252,.03);font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+.chip-check:has(input:checked){border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.1);color:var(--fg)}
+.chip-check input{margin:0}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
   </style>
 </head>
 <body class="login-only">
   <div id="loginGate">
     <div class="login-card">
       <div class="brand"><div class="mark">核</div><div><div class="t">种核 KIN</div></div></div>
-      <h2>登录管理台</h2>
-      <p class="hint">多虚拟机 · 官方 Claude Code 转发</p>
       <div class="stack">
-        <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" />
-        <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" />
-        <input id="loginBaseInput" class="input" placeholder="API Base（本站可留空）" />
-        <button type="button" class="btn btn-primary" style="height:34px;margin-top:4px" onclick="doLogin()">登录</button>
+        <input id="loginUserInput" class="input" placeholder="用户名" autocomplete="username" value="admin" aria-label="用户名" />
+        <input id="loginPassInput" type="password" class="input" placeholder="密码" autocomplete="current-password" aria-label="密码" />
+        <details>
+          <summary>高级</summary>
+          <input id="loginBaseInput" class="input" placeholder="API Base" aria-label="API Base" style="margin-top:8px" />
+        </details>
+        <button type="button" class="btn btn-primary" style="height:36px" onclick="doLogin()">登录</button>
         <p id="loginErr" class="text-xs danger hidden"></p>
       </div>
     </div>
@@ -446,23 +466,23 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
           <div class="mark">核</div>
           <div>
             <div class="t">种核 KIN</div>
-            <div class="s">官方 Claude Code 转发</div>
+            <div class="s">控制台</div>
           </div>
         </div>
       </div>
       <nav class="sidebar-nav" id="nav">
-        <div class="nav-item active" data-view="overview">总览</div>
-        <div class="nav-item" data-view="cluster">集群</div>
-        <div class="nav-item" data-view="vm">虚拟机</div>
-        <div class="nav-item" data-view="import">导入</div>
-        <div class="nav-item" data-view="usage">用量</div>
-        <div class="nav-item" data-view="proxies">代理池</div>
-        <div class="nav-item" data-view="protocol">协议</div>
-        <div class="nav-item" data-view="settings">设置</div>
+        <div class="nav-item active" data-view="overview"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10.5V20h14v-9.5"/></svg>总览</div>
+        <div class="nav-item" data-view="cluster"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>集群</div>
+        <div class="nav-item" data-view="vm"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>虚拟机</div>
+        <div class="nav-item" data-view="import"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>导入</div>
+        <div class="nav-item" data-view="usage"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V8"/></svg>用量</div>
+        <div class="nav-item" data-view="proxies"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="7" r="2.4"/><circle cx="18" cy="17" r="2.4"/><path d="M8.2 11.2 15.6 8.1M8.2 12.8l7.4 3.1"/></svg>代理池</div>
+        <div class="nav-item" data-view="protocol"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10H5a2 2 0 0 0-2 2v7h18v-7a2 2 0 0 0-2-2h-3"/><rect x="8" y="3" width="8" height="9" rx="1.5"/></svg>协议</div>
+        <div class="nav-item" data-view="settings"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7.9 1.2 1.6 1.3H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>设置</div>
       </nav>
       <div class="sidebar-foot">
         <div class="text-xs faint">已登录 · <span id="loginUser">—</span></div>
-        <button class="btn btn-outline btn-sm" style="width:100%" onclick="logout()">退出登录</button>
+        <button class="btn btn-outline btn-sm" style="width:100%" onclick="logout()">退出</button>
       </div>
     </aside>
 
@@ -470,12 +490,12 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
       <header class="topbar">
         <div>
           <h1 id="pageTitle">总览</h1>
-          <p id="pageDesc">平台健康 · 只走虚拟机 CLI</p>
+          <p id="pageDesc"></p>
         </div>
         <div class="topbar-actions">
           <span id="healthPill" class="badge">—</span>
           <button class="btn btn-outline" onclick="refresh()">刷新</button>
-          <button class="btn btn-outline" onclick="probeAll()" title="从虚拟机官方 Claude Code 探测登录态与限流">CLI 探测</button>
+          <button class="btn btn-outline" onclick="probeAll()" title="CLI 探测">CLI 探测</button>
         </div>
       </header>
 
@@ -492,14 +512,14 @@ const LS_USER = 'kin_console_user'
 const LS_BASE = 'kin_api_base'
 const COOKIE = 'kin_panel_token'
 const titles = {
-  overview: ['总览', '平台健康 · 只走虚拟机 CLI'],
-  cluster: ['集群', '节点与账号状态'],
-  vm: ['虚拟机', '创建 · 运维 · CLI'],
-  import: ['导入', 'sessionKey → CLI 续期'],
-  usage: ['用量', '官方 CLI 探测 · rate_limit'],
-  protocol: ['协议', '只经虚拟机 · 不伪装'],
-  proxies: ['代理池', 'SOCKS5 · 测通'],
-  settings: ['设置', '粘性 · 额度 · 并发'],
+  overview: ['总览', ''],
+  cluster: ['集群', ''],
+  vm: ['虚拟机', ''],
+  import: ['导入', ''],
+  usage: ['用量', ''],
+  protocol: ['协议', ''],
+  proxies: ['代理池', ''],
+  settings: ['设置', ''],
 }
 
 
@@ -997,13 +1017,13 @@ function renderOverview() {
     </div>
 
     <div class="head">
-      <div><div class="section-title">节点预览</div><div class="sub">${running} / ${vms.length} 在线 · 最多 6 张</div></div>
+      <div><div class="section-title">节点</div><div class="sub">${running} / ${vms.length}</div></div>
       <div class="actions">
-        <button class="btn btn-outline btn-sm" onclick="go('import')">导入 sessionKey</button>
-        <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部节点</button>
+        <button class="btn btn-outline btn-sm" onclick="go('import')">导入</button>
+        <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部</button>
       </div>
     </div>
-    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无虚拟机 · 先到「虚拟机」创建，再「导入」sessionKey')}</div>
+    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无节点')}</div>
   </section>`
 }
 
@@ -1052,7 +1072,7 @@ function renderCluster() {
     <div class="head">
       <div><div class="section-title">集群</div><div class="sub">${b.ok} 可用 · ${all.length} 节点</div></div>
       <div class="toolbar">
-        <input class="input" placeholder="搜索节点 / 账号 / 内核" value="${esc(state.clusterQ || '')}" oninput="onClusterSearch(this)" />
+        <input class="input" placeholder="搜索" value="${esc(state.clusterQ || '')}" oninput="onClusterSearch(this)" />
         <div class="seg">${segs.map(([k, t]) => `<button class="${f === k ? 'on' : ''}" onclick="setClusterFilter('${k}')">${t}<span class="num faint" style="margin-left:5px">${counts[k]}</span></button>`).join('')}</div>
       </div>
     </div>
@@ -1084,7 +1104,7 @@ function kernelPickerHTML() {
 function kernelPanelHTML() {
   return `
   <div class="kernel-panel" id="kernelPanel" hidden role="listbox">
-    <div class="kp-h"><span>官方内核档案</span><span>名称 · 体积 · 特性</span></div>
+    <div class="kp-h"><span>内核</span><span></span></div>
     <div class="kernel-grid" id="vmKernelChips">
       ${KERNELS.map(k => `
       <button type="button" class="kernel-card ${state.kernel === k.id ? 'on' : ''}" role="option" aria-selected="${state.kernel === k.id}" data-k="${esc(k.id)}" onclick="pickKernel(this)">
@@ -1123,8 +1143,6 @@ function pickKernel(btn) {
   const m = document.getElementById('kTrigMeta')
   if (n) n.textContent = p.name
   if (m) m.textContent = p.size || p.id
-  const custom = document.getElementById('vmCreateKernelCustom')
-  if (custom) custom.value = ''
   toggleKernelPanel(false)
 }
 /* 高级选项：默认折叠，不参与首屏一行布局 */
@@ -1161,36 +1179,66 @@ function createBoxHTML() {
     </div>
     <div class="adv-wrap" id="advWrap" ${state.advOpen ? '' : 'hidden'}>
       <div class="form-grid">
-        <label>自定义 ID<input id="vmCreateId" class="input" placeholder="自动生成" /></label>
-        <label>自定义内核<input id="vmCreateKernelCustom" class="input" placeholder="覆盖上方选择" /></label>
-        <label>区域<input id="vmCreateRegion" class="input" placeholder="可选" /></label>
+        <label>区域
+          <select id="vmCreateRegion" class="input">
+            <option value="">自动</option>
+            <option value="us-west">美西</option>
+            <option value="us-east">美东</option>
+            <option value="eu-west">欧洲</option>
+            <option value="ap-east">亚太东</option>
+            <option value="ap-southeast">亚太东南</option>
+          </select>
+        </label>
         <label>时区
           <select id="vmCreateTz" class="input">
-            <option value="America/Los_Angeles">America/Los_Angeles</option>
-            <option value="America/New_York">America/New_York</option>
+            <option value="America/Los_Angeles">洛杉矶</option>
+            <option value="America/New_York">纽约</option>
             <option value="UTC">UTC</option>
-            <option value="Europe/London">Europe/London</option>
-            <option value="Asia/Shanghai">Asia/Shanghai</option>
-            <option value="Asia/Tokyo">Asia/Tokyo</option>
-            <option value="Asia/Singapore">Asia/Singapore</option>
+            <option value="Europe/London">伦敦</option>
+            <option value="Asia/Shanghai">上海</option>
+            <option value="Asia/Tokyo">东京</option>
+            <option value="Asia/Singapore">新加坡</option>
           </select>
         </label>
         <label>语言
           <select id="vmCreateLocale" class="input">
-            <option value="en_US.UTF-8">en_US.UTF-8</option>
-            <option value="zh_CN.UTF-8">zh_CN.UTF-8</option>
-            <option value="ja_JP.UTF-8">ja_JP.UTF-8</option>
-            <option value="C.UTF-8">C.UTF-8</option>
+            <option value="en_US.UTF-8">English</option>
+            <option value="zh_CN.UTF-8">中文</option>
+            <option value="ja_JP.UTF-8">日本語</option>
+            <option value="C.UTF-8">C</option>
           </select>
         </label>
-        <label>Claude Code<input id="vmCreateCC" class="input" placeholder="版本，可选" /></label>
-        <label>并发<input id="vmCreateConc" class="input" type="number" min="1" max="32" value="2" /></label>
-        <label>权重<input id="vmCreateWeight" class="input" type="number" min="1" max="100" value="1" /></label>
-        <label>备注<input id="vmCreateNote" class="input" placeholder="可选" /></label>
-        <label class="check"><input id="vmCreateStart" type="checkbox" /> 创建后开机</label>
-        <label class="check"><input id="vmCreateProxy" type="checkbox" /> 分配 SOCKS5</label>
-        <label class="check"><input id="vmCreateActive" type="checkbox" /> 设为活跃</label>
-        <label class="check"><input id="vmCreateProxyCli" type="checkbox" /> proxy CLI</label>
+        <label>Claude Code
+          <select id="vmCreateCC" class="input">
+            <option value="">最新</option>
+            <option value="2.1.233">2.1.233</option>
+            <option value="2.1.200">2.1.200</option>
+          </select>
+        </label>
+        <label>并发
+          <select id="vmCreateConc" class="input">
+            <option value="1">1</option>
+            <option value="2" selected>2</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+            <option value="16">16</option>
+          </select>
+        </label>
+        <label>权重
+          <select id="vmCreateWeight" class="input">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="5">5</option>
+            <option value="10">10</option>
+          </select>
+        </label>
+      </div>
+      <div class="switch-row" style="margin-top:12px">
+        <label class="chip-check"><input id="vmCreateStart" type="checkbox" /> 开机</label>
+        <label class="chip-check"><input id="vmCreateProxy" type="checkbox" /> SOCKS5</label>
+        <label class="chip-check"><input id="vmCreateActive" type="checkbox" /> 活跃</label>
+        <label class="chip-check"><input id="vmCreateProxyCli" type="checkbox" /> proxy CLI</label>
       </div>
     </div>
   </div>`
@@ -1239,7 +1287,7 @@ function renderVm() {
     return `<section class="section">
       ${create}
       <div class="head"><div><div class="section-title">节点列表</div><div class="sub">${vms.length} 台</div></div></div>
-      <div class="vm-grid">${vms.map(vmCard).join('') || emptyBox('暂无虚拟机 · 上方一行即可创建')}</div>
+      <div class="vm-grid">${vms.map(vmCard).join('') || emptyBox('暂无节点')}</div>
     </section>`
   }
   const vm = det?.vm || vms.find(x => x.id === state.selectedVm) || {}
@@ -1320,8 +1368,7 @@ function renderVm() {
           <dt>凭证</dt><dd>${vm.has_token ? '<span class="acc-pill ok">已绑定</span>' : '<span class="acc-pill off">未绑定</span>'}</dd>
           <dt>5h / 7d</dt><dd class="num">${u5.toFixed(1)}% / ${u7.toFixed(1)}%</dd>
         </dl>
-        <div class="actions"><button class="btn btn-outline btn-sm" onclick="go('import')">去导入 sessionKey</button></div>
-        <p class="text-xs faint" style="margin:0">续期由虚拟机官方 Claude Code 负责；网关只 harvest，不抢 refresh_token。</p>
+        <div class="actions"><button class="btn btn-outline btn-sm" onclick="go('import')">导入</button></div>
       </div>` : ''}
 
       ${tab === 'proxy' ? `
@@ -1361,26 +1408,28 @@ function renderVm() {
       </div>` : ''}
     ${tab === 'seed' ? `
       <div class="card stack-md">
-        <div class="section-title">种子 settings · 入站策略</div>
-        <p class="text-xs muted">以本 VM cli-home settings.json 为唯一源；可拒绝客户端 settings / 身份 metadata。</p>
-        <div class="form-grid" style="margin-top:10px">
-          <label class="check"><input id="seedTel" type="checkbox" ${state.seedSettings?.seed_policy?.telemetry_disabled!==false?'checked':''}/> 禁用遥测</label>
-          <label class="check"><input id="seedNonEss" type="checkbox" ${state.seedSettings?.seed_policy?.disable_nonessential_traffic!==false?'checked':''}/> 禁用非必要流量</label>
-          <label class="check"><input id="seedDnt" type="checkbox" ${state.seedSettings?.seed_policy?.do_not_track!==false?'checked':''}/> DO_NOT_TRACK</label>
-          <label class="check"><input id="seedRejSet" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_settings!==false?'checked':''}/> 拒绝客户端 settings</label>
-          <label class="check"><input id="seedRejMeta" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_metadata_identity!==false?'checked':''}/> 清洗客户端身份 metadata</label>
-          <label>主题
-            <select id="seedTheme" class="input">
-              <option value="dark" ${(state.seedSettings?.seed_policy?.theme||'dark')==='dark'?'selected':''}>dark</option>
-              <option value="light" ${state.seedSettings?.seed_policy?.theme==='light'?'selected':''}>light</option>
-            </select>
-          </label>
+        <div class="section-title">种子</div>
+        <div class="switch-row">
+          <label class="chip-check"><input id="seedTel" type="checkbox" ${state.seedSettings?.seed_policy?.telemetry_disabled!==false?'checked':''}/> 关遥测</label>
+          <label class="chip-check"><input id="seedNonEss" type="checkbox" ${state.seedSettings?.seed_policy?.disable_nonessential_traffic!==false?'checked':''}/> 关非必要</label>
+          <label class="chip-check"><input id="seedDnt" type="checkbox" ${state.seedSettings?.seed_policy?.do_not_track!==false?'checked':''}/> DNT</label>
+          <label class="chip-check"><input id="seedRejSet" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_settings!==false?'checked':''}/> 拒 settings</label>
+          <label class="chip-check"><input id="seedRejMeta" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_metadata_identity!==false?'checked':''}/> 拒身份</label>
         </div>
-        <label class="text-xs muted" style="display:block;margin-top:12px">settings.json 覆盖（可选 JSON）
-          <textarea id="seedOverride" class="input h-28 py-2 font-mono text-xs" style="margin-top:6px" placeholder="{&quot;env&quot;:{}}">${esc(state.seedSettings?.seed_policy?.settings_json_override ? JSON.stringify(state.seedSettings.seed_policy.settings_json_override, null, 2) : '')}</textarea>
+        <label>主题
+          <select id="seedTheme" class="input" style="max-width:160px">
+            <option value="dark" ${(state.seedSettings?.seed_policy?.theme||'dark')==='dark'?'selected':''}>深色</option>
+            <option value="light" ${state.seedSettings?.seed_policy?.theme==='light'?'selected':''}>浅色</option>
+          </select>
         </label>
+        <details class="import-box">
+          <summary>JSON 覆盖</summary>
+          <div class="body">
+            <textarea id="seedOverride" class="input" placeholder='{"env":{}}'>${esc(state.seedSettings?.seed_policy?.settings_json_override ? JSON.stringify(state.seedSettings.seed_policy.settings_json_override, null, 2) : '')}</textarea>
+          </div>
+        </details>
         <div class="actions" style="margin-top:12px">
-          <button class="btn btn-primary" onclick="saveSeedSettings('${esc(vm.id)}')">保存并写回 cli-home</button>
+          <button class="btn btn-primary" onclick="saveSeedSettings('${esc(vm.id)}')">保存</button>
           <button class="btn btn-outline" onclick="loadSeedSettings()">刷新</button>
         </div>
         <details style="margin-top:12px">
@@ -1400,10 +1449,9 @@ function renderImport() {
   const hasProxy = !!(vm.proxy || vm.proxy_id)
   const hasTok = !!vm.has_token
   const step = !selected ? 1 : (!hasProxy ? 2 : (!hasTok ? 3 : 4))
-  const steps = [[1, '选择虚拟机'], [2, '分配 SOCKS5'], [3, 'sessionKey 导入'], [4, 'CLI 接管续期']]
+  const steps = [[1, '虚拟机'], [2, '代理'], [3, '凭证'], [4, '就绪']]
   return `
   <section class="section">
-    <div class="head"><div><div class="section-title">sessionKey 导入</div><div class="sub">CookieAuth 换票后写入虚拟机 · 之后由官方 Claude Code 自行续期</div></div></div>
     <div class="stepper">
       ${steps.map(([n, t], i) => `
         ${i ? '<span class="lnk"></span>' : ''}
@@ -1412,7 +1460,6 @@ function renderImport() {
         </span>`).join('')}
     </div>
     <div class="card card-pad-lg stack-md">
-      <p class="text-xs faint" style="margin:0">sessionKey 只用于导入 / 恢复。网关不会调用 grant_type=refresh_token，避免和虚拟机 CLI 抢票。</p>
       <label class="text-xs faint" style="display:flex;flex-direction:column;gap:6px">虚拟机
         <select id="importVmSelect" class="input" onchange="state.importVmId=this.value;render()">
           <option value="">— 选择 —</option>
@@ -1431,7 +1478,7 @@ function renderImport() {
         <button class="btn btn-primary" onclick="importOAuthWorkflow()">导入并播种 CLI</button>
         <button class="btn btn-outline" onclick="startVm('${esc(selected)}')">开机</button>
         <button class="btn btn-outline" onclick="activateVm('${esc(selected)}')">设为活跃</button>
-      </div>` : emptyBox('请选择虚拟机 · 没有可用节点请先到「虚拟机」创建')}
+      </div>` : emptyBox('先选虚拟机')}
     </div>
   </section>`
 }
@@ -1452,7 +1499,7 @@ function renderUsage() {
   return `
   <section class="section">
     <div class="head">
-      <div><div class="section-title">用量</div><div class="sub">${accounts.length} 账号 · ${near} 近限额 · 安全线 ${safety}% · 数据来自官方 CLI</div></div>
+      <div><div class="section-title">用量</div><div class="sub">${accounts.length} · ${near} 近限额</div></div>
       <button class="btn btn-outline btn-sm" onclick="probeAll()" title="claude auth status + 官方 hop">CLI 探测</button>
     </div>
     <div class="stat-hero">
@@ -1479,11 +1526,10 @@ function renderUsage() {
               <td class="num">${fmtNum(a.requests || 0)}</td>
               <td class="right">${nearL ? '<span class="badge danger">近限额</span>' : '<span class="badge ok">正常</span>'}</td>
             </tr>`
-          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">暂无数据 · 点「CLI 探测」从虚拟机官方 Claude Code 拉取</td></tr>`}
+          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">暂无数据</td></tr>`}
         </tbody>
       </table>
     </div>
-    <div class="text-xs faint">限流状态来自官方 hop 的 rate_limit_event；utilization ≥ ${safety}% 或 CLI 标记 rejected 时拒绝新请求。网关不伪装打 Anthropic 用量接口。</div>
   </section>`
 }
 
@@ -1507,27 +1553,25 @@ function renderProtocol() {
       <div class="card stack-sm">
         <div class="text-xs faint">鉴权</div>
         <div class="text-sm">Bearer / x-api-key</div>
-        <div class="text-xs faint">面板 Cookie · kin-panel token</div>
+        <div class="text-xs faint">Cookie / token</div>
       </div>
       <div class="card stack-sm">
         <div class="text-xs faint">上游</div>
         <div class="text-sm">虚拟机官方 Claude Code</div>
-        <div class="text-xs faint">不伪装 · 只协议转换 + 转发</div>
+        <div class="text-xs faint">协议转换</div>
       </div>
     </div>
     <div class="card">
-      <div class="section-title" style="margin-bottom:6px">接入端点</div>
-      <p class="text-xs faint" style="margin:0 0 8px">Messages / Chat / Responses 全部进入虚拟机 <code>claude -p</code>，不经网关直连 Anthropic。网关只做协议转换与拦截，不伪造 UA 或 Anthropic HTTP。</p>
+      <div class="section-title" style="margin-bottom:6px">端点</div>
       ${endpoints.map(([n, p]) => `<div class="endpoint-row"><span>${esc(n)}</span><code>${esc(base.replace(/\/$/, ''))}${esc(p)}</code></div>`).join('')}
     </div>
     <div class="head">
-      <div><div class="section-title">模型</div><div class="sub">${models.length} 个 · ${esc((state.models?.source === 'claude_cli_catalog' || !state.models?.source) ? 'CLI 二进制 harvest' : state.models.source)}${state.models?.cli_version ? ' · CLI ' + esc(state.models.cli_version) : ''}</div></div>
+      <div><div class="section-title">模型</div><div class="sub">${models.length}${state.models?.cli_version ? ' · ' + esc(state.models.cli_version) : ''}</div></div>
       <button class="btn btn-outline btn-sm" onclick="refresh()">刷新目录</button>
     </div>
-    <p class="text-xs faint" style="margin:0">只信虚拟机官方 Claude Code 实际可读的模型；未知 id 网关直接 400，不会 hop 上游。</p>
     ${state.models?.error || (state.models?.note && !models.length) ? `<p class="text-xs danger" style="margin:0">${esc(state.models.error || state.models.note)}</p>` : ''}
     <div class="model-grid">
-      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型 · 确认虚拟机 CLI 可读且已 CLI 探测')}
+      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型')}
     </div>
   </section>`
 }
@@ -1550,23 +1594,39 @@ function renderSettings() {
       <div class="form-grid">
         <label>模式
           <select id="st_mode" class="input">
-            <option value="conversation" ${st.mode === 'conversation' ? 'selected' : ''}>conversation</option>
-            <option value="session" ${st.mode === 'session' ? 'selected' : ''}>session</option>
-            <option value="ip" ${st.mode === 'ip' ? 'selected' : ''}>ip</option>
+            <option value="conversation" ${st.mode === 'conversation' ? 'selected' : ''}>会话</option>
+            <option value="session" ${st.mode === 'session' ? 'selected' : ''}>登录态</option>
+            <option value="ip" ${st.mode === 'ip' ? 'selected' : ''}>IP</option>
           </select>
         </label>
-        <label>TTL（秒）<input id="st_ttl" class="input" type="number" min="60" value="${esc(st.ttl_seconds ?? 86400)}" /></label>
-        <label class="check"><input id="st_enabled" type="checkbox" ${st.enabled !== false ? 'checked' : ''}/> 启用粘性</label>
+        <label>TTL
+          <select id="st_ttl" class="input">
+            ${[ [3600,'1 小时'],[21600,'6 小时'],[86400,'24 小时'],[604800,'7 天'],[2592000,'30 天'] ].map(([v,l]) => `<option value="${v}" ${(Number(st.ttl_seconds ?? 86400)===v)?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </label>
+        <label class="check"><input id="st_enabled" type="checkbox" ${st.enabled !== false ? 'checked' : ''}/> 启用</label>
       </div>
     </div>
     <div class="card card-pad-lg stack-md">
       <div class="section-title">额度 / 并发</div>
       <div class="form-grid">
-        <label>安全线（0–1）<input id="q_safety" class="input" type="number" step="0.01" min="0.5" max="1" value="${esc(q.safety_ratio ?? 0.95)}" /></label>
-        <label>警告线（0–1）<input id="q_warn" class="input" type="number" step="0.01" min="0.5" max="1" value="${esc(q.warn_ratio ?? 0.85)}" /></label>
-        <label>默认并发 / 账号<input id="c_max" class="input" type="number" min="1" max="32" value="${esc(c.default_max_per_account ?? 2)}" /></label>
-        <label class="check"><input id="q_block5" type="checkbox" ${q.block_on_5h !== false ? 'checked' : ''}/> 拦截 5h 超额</label>
-        <label class="check"><input id="q_block7" type="checkbox" ${q.block_on_7d !== false ? 'checked' : ''}/> 拦截 7d 超额</label>
+        <label>安全线
+          <select id="q_safety" class="input">
+            ${[ [0.80,'80%'],[0.85,'85%'],[0.90,'90%'],[0.95,'95%'],[0.98,'98%'] ].map(([v,l]) => `<option value="${v}" ${(Number(q.safety_ratio ?? 0.95)===v)?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </label>
+        <label>警告线
+          <select id="q_warn" class="input">
+            ${[ [0.70,'70%'],[0.80,'80%'],[0.85,'85%'],[0.90,'90%'] ].map(([v,l]) => `<option value="${v}" ${(Number(q.warn_ratio ?? 0.85)===v)?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </label>
+        <label>并发
+          <select id="c_max" class="input">
+            ${[1,2,4,8,16].map(v => `<option value="${v}" ${(Number(c.default_max_per_account ?? 2)===v)?'selected':''}>${v}</option>`).join('')}
+          </select>
+        </label>
+        <label class="check"><input id="q_block5" type="checkbox" ${q.block_on_5h !== false ? 'checked' : ''}/> 拦 5h</label>
+        <label class="check"><input id="q_block7" type="checkbox" ${q.block_on_7d !== false ? 'checked' : ''}/> 拦 7d</label>
       </div>
       <div class="actions"><button class="btn btn-primary" onclick="saveRouting()">保存</button></div>
     </div>
@@ -1724,10 +1784,7 @@ function renderProxies() {
 /* ── vm actions ──────────────────────────────────────────── */
 async function createVmFromPage() {
   const name = document.getElementById('vmCreateName')?.value?.trim() || ''
-  const id = document.getElementById('vmCreateId')?.value?.trim() || undefined
-  const note = document.getElementById('vmCreateNote')?.value?.trim() || undefined
-  const kernelCustom = document.getElementById('vmCreateKernelCustom')?.value?.trim()
-  const kernel = kernelCustom || document.getElementById('vmCreateKernel')?.value || state.kernel || 'unikernel-min'
+  const kernel = document.getElementById('vmCreateKernel')?.value || state.kernel || 'unikernel-min'
   const timezone = document.getElementById('vmCreateTz')?.value || 'America/Los_Angeles'
   const locale = document.getElementById('vmCreateLocale')?.value || 'en_US.UTF-8'
   const region = document.getElementById('vmCreateRegion')?.value?.trim() || undefined
@@ -1740,7 +1797,7 @@ async function createVmFromPage() {
   const proxy_cli_enabled = !!document.getElementById('vmCreateProxyCli')?.checked
   try {
     const body = {
-      name: name || undefined, id, note, kernel, timezone, locale, region,
+      name: name || undefined, kernel, timezone, locale, region,
       max_concurrency, weight, claude_code_version,
       start, auto_allocate_proxy, activate, proxy_cli_enabled,
     }
