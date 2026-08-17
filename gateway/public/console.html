@@ -481,6 +481,20 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
 .life .st.done b{background:rgba(34,197,94,.18);border-color:transparent;color:var(--ok)}
 .life .ln{width:16px;height:1px;background:var(--line-2)}
 
+
+.host-bar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.host-m{border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel);padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.host-m .row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.host-m .k{font-size:11px;color:var(--faint)}
+.host-m .v{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.host-m .s{font-size:11px;color:var(--faint)}
+.qgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.qcard{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:var(--r-md);padding:12px 14px;background:var(--panel)}
+.qcard .v{font-size:22px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
+.qcard .v small{font-size:12px;font-weight:500;color:var(--faint);margin-left:3px}
+.qcard .s{font-size:11px;color:var(--faint);margin-top:4px}
+@media(max-width:760px){.host-bar,.qgrid{grid-template-columns:1fr}}
+
 /* ── page reconstruction ────────────────────────────────── */
 .cmd-strip{display:flex;align-items:stretch;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .cmd-strip .score{min-width:100px;padding:16px 18px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
@@ -575,7 +589,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
           <p id="pageDesc"></p>
         </div>
         <div class="topbar-actions">
-          <span id="healthPill" class="badge">—</span>
+          <span id="healthPill" class="badge">—</span><span id="hostPill" class="badge">CPU —</span>
           <button class="btn btn-outline" onclick="refresh()">刷新</button>
           <button class="btn btn-outline" onclick="probeAll()" title="CLI 探测">CLI 探测</button>
         </div>
@@ -651,9 +665,118 @@ function seedPresetBar(cur, fn) {
   const items = [['strict','严格'],['standard','标准'],['open','开放']]
   return `<div class="preset" role="group">${items.map(([k,l]) => `<button type="button" data-p="${k}" class="${cur===k?'on':''}" aria-pressed="${cur===k}" onclick="${fn}('${k}')">${l}</button>`).join('')}${cur==='custom'?`<button type="button" class="on" aria-pressed="true">自定义</button>`:''}</div>`
 }
+const VM_TEMPLATES = [
+  { id:'strict-min', name:'严格最小', kernel:'unikernel-min', seed:'strict',   after:'idle',  region:'',        tz:'America/Los_Angeles', locale:'en_US.UTF-8', conc:2, weight:1 },
+  { id:'strict-run', name:'严格即开', kernel:'claude-cli',    seed:'strict',   after:'full',  region:'us-west', tz:'America/Los_Angeles', locale:'en_US.UTF-8', conc:2, weight:2 },
+  { id:'std-west',   name:'标准美西', kernel:'alpine-min',    seed:'standard', after:'proxy', region:'us-west', tz:'America/Los_Angeles', locale:'en_US.UTF-8', conc:2, weight:1 },
+  { id:'std-east',   name:'标准美东', kernel:'alpine-min',    seed:'standard', after:'proxy', region:'us-east', tz:'America/New_York',    locale:'en_US.UTF-8', conc:2, weight:1 },
+  { id:'ap-strict',  name:'亚太严格', kernel:'claude-cli',    seed:'strict',   after:'start', region:'ap-east', tz:'Asia/Tokyo',          locale:'ja_JP.UTF-8', conc:2, weight:1 },
+  { id:'open-dev',   name:'开放调试', kernel:'debian-slim',   seed:'open',     after:'start', region:'',        tz:'UTC',                 locale:'C.UTF-8',     conc:4, weight:1 },
+]
+function nextVmSeq(vms) {
+  const used = new Set()
+  for (const v of vms || []) {
+    const m = String(v.name || v.id || '').match(/^vm-(\d+)$/i)
+    if (m) used.add(Number(m[1]))
+  }
+  let n = 1
+  while (used.has(n)) n++
+  return n
+}
+function vmNameOf(n) { return 'vm-' + String(n).padStart(2, '0') }
+function vmNameOptions(selected) {
+  const vms = state.dashboard?.vms || []
+  const used = new Set()
+  for (const v of vms) {
+    const m = String(v.name || v.id || '').match(/^vm-(\d+)$/i)
+    if (m) used.add(Number(m[1]))
+  }
+  const next = nextVmSeq(vms)
+  const pick = selected || vmNameOf(next)
+  const opts = []
+  for (let i = 1; i <= Math.max(next + 8, 12); i++) {
+    if (used.has(i) && vmNameOf(i) !== pick) continue
+    opts.push(vmNameOf(i))
+  }
+  if (!opts.includes(pick)) opts.unshift(pick)
+  return opts.map(n => `<option value="${n}" ${n===pick?'selected':''}>${n}</option>`).join('')
+}
+function fmtBytes(n) {
+  n = Number(n) || 0
+  if (n < 1024) return n + 'B'
+  if (n < 1048576) return (n/1024).toFixed(0) + 'K'
+  if (n < 1073741824) return (n/1048576).toFixed(1) + 'M'
+  return (n/1073741824).toFixed(2) + 'G'
+}
+function relMs(ms) {
+  const s = Math.round(Math.abs(ms) / 1000)
+  if (s < 60) return s + 's'
+  if (s < 3600) return Math.round(s/60) + 'm'
+  if (s < 86400) return Math.round(s/3600) + 'h'
+  return Math.round(s/86400) + 'd'
+}
+function fmtReset(v) {
+  if (!v) return ''
+  const t = Date.parse(v)
+  if (!Number.isFinite(t)) return String(v)
+  const d = t - Date.now()
+  return d >= 0 ? relMs(d) + ' 后重置' : '已过重置'
+}
+function credExpiry(v) {
+  if (!v || !v.has_token) return { cls:'none', text:'无凭证', ms:null }
+  const t = Date.parse(v.expires_at || '')
+  if (!Number.isFinite(t)) return { cls:'ok', text:'已绑定', ms:null }
+  const ms = t - Date.now()
+  if (ms <= 0) return { cls:'bad', text:'已过期', ms }
+  if (ms < 3600e3) return { cls:'warn', text: relMs(ms) + ' 过期', ms }
+  return { cls:'ok', text: '有效 ' + relMs(ms), ms }
+}
+function quotaCard(label, used, reset) {
+  const u = pct(used)
+  const remain = Math.max(0, 100 - u)
+  return `<div class="qcard">${quotaRing(u, 52)}<div><div class="k">${esc(label)}</div><div class="v" style="color:${barColor(u)}">${remain.toFixed(0)}<small>% 剩余</small></div><div class="s">已用 ${u.toFixed(1)}%${reset ? ' · ' + esc(fmtReset(reset)) : ''}</div></div></div>`
+}
+function sortSelect(cur, dir, fn, opts) {
+  return `<select class="input" style="width:118px;height:32px" aria-label="排序" onchange="${fn}(this.value)">${opts.map(([k,l]) => `<option value="${k}" ${cur===k?'selected':''}>${l}</option>`).join('')}</select><button class="btn btn-ghost btn-sm" onclick="toggleSortDir('${fn}')">${dir==='asc'?'升序':'降序'}</button>`
+}
+function sortVms(list) {
+  const key = state.clusterSort || 'name'
+  const dir = state.clusterDir || 'asc'
+  const val = {
+    name: v => (v.name || v.id || '').toLowerCase(),
+    u5: v => pct(v.utilization_5h),
+    u7: v => pct(v.utilization_7d),
+    remain: v => 100 - pct(v.utilization_5h),
+    status: v => accountStatus(v).key,
+    email: v => (v.email || '').toLowerCase(),
+    kernel: v => (v.kernel || ''),
+    expire: v => Date.parse(v.expires_at) || 0,
+  }
+  const g = val[key] || val.name
+  return (list || []).slice().sort((a,b) => cmp(g(a), g(b), dir))
+}
+function hostBar(host) {
+  host = host || {}
+  const cpu = Number(host.cpu_pct || 0)
+  const mem = Number(host.mem_pct || 0)
+  return `<div class="host-bar">
+    <div class="host-m"><div class="row"><span class="k">CPU</span><span class="v">${cpu.toFixed(0)}%</span></div>${meter('', cpu)}<div class="s">${host.cpu_count || 0} 核 · load ${host.load1 != null ? Number(host.load1).toFixed(2) : '—'}</div></div>
+    <div class="host-m"><div class="row"><span class="k">内存</span><span class="v">${mem.toFixed(0)}%</span></div>${meter('', mem)}<div class="s">${fmtBytes(host.mem_used)} / ${fmtBytes(host.mem_total)}</div></div>
+    <div class="host-m"><div class="row"><span class="k">进程</span><span class="v">${fmtBytes(host.rss)}</span></div>${meter('', host.heap_total ? (host.heap_used/host.heap_total*100) : 0)}<div class="s">heap ${fmtBytes(host.heap_used)} · up ${relMs((host.proc_uptime||0)*1000)}</div></div>
+  </div>`
+}
+function setClusterSort(k) { state.clusterSort = k; render() }
+function setModelSort(k) { state.modelSort = k; render() }
+function toggleSortDir(fn) {
+  if (fn === 'setClusterSort') state.clusterDir = state.clusterDir === 'asc' ? 'desc' : 'asc'
+  else if (fn === 'setUsageSort') state.usageDir = state.usageDir === 'asc' ? 'desc' : 'asc'
+  else if (fn === 'setProxySort') state.proxyDir = state.proxyDir === 'asc' ? 'desc' : 'asc'
+  else if (fn === 'setModelSort') state.modelDir = state.modelDir === 'asc' ? 'desc' : 'asc'
+  render()
+}
 
 
-let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null, clusterQ: '', clusterFilter: 'all', clusterView: 'list', vmTab: 'overview', loading: false, kernel: 'unikernel-min', createName: '', advOpen: false, usageSort: 'u5', usageDir: 'desc', proxySort: 'status', proxyDir: 'asc', seedPreset: 'strict', createPreset: 'strict', createAfter: 'idle' }
+let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null, clusterQ: '', clusterFilter: 'all', clusterView: 'list', clusterSort: 'name', clusterDir: 'asc', vmTab: 'overview', loading: false, kernel: 'unikernel-min', createName: '', advOpen: false, usageSort: 'u5', usageDir: 'desc', proxySort: 'status', proxyDir: 'asc', modelSort: 'name', modelDir: 'asc', seedPreset: 'strict', createPreset: 'strict', createAfter: 'idle', createTemplate: 'strict-min' }
 let bootstrapped = false
 
 function apiBase() {
@@ -937,6 +1060,14 @@ async function refresh() {
       pill.innerHTML = `<span class="status-dot ${ok ? 'on' : 'danger'}"></span>${esc(h?.status || 'ok')}`
       pill.title = h?.base_url || ''
     }
+    const hp = document.getElementById('hostPill')
+    const host = state.dashboard.host || {}
+    if (hp) {
+      const cpu = host.cpu_pct != null ? host.cpu_pct : '—'
+      const mem = host.mem_pct != null ? host.mem_pct : '—'
+      hp.textContent = 'CPU ' + cpu + '% · RAM ' + mem + '%'
+      hp.title = 'load ' + (host.load1 != null ? Number(host.load1).toFixed(2) : '—') + ' · rss ' + fmtBytes(host.rss)
+    }
   } catch (e) {
     toast('刷新失败: ' + e.message, 'err')
   } finally {
@@ -1000,10 +1131,13 @@ function statusDot(v) {
 /* 账号状态胶囊：五态互斥，颜色即语义 */
 function accountStatus(v) {
   if (!v.has_token) return { cls: 'none', key: 'none', text: '无凭证' }
+  const exp = credExpiry(v)
+  if (exp.cls === 'bad') return { cls: 'bad', key: 'bad', text: '已过期' }
   if (!vmRunning(v)) return { cls: 'off', key: 'off', text: '已停止' }
   const u = pct(v.utilization_5h)
-  if (u >= 95) return { cls: 'bad', key: 'bad', text: '近限额' }
+  if (u >= 95 || v.near_limit) return { cls: 'bad', key: 'bad', text: '近限额' }
   if (u >= 85) return { cls: 'warn', key: 'warn', text: '偏高' }
+  if (exp.cls === 'warn') return { cls: 'warn', key: 'warn', text: exp.text }
   return { cls: 'ok', key: 'ok', text: '可用' }
 }
 const HEALTH_SEG = [
@@ -1071,7 +1205,7 @@ function vmCard(v) {
     </div>
     <div class="sub"><span class="e">${esc(v.email || '未绑定账号')}</span></div>
     <div class="vm-use">
-      <div class="big"><b style="color:${barColor(u5)}">${u5.toFixed(0)}</b><i>%</i><em>5h</em></div>
+      <div class="big"><b style="color:${barColor(u5)}">${(100-u5).toFixed(0)}</b><i>%</i><em>剩余</em></div>
       <div class="vm-track">${track('5h', u5)}${track('7d', u7)}</div>
     </div>
     <div class="foot">
@@ -1141,6 +1275,7 @@ function renderOverview() {
         </div>
       </div>
     </div>
+    ${hostBar(d.host)}
 
     <div class="stat-hero">
       <div class="stat-tile">
@@ -1172,11 +1307,12 @@ function renderOverview() {
     <div class="head">
       <div class="section-title">${running}/${vms.length}</div>
       <div class="actions">
+        ${sortSelect(state.clusterSort, state.clusterDir, 'setClusterSort', [['name','名称'],['u5','5h'],['remain','剩余'],['status','状态'],['expire','过期']])}
         <button class="btn btn-outline btn-sm" onclick="go('import')">导入</button>
         <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部</button>
       </div>
     </div>
-    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无节点', `<button class="btn btn-primary btn-sm" onclick="openCreateVm()">创建</button>`)}</div>
+    <div class="vm-grid">${sortVms(vms).slice(0, 6).map(vmCard).join('') || emptyBox('暂无节点', `<button class="btn btn-primary btn-sm" onclick="openCreateVm()">创建</button>`)}</div>
   </section>`
 }
 
@@ -1186,7 +1322,7 @@ function filteredVms() {
   const vms = state.dashboard?.vms || []
   const q = (state.clusterQ || '').trim().toLowerCase()
   const f = state.clusterFilter || 'all'
-  return vms.filter(v => {
+  const out = vms.filter(v => {
     if (f === 'running' && !vmRunning(v)) return false
     if (f === 'stopped' && vmRunning(v)) return false
     if (f === 'notoken' && v.has_token) return false
@@ -1195,6 +1331,7 @@ function filteredVms() {
     const hay = [v.name, v.id, v.email, v.region, v.zone, v.kernel].map(x => String(x || '').toLowerCase()).join(' ')
     return hay.includes(q)
   })
+  return sortVms(out)
 }
 function setClusterFilter(f) { state.clusterFilter = f; render() }
 function onClusterSearch(el) {
@@ -1227,6 +1364,7 @@ function renderCluster() {
       <div class="toolbar">
         <input class="input" placeholder="搜索" aria-label="搜索" value="${esc(state.clusterQ || '')}" oninput="onClusterSearch(this)" />
         <div class="seg">${segs.map(([k, lab]) => `<button class="${f === k ? 'on' : ''}" onclick="setClusterFilter('${k}')">${lab} ${counts[k]}</button>`).join('')}</div>
+        ${sortSelect(state.clusterSort, state.clusterDir, 'setClusterSort', [['name','名称'],['u5','5h'],['u7','7d'],['remain','剩余'],['status','状态'],['email','账号'],['expire','过期'],['kernel','内核']])}
         <div class="view-tog" role="group" aria-label="视图">
           <button class="${state.clusterView!=='grid'?'on':''}" onclick="setClusterView('list')">列表</button>
           <button class="${state.clusterView==='grid'?'on':''}" onclick="setClusterView('grid')">网格</button>
@@ -1321,18 +1459,31 @@ function createSheetHTML() {
   const after = state.createAfter || 'idle'
   const preset = state.createPreset || 'strict'
   const k = state.kernel || 'unikernel-min'
+  const tpl = state.createTemplate || 'strict-min'
+  const name = state.createName || vmNameOf(nextVmSeq(state.dashboard?.vms || []))
   return `
     <h3>创建</h3>
     <div class="set-list">
+      <div class="set-row"><span>模板</span>
+        <select id="vmCreateTpl" class="input" onchange="applyVmTemplate(this.value)">
+          ${VM_TEMPLATES.map(x => `<option value="${esc(x.id)}" ${x.id===tpl?'selected':''}>${esc(x.name)}</option>`).join('')}
+        </select>
+      </div>
       <div class="set-row"><span>名称</span>
-        <input id="vmCreateName" class="input" placeholder="可选" value="${esc(state.createName || '')}" oninput="state.createName=this.value" />
+        <select id="vmCreateName" class="input" onchange="state.createName=this.value">${vmNameOptions(name)}</select>
       </div>
       <div class="set-row"><span>内核</span>
         <select id="vmCreateKernel" class="input" onchange="state.kernel=this.value">
           ${KERNELS.map(x => `<option value="${esc(x.id)}" ${x.id===k?'selected':''}>${esc(x.name)} · ${esc(x.size)}</option>`).join('')}
         </select>
       </div>
-      <div class="set-row"><span>种子</span>${seedPresetBar(preset, 'setCreatePreset')}</div>
+      <div class="set-row"><span>种子</span>
+        <select id="vmCreateSeed" class="input" onchange="state.createPreset=this.value">
+          <option value="strict" ${preset==='strict'?'selected':''}>严格</option>
+          <option value="standard" ${preset==='standard'?'selected':''}>标准</option>
+          <option value="open" ${preset==='open'?'selected':''}>开放</option>
+        </select>
+      </div>
       <div class="set-row"><span>之后</span>
         <select id="vmCreateAfter" class="input" onchange="state.createAfter=this.value">
           <option value="idle" ${after==='idle'?'selected':''}>仅创建</option>
@@ -1349,30 +1500,21 @@ function createSheetHTML() {
         <label>区域
           <select id="vmCreateRegion" class="input">
             <option value="">自动</option>
-            <option value="us-west">美西</option>
-            <option value="us-east">美东</option>
-            <option value="eu-west">欧洲</option>
-            <option value="ap-east">亚太东</option>
-            <option value="ap-southeast">亚太东南</option>
+            <option value="us-west" ${state.createRegion==='us-west'?'selected':''}>美西</option>
+            <option value="us-east" ${state.createRegion==='us-east'?'selected':''}>美东</option>
+            <option value="eu-west" ${state.createRegion==='eu-west'?'selected':''}>欧洲</option>
+            <option value="ap-east" ${state.createRegion==='ap-east'?'selected':''}>亚太东</option>
+            <option value="ap-southeast" ${state.createRegion==='ap-southeast'?'selected':''}>亚太东南</option>
           </select>
         </label>
         <label>时区
           <select id="vmCreateTz" class="input">
-            <option value="America/Los_Angeles">洛杉矶</option>
-            <option value="America/New_York">纽约</option>
-            <option value="UTC">UTC</option>
-            <option value="Europe/London">伦敦</option>
-            <option value="Asia/Shanghai">上海</option>
-            <option value="Asia/Tokyo">东京</option>
-            <option value="Asia/Singapore">新加坡</option>
+            ${[['America/Los_Angeles','洛杉矶'],['America/New_York','纽约'],['UTC','UTC'],['Europe/London','伦敦'],['Asia/Shanghai','上海'],['Asia/Tokyo','东京'],['Asia/Singapore','新加坡']].map(([v,l]) => `<option value="${v}" ${(state.createTz||'America/Los_Angeles')===v?'selected':''}>${l}</option>`).join('')}
           </select>
         </label>
         <label>语言
           <select id="vmCreateLocale" class="input">
-            <option value="en_US.UTF-8">English</option>
-            <option value="zh_CN.UTF-8">中文</option>
-            <option value="ja_JP.UTF-8">日本語</option>
-            <option value="C.UTF-8">C</option>
+            ${[['en_US.UTF-8','English'],['zh_CN.UTF-8','中文'],['ja_JP.UTF-8','日本語'],['C.UTF-8','C']].map(([v,l]) => `<option value="${v}" ${(state.createLocale||'en_US.UTF-8')===v?'selected':''}>${l}</option>`).join('')}
           </select>
         </label>
         <label>CLI
@@ -1384,18 +1526,12 @@ function createSheetHTML() {
         </label>
         <label>并发
           <select id="vmCreateConc" class="input">
-            <option value="1">1</option>
-            <option value="2" selected>2</option>
-            <option value="4">4</option>
-            <option value="8">8</option>
+            ${[1,2,4,8].map(v => `<option value="${v}" ${Number(state.createConc||2)===v?'selected':''}>${v}</option>`).join('')}
           </select>
         </label>
         <label>权重
           <select id="vmCreateWeight" class="input">
-            <option value="1" selected>1</option>
-            <option value="2">2</option>
-            <option value="3">3</option>
-            <option value="5">5</option>
+            ${[1,2,3,5].map(v => `<option value="${v}" ${Number(state.createWeight||1)===v?'selected':''}>${v}</option>`).join('')}
           </select>
         </label>
         <label class="check"><input id="vmCreateProxyCli" type="checkbox" /> proxy CLI</label>
@@ -1405,6 +1541,20 @@ function createSheetHTML() {
       <button class="btn btn-outline btn-sm" onclick="closeModal()">取消</button>
       <button class="btn btn-primary btn-sm" id="vmCreateGo" onclick="createVmFromPage()">创建</button>
     </div>`
+}
+function applyVmTemplate(id) {
+  const tpl = VM_TEMPLATES.find(x => x.id === id) || VM_TEMPLATES[0]
+  state.createTemplate = tpl.id
+  state.kernel = tpl.kernel
+  state.createPreset = tpl.seed
+  state.createAfter = tpl.after
+  state.createRegion = tpl.region
+  state.createTz = tpl.tz
+  state.createLocale = tpl.locale
+  state.createConc = tpl.conc
+  state.createWeight = tpl.weight
+  const dlg = document.querySelector('#modalRoot .modal')
+  if (dlg) { dlg.innerHTML = createSheetHTML(); dlg.classList.add('sheet') }
 }
 function setCreatePreset(name) {
   state.createPreset = name
@@ -1417,10 +1567,10 @@ function setCreatePreset(name) {
 }
 function openCreateVm() {
   state.advOpen = false
+  if (!state.createName) state.createName = vmNameOf(nextVmSeq(state.dashboard?.vms || []))
   openModal(createSheetHTML())
   const dlg = document.querySelector('#modalRoot .modal')
   if (dlg) dlg.classList.add('sheet')
-  setTimeout(() => document.getElementById('vmCreateName')?.focus(), 0)
 }
 
 function lifeSteps(vm) {
@@ -1556,13 +1706,27 @@ function renderVm() {
       </div>` : ''}
 
       ${tab === 'account' ? `
-      <dl class="kv">
-        <dt>邮箱</dt><dd>${esc(vm.email || '—')}</dd>
-        <dt>UUID</dt><dd class="mono">${esc(vm.account_uuid || '—')}</dd>
-        <dt>凭证</dt><dd>${vm.has_token ? '<span class="acc-pill ok">已绑定</span>' : '<span class="acc-pill off">未绑定</span>'}</dd>
-        <dt>5h / 7d</dt><dd class="num">${u5.toFixed(1)}% / ${u7.toFixed(1)}%</dd>
+      ${lifeSteps(vm)}
+      <div class="qgrid">
+        ${quotaCard('5 小时', acc.utilization_5h ?? vm.utilization_5h, acc.reset_5h || vm.reset_5h)}
+        ${quotaCard('7 天', acc.utilization_7d ?? vm.utilization_7d, acc.reset_7d || vm.reset_7d)}
+      </div>
+      <dl class="kv" style="margin-top:12px">
+        <dt>凭证</dt><dd><span class="acc-pill ${credExpiry(vm).cls}">${credExpiry(vm).text}</span></dd>
+        <dt>邮箱</dt><dd>${esc(vm.email || acc.email || '—')}</dd>
+        <dt>UUID</dt><dd class="mono">${esc(vm.account_uuid || acc.account_id || '—')}</dd>
+        <dt>Org</dt><dd class="mono">${esc(vm.org_uuid || '—')}</dd>
+        <dt>过期</dt><dd class="mono">${esc(vm.expires_at || '—')}</dd>
+        <dt>5h 状态</dt><dd>${esc(acc.status_5h || vm.status_5h || '—')}</dd>
+        <dt>7d 状态</dt><dd>${esc(acc.status_7d || vm.status_7d || '—')}</dd>
+        <dt>并发</dt><dd class="num">${(acc.inflight ?? vm.inflight) || 0} / ${acc.max_concurrency || vm.max_concurrency || 2}</dd>
+        <dt>请求</dt><dd class="num">${fmtNum(acc.requests ?? vm.requests ?? 0)}</dd>
+        <dt>Tokens</dt><dd class="num">${fmtNum(acc.tokens_in ?? vm.tokens_in ?? 0)} / ${fmtNum(acc.tokens_out ?? vm.tokens_out ?? 0)}</dd>
       </dl>
-      <div class="actions" style="margin-top:14px"><button class="btn btn-primary btn-sm" onclick="go('import')">导入</button></div>` : ''}
+      <div class="actions" style="margin-top:14px">
+        <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')">CLI 探测</button>
+        <button class="btn btn-primary btn-sm" onclick="go('import')">导入</button>
+      </div>` : ''}
 
       ${tab === 'proxy' ? `
       <dl class="kv">
@@ -1596,7 +1760,15 @@ function renderVm() {
 
       ${tab === 'seed' ? `
       ${lifeSteps(vm)}
-      ${seedPresetBar(preset, 'applySeedPreset')}
+      <div class="set-row">
+        <span>模板</span>
+        <select class="input" onchange="applySeedPreset(this.value)">
+          <option value="strict" ${preset==='strict'?'selected':''}>严格</option>
+          <option value="standard" ${preset==='standard'?'selected':''}>标准</option>
+          <option value="open" ${preset==='open'?'selected':''}>开放</option>
+          ${preset==='custom'?'<option value="custom" selected>自定义</option>':''}
+        </select>
+      </div>
       <div class="switch-row" style="margin-top:12px">
         ${SEED_FLAGS.map(([k,l]) => `<label class="chip-check"><input id="seed_${k}" type="checkbox" ${pol[k]!==false && (k in pol ? !!pol[k] : SEED_PRESETS.strict[k]) ? 'checked':''} onchange="onSeedChip()"/> ${l}</label>`).join('')}
       </div>
@@ -1714,7 +1886,10 @@ function renderUsage() {
     </div>
     <div class="head">
       <div class="section-title">${accounts.length}</div>
-      <button class="btn btn-outline btn-sm" onclick="probeAll()">CLI 探测</button>
+      <div class="actions">
+        ${sortSelect(state.usageSort, state.usageDir, 'setUsageSort', [['name','账号'],['u5','5h'],['u7','7d'],['req','请求'],['st','状态']])}
+        <button class="btn btn-outline btn-sm" onclick="probeAll()">CLI 探测</button>
+      </div>
     </div>
     <div class="card table-wrap" style="padding:8px 10px 4px">
       <table class="table">
@@ -1773,11 +1948,14 @@ function renderProtocol() {
     </div>
     <div class="head">
       <div class="section-title">模型 ${models.length}${state.models?.cli_version ? ' · ' + esc(state.models.cli_version) : ''}</div>
-      <button class="btn btn-outline btn-sm" onclick="refresh()">刷新</button>
+      <div class="actions">
+        ${sortSelect(state.modelSort, state.modelDir, 'setModelSort', [['name','名称'],['id','ID']])}
+        <button class="btn btn-outline btn-sm" onclick="refresh()">刷新</button>
+      </div>
     </div>
     ${state.models?.error || (state.models?.note && !models.length) ? `<p class="text-xs danger" style="margin:0">${esc(state.models.error || state.models.note)}</p>` : ''}
     <div class="model-grid">
-      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型')}
+      ${models.slice().sort((a,b)=>cmp((state.modelSort==='id'?a.id:a.label||a.id||'').toLowerCase(), (state.modelSort==='id'?b.id:b.label||b.id||'').toLowerCase(), state.modelDir||'asc')).map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型')}
     </div>
   </section>`
 }
@@ -1950,6 +2128,7 @@ function renderProxies() {
     <div class="head">
       <div class="section-title">${tot.total ?? list.length}</div>
       <div class="toolbar">
+        ${sortSelect(state.proxySort, state.proxyDir, 'setProxySort', [['host','代理'],['status','状态'],['lat','延迟'],['vm','节点'],['fail','失败']])}
         <select class="input" style="width:120px;height:32px" aria-label="探测间隔" onchange="setProbeInterval(this.value)">
           ${[5,10,30,60].map(m => `<option value="${m}" ${Number(interval)===m?'selected':''}>${m} 分</option>`).join('')}
         </select>
@@ -2008,31 +2187,32 @@ function renderProxies() {
 
 /* ── vm actions ──────────────────────────────────────────── */
 async function createVmFromPage() {
-  const name = document.getElementById('vmCreateName')?.value?.trim() || ''
+  const name = document.getElementById('vmCreateName')?.value?.trim() || vmNameOf(nextVmSeq(state.dashboard?.vms || []))
   const kernel = document.getElementById('vmCreateKernel')?.value || state.kernel || 'unikernel-min'
-  const timezone = document.getElementById('vmCreateTz')?.value || 'America/Los_Angeles'
-  const locale = document.getElementById('vmCreateLocale')?.value || 'en_US.UTF-8'
-  const region = document.getElementById('vmCreateRegion')?.value?.trim() || undefined
-  const max_concurrency = Number(document.getElementById('vmCreateConc')?.value || 2)
-  const weight = Number(document.getElementById('vmCreateWeight')?.value || 1)
+  const timezone = document.getElementById('vmCreateTz')?.value || state.createTz || 'America/Los_Angeles'
+  const locale = document.getElementById('vmCreateLocale')?.value || state.createLocale || 'en_US.UTF-8'
+  const region = document.getElementById('vmCreateRegion')?.value?.trim() || state.createRegion || undefined
+  const max_concurrency = Number(document.getElementById('vmCreateConc')?.value || state.createConc || 2)
+  const weight = Number(document.getElementById('vmCreateWeight')?.value || state.createWeight || 1)
   const claude_code_version = document.getElementById('vmCreateCC')?.value?.trim() || undefined
   const after = document.getElementById('vmCreateAfter')?.value || state.createAfter || 'idle'
   const start = after !== 'idle'
   const auto_allocate_proxy = after === 'proxy' || after === 'full'
   const activate = after === 'active' || after === 'full'
   const proxy_cli_enabled = !!document.getElementById('vmCreateProxyCli')?.checked
-  const seed_policy = seedPolicyOf(state.createPreset || 'strict')
+  state.createPreset = document.getElementById('vmCreateSeed')?.value || state.createPreset || 'strict'
+  const seed_policy = seedPolicyOf(state.createPreset)
   const btn = document.getElementById('vmCreateGo')
   if (btn) { btn.disabled = true; btn.textContent = '创建中' }
   try {
     const body = {
-      name: name || undefined, kernel, timezone, locale, region,
+      id: name, name, kernel, timezone, locale, region,
       max_concurrency, weight, claude_code_version,
       start, auto_allocate_proxy, activate, proxy_cli_enabled, seed_policy,
     }
     const r = await api('/api/panel/vms/create', { method: 'POST', body: JSON.stringify(body) })
     const d = r.data || r
-    const id = d.vm?.id
+    const id = d.vm?.id || name
     if (id) {
       try {
         await api('/api/panel/vms/' + id + '/seed-settings', { method: 'PUT', body: JSON.stringify(seed_policy) })
