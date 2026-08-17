@@ -144,7 +144,14 @@ export function createOauthGuard(cfg, deps = {}) {
     }
   }
 
-  async function doRefresh({ force = false } = {}) {
+  async function doRefresh({ force = false, homeDir = null } = {}) {
+    if (homeDir) {
+      const h = harvestFromHome(homeDir)
+      if (h.harvested && !force && !needsRefresh(cfg.vm?.expires_at)) {
+        last = { at: Date.now(), result: 'harvested', expires_at: cfg.vm.expires_at }
+        return { ok: true, refreshed: false, harvested: true, expires_at: cfg.vm.expires_at }
+      }
+    }
     if (!force && !needsRefresh(cfg.vm?.expires_at)) {
       last = { at: Date.now(), result: 'fresh' }
       return { ok: true, refreshed: false, expires_at: cfg.vm.expires_at }
@@ -170,6 +177,12 @@ export function createOauthGuard(cfg, deps = {}) {
       const invalid = /invalid_grant|invalid.refresh|expired.*refresh/i.test(msg)
       last = { at: Date.now(), result: invalid ? 'invalid_grant' : 'error', error: msg.slice(0, 200) }
       persistRefreshError(cfg.vm?.path, { ...last, need_reimport: invalid })
+      if (homeDir) {
+        const h = harvestFromHome(homeDir)
+        if (h.harvested) {
+          return { ok: true, refreshed: false, harvested: true, expires_at: cfg.vm.expires_at }
+        }
+      }
       return { ok: false, refreshed: false, need_reimport: invalid, error: msg.slice(0, 300) }
     }
   }
@@ -183,7 +196,9 @@ export function createOauthGuard(cfg, deps = {}) {
     if (!harvested?.access_token) return { harvested: false }
     const cur = expiresAtToMs(cfg.vm?.expires_at)
     const next = expiresAtToMs(harvested.expires_at)
-    if (next <= cur + 1000) return { harvested: false }
+    const rtChanged = !!(harvested.refresh_token && harvested.refresh_token !== cfg.vm?.refresh_token)
+    const atChanged = !!(harvested.access_token && harvested.access_token !== cfg.vm?.access_token)
+    if (next <= cur + 1000 && !rtChanged && !atChanged) return { harvested: false }
     harvested.source = 'cli-harvest'
     applyOauthToCfg(cfg, harvested)
     persistOauthToVm(cfg.vm.path, harvested)

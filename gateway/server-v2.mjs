@@ -315,7 +315,9 @@ async function handleProtocol(req, res, protocol, pathName) {
   accountQuota.acquire(accountId)
   if (stickyKey) stickyRouter.bind(stickyKey, { accountId, vmId })
 
-  const oauth = await oauthGuard.ensureFresh()
+  const oauth = await oauthGuard.ensureFresh({
+    homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
+  })
   if (!oauth.ok) {
     accountQuota.release(accountId)
     stats.errors++

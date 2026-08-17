@@ -98,11 +98,27 @@ function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone,
       scopes: ['user:inference', 'user:sessions:claude_code', 'user:profile'],
     },
   }
-  fs.writeFileSync(path.join(claudeDir, '.credentials.json'), JSON.stringify(creds, null, 2), { mode: 0o600 })
-  fs.writeFileSync(path.join(claudeDir, 'credentials.json'), JSON.stringify(creds, null, 2), { mode: 0o600 })
+  const incomingExp = creds.claudeAiOauth.expiresAt
+  let keepExisting = false
   try {
-    fs.chmodSync(path.join(claudeDir, '.credentials.json'), 0o600)
+    const prevPath = path.join(claudeDir, 'credentials.json')
+    if (fs.existsSync(prevPath)) {
+      const prev = JSON.parse(fs.readFileSync(prevPath, 'utf8'))
+      const po = prev.claudeAiOauth || {}
+      let prevExp = Number(po.expiresAt) || 0
+      if (prevExp && prevExp < 10_000_000_000) prevExp *= 1000
+      if (prevExp > incomingExp + 1000 && (po.accessToken || po.refreshToken)) {
+        keepExisting = true
+      }
+    }
   } catch {}
+  if (!keepExisting) {
+    fs.writeFileSync(path.join(claudeDir, '.credentials.json'), JSON.stringify(creds, null, 2), { mode: 0o600 })
+    fs.writeFileSync(path.join(claudeDir, 'credentials.json'), JSON.stringify(creds, null, 2), { mode: 0o600 })
+    try {
+      fs.chmodSync(path.join(claudeDir, '.credentials.json'), 0o600)
+    } catch {}
+  }
 
   const pol = seedPolicy || {}
   const env = { ...(pol.extra_env || {}) }
