@@ -233,7 +233,11 @@ tr.dead-row{opacity:.6}
 .fact b{font-weight:550;color:var(--fg);font-variant-numeric:tabular-nums}
 .fact .v{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+.alert-bar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 4px}
+.alert-item{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;border:1px solid oklch(0.65 0.14 70 / 35%);background:oklch(0.28 0.04 70 / 40%);color:oklch(0.82 0.1 70);font-size:12px;line-height:1.35}
+
 .stat-hero{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+
 .stat-tile{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px 18px;position:relative;overflow:hidden;min-width:0}
 .stat-tile .k{font-size:11.5px;color:var(--faint)}
 .stat-tile .v{font-size:34px;font-weight:600;margin-top:8px;letter-spacing:-0.035em;line-height:1.05;font-variant-numeric:tabular-nums}
@@ -442,7 +446,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
           <div class="mark">核</div>
           <div>
             <div class="t">种核 KIN</div>
-            <div class="s">VM · 官方 Claude Code</div>
+            <div class="s">官方 Claude Code 转发</div>
           </div>
         </div>
       </div>
@@ -466,7 +470,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
       <header class="topbar">
         <div>
           <h1 id="pageTitle">总览</h1>
-          <p id="pageDesc">平台健康</p>
+          <p id="pageDesc">平台健康 · 只走虚拟机 CLI</p>
         </div>
         <div class="topbar-actions">
           <span id="healthPill" class="badge">—</span>
@@ -474,6 +478,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
           <button class="btn btn-outline" onclick="probeAll()" title="从虚拟机官方 Claude Code 探测登录态与限流">CLI 探测</button>
         </div>
       </header>
+
       <main class="content" id="main"></main>
     </div>
   </div>
@@ -488,14 +493,15 @@ const LS_BASE = 'kin_api_base'
 const COOKIE = 'kin_panel_token'
 const titles = {
   overview: ['总览', '平台健康 · 只走虚拟机 CLI'],
-  cluster: ['集群', '节点与账号'],
-  vm: ['虚拟机', '创建与运维'],
-  import: ['导入', 'sessionKey 导入 · CLI 续期'],
-  usage: ['用量', '官方 CLI 探测'],
-  protocol: ['协议', '只经虚拟机 Claude Code'],
-  proxies: ['代理池', 'SOCKS5'],
-  settings: ['设置', '路由策略'],
+  cluster: ['集群', '节点与账号状态'],
+  vm: ['虚拟机', '创建 · 运维 · CLI'],
+  import: ['导入', 'sessionKey → CLI 续期'],
+  usage: ['用量', '官方 CLI 探测 · rate_limit'],
+  protocol: ['协议', '只经虚拟机 · 不伪装'],
+  proxies: ['代理池', 'SOCKS5 · 测通'],
+  settings: ['设置', '粘性 · 额度 · 并发'],
 }
+
 
 /* 官方内核档案 */
 const KERNELS = [
@@ -775,12 +781,13 @@ async function probeAll() {
 }
 async function probeOne(id) {
   try {
-    toast('CLI 探测 ' + id)
+    toast('CLI 探测 ' + id + '…')
     await api('/api/panel/vms/' + id + '/probe', { method: 'POST', body: JSON.stringify({ hop: true }) })
-    toast('探测完成')
+    toast('CLI 探测完成')
     await refresh()
   } catch (e) { toast(e.message, 'err') }
 }
+
 async function openVm(id) {
   const switched = state.selectedVm !== id
   state.selectedVm = id
@@ -922,6 +929,8 @@ function renderOverview() {
   const running = vms.filter(vmRunning).length
   const withToken = vms.filter(v => v.has_token).length
   const available = vms.filter(v => vmRunning(v) && v.has_token && pct(v.utilization_5h) < 95).length
+  const nearLimit = vms.filter(v => v.has_token && (v.near_limit || pct(v.utilization_5h) >= 95)).length
+  const noToken = vms.filter(v => !v.has_token).length
   const tokensIn = tot.tokens_in ?? s.tokens_in ?? 0
   const tokensOut = tot.tokens_out ?? s.tokens_out ?? 0
   const reqs = tot.requests ?? s.requests ?? 0
@@ -932,6 +941,11 @@ function renderOverview() {
   const buckets = vmBuckets(vms)
   const score = healthScore(vms)
   const scoreColor = score >= 80 ? 'var(--ok)' : score >= 50 ? 'var(--warn)' : 'var(--bad)'
+  const alerts = []
+  if (available === 0 && vms.length) alerts.push('当前无可用节点（需在线 + 有凭证 + 未近限额）')
+  if (nearLimit > 0) alerts.push(`${nearLimit} 个账号近限额，新请求可能被拦截`)
+  if (noToken > 0 && withToken === 0) alerts.push('全部节点无凭证，请到「导入」粘贴 sessionKey')
+  if (errs > 0) alerts.push(`网关近期错误 ${errs} 次`)
   return `
   <section class="section">
     <div class="hcard">
@@ -944,6 +958,8 @@ function renderOverview() {
         ${healthLegend(buckets)}
       </div>
     </div>
+
+    ${alerts.length ? `<div class="alert-bar">${alerts.map(a => `<span class="alert-item">⚠ ${esc(a)}</span>`).join('')}</div>` : ''}
 
     <div class="facts">
       <span class="fact"><span class="status-dot ${ok ? 'on' : 'danger'}"></span>网关 <b>${esc(health.status || 'ok')}</b></span>
@@ -981,15 +997,16 @@ function renderOverview() {
     </div>
 
     <div class="head">
-      <div><div class="section-title">节点</div><div class="sub">${running} / ${vms.length} 在线</div></div>
+      <div><div class="section-title">节点预览</div><div class="sub">${running} / ${vms.length} 在线 · 最多 6 张</div></div>
       <div class="actions">
         <button class="btn btn-outline btn-sm" onclick="go('import')">导入 sessionKey</button>
-        <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部</button>
+        <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部节点</button>
       </div>
     </div>
-    <div class="vm-grid">${vms.slice(0, 8).map(vmCard).join('') || emptyBox('暂无虚拟机 · 到「虚拟机」创建')}</div>
+    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无虚拟机 · 先到「虚拟机」创建，再「导入」sessionKey')}</div>
   </section>`
 }
+
 
 /* ── cluster ─────────────────────────────────────────────── */
 function filteredVms() {
@@ -1500,20 +1517,21 @@ function renderProtocol() {
     </div>
     <div class="card">
       <div class="section-title" style="margin-bottom:6px">接入端点</div>
-      <p class="text-xs faint" style="margin:0 0 8px">Messages / Chat / Responses 全部进入虚拟机 <code>claude -p</code>，不经网关直连 Anthropic。</p>
+      <p class="text-xs faint" style="margin:0 0 8px">Messages / Chat / Responses 全部进入虚拟机 <code>claude -p</code>，不经网关直连 Anthropic。网关只做协议转换与拦截，不伪造 UA 或 Anthropic HTTP。</p>
       ${endpoints.map(([n, p]) => `<div class="endpoint-row"><span>${esc(n)}</span><code>${esc(base.replace(/\/$/, ''))}${esc(p)}</code></div>`).join('')}
     </div>
     <div class="head">
-      <div><div class="section-title">模型</div><div class="sub">${models.length} 个 · ${esc(state.models?.source || 'claude_cli_catalog')}${state.models?.cli_version ? ' · CLI ' + esc(state.models.cli_version) : ''}</div></div>
+      <div><div class="section-title">模型</div><div class="sub">${models.length} 个 · ${esc((state.models?.source === 'claude_cli_catalog' || !state.models?.source) ? 'CLI 二进制 harvest' : state.models.source)}${state.models?.cli_version ? ' · CLI ' + esc(state.models.cli_version) : ''}</div></div>
       <button class="btn btn-outline btn-sm" onclick="refresh()">刷新目录</button>
     </div>
-    <p class="text-xs faint" style="margin:0">只展示这份虚拟机 Claude Code 认识的模型；未知 id 会在网关直接 400，不会 hop。</p>
+    <p class="text-xs faint" style="margin:0">只信虚拟机官方 Claude Code 实际可读的模型；未知 id 网关直接 400，不会 hop 上游。</p>
     ${state.models?.error || (state.models?.note && !models.length) ? `<p class="text-xs danger" style="margin:0">${esc(state.models.error || state.models.note)}</p>` : ''}
     <div class="model-grid">
-      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型 · 检查虚拟机 CLI 是否可读')}
+      ${models.map(m => `<div class="model-card"><div class="font-medium text-sm">${esc(m.label || m.id)}</div><div class="id">${esc(m.id)}</div></div>`).join('') || emptyBox('暂无模型 · 确认虚拟机 CLI 可读且已 CLI 探测')}
     </div>
   </section>`
 }
+
 
 /* ── settings ────────────────────────────────────────────── */
 function renderSettings() {
@@ -1596,18 +1614,21 @@ async function importProxies() {
 }
 async function probeProxies() {
   try {
-    toast('探测代理池…')
+    toast('正在探测代理池…')
     await api('/api/panel/proxies/probe', { method: 'POST' })
-    toast('探测完成')
+    toast('代理探测完成')
     await refresh()
   } catch (e) { toast(e.message) }
 }
 async function probeProxyOne(id) {
   try {
+    toast('探测代理 ' + id)
     await api('/api/panel/proxies/' + id + '/probe', { method: 'POST' })
+    toast('代理探测完成')
     await refresh()
   } catch (e) { toast(e.message) }
 }
+
 async function enableProxy(id, on) {
   try {
     await api('/api/panel/proxies/' + id + '/' + (on ? 'enable' : 'disable'), { method: 'POST' })
@@ -1653,7 +1674,7 @@ function renderProxies() {
       <div class="toolbar">
         <span class="text-xs faint">探测间隔</span>
         <div class="seg">${[5, 10, 30, 60].map(m => `<button class="${interval === m ? 'on' : ''}" onclick="setProbeInterval(${m})">${m}m</button>`).join('')}</div>
-        <button class="btn btn-outline btn-sm" onclick="probeProxies()">全量探测</button>
+        <button class="btn btn-outline btn-sm" onclick="probeProxies()">代理全量探测</button>
       </div>
     </div>
     <div class="stat-hero">
@@ -1685,19 +1706,20 @@ function renderProxies() {
               <td class="text-xs">${p.bound_vm_id ? `<a href="#/vm/${esc(p.bound_vm_id)}">${esc(vmNameById(p.bound_vm_id))}</a>` : '—'}</td>
               <td class="num">${p.consecutive_failures || 0}${p.last_error ? ` <span class="text-xs faint">${esc(p.last_error)}</span>` : ''}</td>
               <td class="right">
-                <button class="btn btn-ghost btn-sm" onclick="probeProxyOne('${esc(p.id)}')">探测</button>
+                <button class="btn btn-ghost btn-sm" onclick="probeProxyOne('${esc(p.id)}')">测通</button>
                 ${p.enabled
                   ? `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(p.id)}', false)">停用</button>`
                   : `<button class="btn btn-ghost btn-sm" onclick="enableProxy('${esc(p.id)}', true)">启用</button>`}
                 ${p.bound_vm_id ? `<button class="btn btn-ghost btn-sm" onclick="unbindProxy('${esc(p.id)}')">解绑</button>` : ''}
               </td>
             </tr>`
-          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">池为空，展开上方导入</td></tr>`}
+          }).join('') || `<tr><td colspan="6" class="faint" style="text-align:center;padding:26px">池为空 · 展开上方导入 SOCKS5</td></tr>`}
         </tbody>
       </table>
     </div>
   </section>`
 }
+
 
 /* ── vm actions ──────────────────────────────────────────── */
 async function createVmFromPage() {
