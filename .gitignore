@@ -2,3 +2,9 @@ gateway/config/test.key
 **/node_modules/
 **/.credentials.json
 **/credentials.json
+
+# Local runtime state (VM records may hold OAuth tokens)
+vms/
+data/
+gateway/data/
+gateway/captures/
