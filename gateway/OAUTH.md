@@ -35,13 +35,30 @@ harvest credentials.json → 回写 vm + 内存
 | 续期主体 | 自己 `ClaudeTokenRefresher` | **官方 CLI** |
 | 网关换票 | 每请求 `RefreshIfNeeded` | **永不** `grant_type=refresh_token` |
 | 到期窗口 | 3 min skew 主动刷新 | 只 harvest；CLI 自己换 |
+| 状态探测 | 网关自己打 Anthropic | **`claude auth status --json`**（kincli + VM HOME） |
+| 用量探测 | `GET /api/oauth/usage` + 伪装 UA | 官方 hop 的 `rate_limit_event` |
 | 恢复 | invalid_grant → 人工 | 存盘 sessionKey → CookieAuth 再导入 |
 | 环境变量 | access 当 Bearer | **禁止** `ANTHROPIC_AUTH_TOKEN` |
 
+## 探测必须走虚拟机 Claude Code
+
+网关**禁止**再自己 `fetch` `api.anthropic.com/api/oauth/usage` 或伪装 `User-Agent: claude-cli/…`。
+
+| 能力 | 官方入口 | 频率 |
+|---|---|---|
+| 登录 / 邮箱 / org | `claude auth status --json` | GET oauth 时现场跑 |
+| access 是否仍在 | harvest `credentials.json` | 每请求 + 60s 循环 |
+| 5h / 7d | stream-json `rate_limit_event` | 每次官方 `claude -p`；POST probe 可加一次小 hop |
+| 该不该换票 | CLI 自己决定 | 网关 `needs_refresh` 只展示，5min 偏斜，**不触发** refresh |
+
+`rate_limit_event` 给的是 `status` / `resetsAt` / `rateLimitType`，没有 utilization 百分比。
+不要用伪装 `/oauth/usage` 去补这个数字。
+
 ## 运维
 
-- `GET /admin/vm/oauth`：ttl / last / has_session_key（无 token）
+- `GET /admin/vm/oauth`：ttl / last / has_session_key + **CLI `auth status`**（无 token）
 - `POST /admin/vm/oauth/refresh`：只 harvest，不打 Anthropic
+- `POST /admin/vms/:id/probe`：`claude auth status` + 一次官方小 hop（`{hop:false}` 可关 hop）
 - 后台 60s 循环：只 harvest
 - 导入后 **不要** force-refresh
 - CLI oauth 失败且 sessionKey 也死 → 401 `oauth_need_reimport`

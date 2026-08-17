@@ -112,6 +112,57 @@ export class AccountQuota {
   }
 
   /**
+   * Official Claude Code stream-json `rate_limit_event` (not spoofed HTTP headers).
+   * CLI does not emit utilization %; we store status + reset and keep prior utilization.
+   */
+  ingestCliRateLimit(accountId, rateLimitInfo, usageBody = null, { countRequest = null } = {}) {
+    const acc = this.ensure({ account_id: accountId })
+    const infos = Array.isArray(rateLimitInfo) ? rateLimitInfo : (rateLimitInfo ? [rateLimitInfo] : [])
+    for (const info of infos) {
+      if (!info || typeof info !== 'object') continue
+      const typ = String(info.rateLimitType || info.rate_limit_type || '')
+      const window = typ === 'seven_day' || typ === '7d' ? '7d'
+        : typ === 'five_hour' || typ === '5h' ? '5h'
+          : null
+      if (window) {
+        if (info.status) acc.unified[window].status = info.status
+        const reset = info.resetsAt ?? info.resets_at
+        if (reset != null) acc.unified[window].reset = epochToIso(reset)
+        acc.unified[window].rate_limit_type = typ || null
+      }
+      if (info.overageStatus || info.overage_status) {
+        acc.unified.overage_status = info.overageStatus || info.overage_status
+      }
+      acc.last_cli_rate_limit = { ...info, at: new Date().toISOString() }
+    }
+    acc.unified.updated_at = new Date().toISOString()
+    acc.unified.source = 'claude_cli_rate_limit_event'
+
+    const shouldCount = countRequest == null ? usageBody?.input_tokens != null : !!countRequest
+    if (usageBody?.input_tokens != null) {
+      acc.tokens_in += Number(usageBody.input_tokens) || 0
+      acc.tokens_out += Number(usageBody.output_tokens) || 0
+    }
+    if (shouldCount) acc.requests += 1
+
+    acc.allocations.push({
+      at: new Date().toISOString(),
+      source: 'claude_cli',
+      util_5h: acc.unified['5h'].utilization,
+      util_7d: acc.unified['7d'].utilization,
+      status_5h: acc.unified['5h'].status,
+      status_7d: acc.unified['7d'].status,
+      claim: acc.unified.representative_claim,
+      tokens_in: usageBody?.input_tokens ?? null,
+      tokens_out: usageBody?.output_tokens ?? null,
+    })
+    if (acc.allocations.length > 50) acc.allocations = acc.allocations.slice(-50)
+
+    this._save()
+    return acc
+  }
+
+  /**
    * Pre-flight check: can this account take another request?
    * @returns {{ ok: true } | { ok: false, reason, detail }}
    */
@@ -130,6 +181,36 @@ export class AccountQuota {
 
     const u5 = Number(acc.unified['5h'].utilization || 0)
     const u7 = Number(acc.unified['7d'].utilization || 0)
+    const s5 = String(acc.unified['5h'].status || '')
+    const s7 = String(acc.unified['7d'].status || '')
+
+    if (this.config.block_on_5h && (s5 === 'rejected' || s5 === 'rate_limited')) {
+      acc.last_blocked = { at: new Date().toISOString(), window: '5h', status: s5, source: 'claude_cli' }
+      this._save()
+      return {
+        ok: false,
+        reason: 'quota_5h_cli',
+        detail: {
+          status: s5,
+          reset: acc.unified['5h'].reset,
+          message: `Official Claude Code rate_limit_event blocked 5h (${s5})`,
+        },
+      }
+    }
+
+    if (this.config.block_on_7d && (s7 === 'rejected' || s7 === 'rate_limited')) {
+      acc.last_blocked = { at: new Date().toISOString(), window: '7d', status: s7, source: 'claude_cli' }
+      this._save()
+      return {
+        ok: false,
+        reason: 'quota_7d_cli',
+        detail: {
+          status: s7,
+          reset: acc.unified['7d'].reset,
+          message: `Official Claude Code rate_limit_event blocked 7d (${s7})`,
+        },
+      }
+    }
 
     if (this.config.block_on_5h && u5 >= ratio) {
       acc.last_blocked = { at: new Date().toISOString(), window: '5h', utilization: u5 }
@@ -225,4 +306,12 @@ function statusFromUtil(u) {
   if (u >= 1) return 'rate_limited'
   if (u >= 0.85) return 'warning'
   return 'active'
+}
+
+function epochToIso(v) {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  const ms = n < 1e12 ? n * 1000 : n
+  return new Date(ms).toISOString()
 }

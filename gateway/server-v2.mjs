@@ -33,7 +33,7 @@ import { validateOfficialModel, listOfficialModels, fetchOfficialModels } from '
 import { StickyRouter } from './lib/sticky-router.mjs'
 import { AccountQuota } from './lib/account-quota.mjs'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm-registry.mjs'
-import { probeAccount } from './lib/usage-probe.mjs'
+import { runClaudeAuthStatus } from './lib/cli-probe.mjs'
 import {
   makeError, mapUpstreamError, validateRequestBody, inspectRequestBody,
   mapQuotaGateError, mapModelError, ErrorType, ErrorCode,
@@ -422,7 +422,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       // Official Anthropic SSE requires both event: and data: (RikkaHub uses event.event)
       writeSSEHeaders(res)
       const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
-        onHeaders: (h) => accountQuota.ingestHeaders(accountId, h),
+        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
         onEvent: async (line) => {
           let evtName = "message"
           const raw = String(line || "")
@@ -434,6 +434,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           res.write("event: " + evtName + "\ndata: " + payload + "\n\n")
         },
       })
+      ingestCliHopQuota(accountId, result)
       if (!result.ok) {
         res.write(`event: error\ndata: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
       }
@@ -445,12 +446,13 @@ async function handleProtocol(req, res, protocol, pathName) {
       writeSSEHeaders(res)
       const state = createOpenAIChatStreamState(inbound.model || claude.model, cfg.vm.id)
       const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
-        onHeaders: (h) => accountQuota.ingestHeaders(accountId, h),
+        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
         onEvent: async (line) => {
           const chunks = claudeSSELineToOpenAIChatChunks(line, state)
           for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
         },
       })
+      ingestCliHopQuota(accountId, result)
       if (!result.ok) {
         res.write(`data: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
       }
@@ -463,12 +465,13 @@ async function handleProtocol(req, res, protocol, pathName) {
       writeSSEHeaders(res)
       const state = createResponsesStreamState(inbound.model || claude.model, cfg.vm.id)
       const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
-        onHeaders: (h) => accountQuota.ingestHeaders(accountId, h),
+        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
         onEvent: async (line) => {
           const events = claudeSSELineToResponsesEvents(line, state)
           for (const e of events) res.write(`data: ${JSON.stringify(e)}\n\n`)
         },
       })
+      ingestCliHopQuota(accountId, result)
       if (!result.ok) {
         res.write(`data: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
       }
@@ -484,9 +487,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   try {
     upstream = await callClaudeCli({ ...buildCliOpts(cfg, ctx.body),
     })
-    if (upstream.headers) {
-      accountQuota.ingestHeaders(accountId, upstream.headers, upstream.body?.usage)
-    }
+    ingestCliHopQuota(accountId, upstream)
   } finally {
     try { harvestCliHome() } catch {}
     accountQuota.release(accountId)
@@ -536,6 +537,39 @@ async function handleProtocol(req, res, protocol, pathName) {
 function harvestCliHome() {
   const homeDir = path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home')
   return oauthGuard.harvestFromHome(homeDir)
+}
+
+function ingestCliHopQuota(accountId, hop) {
+  if (!accountId || !hop) return
+  const infos = hop.rate_limits?.length ? hop.rate_limits : (hop.rate_limit ? [hop.rate_limit] : [])
+  const usage = hop.usage || hop.body?.usage || null
+  if (!infos.length && !usage) return
+  accountQuota.ingestCliRateLimit(accountId, infos, usage, { countRequest: true })
+}
+
+function vmCliHome(vmId = cfg.vm?.id) {
+  return path.join(cfg.paths.project, 'vms', vmId || 'default', 'cli-home')
+}
+
+async function oauthStatusWithCli() {
+  const homeDir = vmCliHome()
+  await oauthGuard.ensureFresh({ homeDir })
+  const cli = await runClaudeAuthStatus({ homeDir })
+  return {
+    ...oauthGuard.status(),
+    cli: {
+      source: 'claude_auth_status',
+      ok: !!cli.ok,
+      loggedIn: cli.loggedIn ?? null,
+      authMethod: cli.authMethod ?? null,
+      apiProvider: cli.apiProvider ?? null,
+      email: cli.email ?? null,
+      orgId: cli.orgId ?? null,
+      orgName: cli.orgName ?? null,
+      subscriptionType: cli.subscriptionType ?? null,
+      error: cli.error || null,
+    },
+  }
 }
 
 function buildCliOpts(cfg, body) {
@@ -620,56 +654,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && /^\/admin\/vms\/[^/]+\/probe$/.test(p)) {
       if (!requireAuth(req, res)) return
       const id = p.split('/')[3]
-      const vm = getVm(cfg.paths.project, id)
-      if (!vm) return json(res, 404, { error: { message: 'vm not found' } })
-      const token = vm.claude?.access_token
-      if (!token) return json(res, 400, { error: { message: 'no oauth token on vm' } })
-      const result = await probeAccount(token)
-      if (result.ok && result.data) {
-        const accountId = vm.claude?.account_uuid || vm.id
-        // map probe into quota store (ratios as 0-1)
-        accountQuota.ingestHeaders(accountId, {
-          'anthropic-ratelimit-unified-5h-utilization': result.data.five_hour?.utilization,
-          'anthropic-ratelimit-unified-5h-reset': result.data.five_hour?.resets_at,
-          'anthropic-ratelimit-unified-7d-utilization': result.data.seven_day?.utilization,
-          'anthropic-ratelimit-unified-7d-reset': result.data.seven_day?.resets_at,
-        })
-        const acc = accountQuota.ensure({
-          account_id: accountId,
-          vm_id: vm.id,
-          email: vm.claude?.email,
-          max_concurrency: vm.policy?.maxConcurrency,
-        })
-        acc.last_probe = result
-        // persist via snapshot write
-        accountQuota.ingestHeaders(accountId, {})
-      }
-      return json(res, 200, { vm_id: id, account_uuid: vm.claude?.account_uuid, probe: result })
+      const hop = (await readBody(req, 4096).catch(() => ({})))?.hop !== false
+      const result = await panel.buildProbeOne({ cfg, accountQuota, id, hop })
+      if (result.status) return json(res, result.status, result.body)
+      return json(res, 200, { vm_id: id, account_uuid: result.data?.account_uuid, probe: result.data })
     }
     if (req.method === 'POST' && p === '/admin/vms/probe-all') {
       if (!requireAuth(req, res)) return
-      const vms = listVms(cfg.paths.project)
-      const results = []
-      for (const s of vms) {
-        const vm = getVm(cfg.paths.project, s.id)
-        const token = vm?.claude?.access_token
-        if (!token) {
-          results.push({ vm_id: s.id, ok: false, error: 'no token' })
-          continue
-        }
-        const result = await probeAccount(token)
-        if (result.ok && result.data) {
-          const accountId = vm.claude?.account_uuid || vm.id
-          accountQuota.ingestHeaders(accountId, {
-            'anthropic-ratelimit-unified-5h-utilization': result.data.five_hour?.utilization,
-            'anthropic-ratelimit-unified-5h-reset': result.data.five_hour?.resets_at,
-            'anthropic-ratelimit-unified-7d-utilization': result.data.seven_day?.utilization,
-            'anthropic-ratelimit-unified-7d-reset': result.data.seven_day?.resets_at,
-          })
-        }
-        results.push({ vm_id: s.id, email: s.email, account_uuid: s.account_uuid, probe: result })
-      }
-      return json(res, 200, { total: results.length, results })
+      const hop = (await readBody(req, 4096).catch(() => ({})))?.hop !== false
+      const result = await panel.buildProbeAll({ cfg, accountQuota, hop })
+      return json(res, 200, result)
     }
     if (req.method === 'GET' && p === '/admin/usage/summary') {
       if (!requireAuth(req, res)) return
@@ -1191,7 +1185,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, result.ok ? 200 : 401, panel.ok({ ...result, ...oauthGuard.status() }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
-        return json(res, 200, panel.ok(oauthGuard.status()))
+        return json(res, 200, panel.ok(await oauthStatusWithCli()))
       }
 
       // POST /api/panel/probe
@@ -1390,7 +1384,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/admin/vm/oauth') {
       if (!requireAuth(req, res)) return
-      return json(res, 200, oauthGuard.status())
+      return json(res, 200, await oauthStatusWithCli())
     }
     if (req.method === 'POST' && p === '/admin/vm/oauth/refresh') {
       if (!requireAuth(req, res)) return

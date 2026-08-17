@@ -22,7 +22,7 @@ Auth: `Authorization: Bearer <KIN_API_KEY>`
 | GET | `/api/panel/dashboard` | 总览（summary + vms + routing） | Cards + Table |
 | GET | `/api/panel/vms` | VM 列表 `data.items[]` | DataTable |
 | GET | `/api/panel/vms/:id` | VM 详情 + 账号用量 | Sheet / Detail |
-| POST | `/api/panel/vms/:id/probe` | 单机官方用量探测 | Button action |
+| POST | `/api/panel/vms/:id/probe` | 从 VM 官方 Claude Code 探测（auth status + 可选小 hop） | Button action |
 | POST | `/api/panel/vms/:id/activate` | 设为 active | Button |
 | POST | `/api/panel/probe` | 全量探测 | Button |
 | GET | `/api/panel/usage` | 账号用量汇总 | Progress + Table |

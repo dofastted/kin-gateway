@@ -10,6 +10,7 @@ import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm } from './vm-re
 import { probeAccount } from './usage-probe.mjs'
 import { fetchOfficialModels } from './models.mjs'
 import { makeError, ErrorType, ErrorCode } from './errors.mjs'
+import path from 'node:path'
 
 export function ok(data, meta) {
   const out = { ok: true, data }
@@ -109,7 +110,7 @@ export function buildVmDetail({ cfg, accountQuota, id }) {
   })
 }
 
-export async function buildProbeOne({ cfg, accountQuota, id }) {
+export async function buildProbeOne({ cfg, accountQuota, id, hop = true }) {
   const vm = getVm(cfg.paths.project, id)
   if (!vm) {
     return fail(
@@ -121,50 +122,74 @@ export async function buildProbeOne({ cfg, accountQuota, id }) {
       }),
     )
   }
+  const homeDir = path.join(cfg.paths.project, 'vms', vm.id, 'cli-home')
   const token = vm.claude?.access_token
-  if (!token) {
-    return fail(
-      makeError({
-        type: ErrorType.INVALID_REQUEST,
-        code: 'no_oauth_token',
-        message: 'VM has no OAuth access token',
-        status: 400,
-      }),
-    )
+  const inflight = accountQuota?.inflight?.get(vm.claude?.account_uuid || vm.id) || 0
+  const maxC = vm.policy?.maxConcurrency || 2
+  let doHop = hop
+  let hopReason = hop ? null : 'auth_status_only'
+  if (doHop && inflight >= maxC) {
+    doHop = false
+    hopReason = 'concurrency_limit'
   }
-  const result = await probeAccount(token)
-  if (result.ok && result.data) {
+  const result = await probeAccount({
+    homeDir,
+    accessToken: token,
+    refreshToken: vm.claude?.refresh_token,
+    expiresAt: vm.claude?.expires_at,
+    hop: doHop,
+    hopReason,
+  })
+  if (result.ok && (result.five_hour || result.seven_day || result.usage)) {
     const accountId = vm.claude?.account_uuid || vm.id
     accountQuota.ensure({
       account_id: accountId,
       vm_id: vm.id,
-      email: vm.claude?.email,
+      email: result.auth?.email || vm.claude?.email,
       max_concurrency: vm.policy?.maxConcurrency,
     })
-    accountQuota.ingestHeaders(accountId, {
-      'anthropic-ratelimit-unified-5h-utilization': result.data.five_hour?.utilization,
-      'anthropic-ratelimit-unified-5h-reset': result.data.five_hour?.resets_at,
-      'anthropic-ratelimit-unified-7d-utilization': result.data.seven_day?.utilization,
-      'anthropic-ratelimit-unified-7d-reset': result.data.seven_day?.resets_at,
-    })
+    const infos = []
+    if (result.five_hour) {
+      infos.push({
+        rateLimitType: 'five_hour',
+        status: result.five_hour.status,
+        resetsAt: result.five_hour.resets_at,
+        overageStatus: result.five_hour.overage_status,
+        isUsingOverage: result.five_hour.is_using_overage,
+      })
+    }
+    if (result.seven_day) {
+      infos.push({
+        rateLimitType: 'seven_day',
+        status: result.seven_day.status,
+        resetsAt: result.seven_day.resets_at,
+        overageStatus: result.seven_day.overage_status,
+        isUsingOverage: result.seven_day.is_using_overage,
+      })
+    }
+    if (infos.length) {
+      accountQuota.ingestCliRateLimit(accountId, infos, result.usage, { countRequest: !!result.usage })
+    }
   }
   return ok({
     vm_id: id,
     account_uuid: vm.claude?.account_uuid || null,
     source: result.source,
-    five_hour: result.data?.five_hour || null,
-    seven_day: result.data?.seven_day || null,
-    extra_usage: result.data?.extra_usage || null,
+    cli: result.auth || null,
+    five_hour: result.five_hour || null,
+    seven_day: result.seven_day || null,
+    extra_usage: result.extra_usage || null,
+    hop_skipped: result.hop_skipped || hopReason,
     probed_at: result.probed_at,
     ok: result.ok,
   })
 }
 
-export async function buildProbeAll({ cfg, accountQuota }) {
+export async function buildProbeAll({ cfg, accountQuota, hop = true }) {
   const vms = listVms(cfg.paths.project)
   const items = []
   for (const s of vms) {
-    const one = await buildProbeOne({ cfg, accountQuota, id: s.id })
+    const one = await buildProbeOne({ cfg, accountQuota, id: s.id, hop })
     if (one.ok === false || one.status) {
       items.push({ vm_id: s.id, ok: false, error: one.body?.error || one })
     } else {

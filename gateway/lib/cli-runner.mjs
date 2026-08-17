@@ -8,6 +8,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { shouldKeepCliOauth } from './oauth-refresh.mjs'
 import { prepareForVmClaude } from './prepare-cli.mjs'
+import { consumeCliNdjson } from './cli-probe.mjs'
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true })
@@ -279,7 +280,7 @@ function spawnClaude({ args, env, cwd, timeoutMs, onStdoutLine }) {
   })
 }
 
-/** Non-stream: text output */
+/** Non-stream: official CLI stream-json, return collected text + rate_limit */
 export async function callClaudeCli({
   model,
   body,
@@ -306,18 +307,28 @@ export async function callClaudeCli({
   writeCliHome({ homeDir: workHome, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy })
   const prompt = messagesToPrompt(body)
   const mdl = model || body?.model || 'claude-haiku-4-5-20251001'
-  const args = ['-p', prompt, '--model', mdl, '--output-format', 'text']
+  const args = ['-p', prompt, '--model', mdl, '--output-format', 'stream-json', '--verbose']
   const env = buildEnv({ workHome, accessToken, proxyUrl, timezone, locale, seedPolicy })
-  const result = await spawnClaude({ args, env, cwd: workHome, timeoutMs })
+  const acc = { rate_limits: [] }
+  const result = await spawnClaude({
+    args,
+    env,
+    cwd: workHome,
+    timeoutMs,
+    onStdoutLine: (line) => consumeCliNdjson(line, acc),
+  })
   if (result.killed) {
     return {
       status: 504,
       body: { type: 'error', error: { type: 'timeout_error', message: `claude cli timeout after ${timeoutMs}ms` } },
       headers: {},
+      rate_limit: acc.rate_limit || null,
+      rate_limits: acc.rate_limits || [],
+      usage: acc.usage || null,
       via: 'cli',
     }
   }
-  if (result.code !== 0) {
+  if (result.code !== 0 && !acc.text) {
     const errText = (result.stderr || result.stdout || '').slice(0, 2000)
     const isRate = /rate.?limit|429|usage.?limit|exceeded/i.test(errText)
     const isAuth = /auth|unauthorized|401|oauth|login/i.test(errText)
@@ -331,14 +342,20 @@ export async function callClaudeCli({
         },
       },
       headers: {},
+      rate_limit: acc.rate_limit || null,
+      rate_limits: acc.rate_limits || [],
+      usage: acc.usage || null,
       via: 'cli',
     }
   }
-  const text = String(result.stdout || '').trim()
+  const text = acc.text || ''
   return {
     status: 200,
-    body: toAnthropicMessage({ text, model: mdl }),
+    body: toAnthropicMessage({ text, model: mdl, usage: acc.usage }),
     headers: {},
+    rate_limit: acc.rate_limit || null,
+    rate_limits: acc.rate_limits || [],
+    usage: acc.usage || null,
     via: 'cli',
   }
 }
@@ -364,6 +381,7 @@ export async function streamClaudeCli({
   timeoutMs = 180000,
   onEvent,
   onHeaders,
+  onRateLimit,
   includeThinking = true,
 }) {
   if (!accessToken) {
@@ -404,6 +422,7 @@ export async function streamClaudeCli({
   let indexMap = new Map() // original index -> emitted text index
   let nextTextIndex = 0
   let thinkingIndexes = new Set()
+  const acc = { rate_limits: [] }
 
   const result = await spawnClaude({
     args,
@@ -418,6 +437,10 @@ export async function streamClaudeCli({
         return
       }
       const t = obj.type
+      consumeCliNdjson(line, acc)
+      if (t === 'rate_limit_event' && typeof onRateLimit === 'function' && acc.rate_limit) {
+        try { onRateLimit(acc.rate_limit, obj) } catch {}
+      }
 
       if (t === 'result') {
         if (typeof obj.result === 'string') resultText = obj.result
@@ -451,6 +474,9 @@ export async function streamClaudeCli({
       status: 504,
       body: { type: 'error', error: { type: 'timeout_error', message: `claude cli stream timeout after ${timeoutMs}ms` } },
       headers: {},
+      rate_limit: acc.rate_limit || null,
+      rate_limits: acc.rate_limits || [],
+      usage: acc.usage || null,
       ok: false,
       via: 'cli-stream',
     }
@@ -469,6 +495,9 @@ export async function streamClaudeCli({
         },
       },
       headers: {},
+      rate_limit: acc.rate_limit || null,
+      rate_limits: acc.rate_limits || [],
+      usage: acc.usage || null,
       ok: false,
       via: 'cli-stream',
     }
@@ -480,5 +509,8 @@ export async function streamClaudeCli({
     headers: { 'x-kin-via': 'claude-cli-stream' },
     via: 'cli-stream',
     resultText,
+    rate_limit: acc.rate_limit || null,
+    rate_limits: acc.rate_limits || [],
+    usage: acc.usage || null,
   }
 }
