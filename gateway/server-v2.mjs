@@ -1,11 +1,12 @@
 /**
  * KIN Gateway v2.1
- * P1: true SSE streaming, tools mapping, intercept rules admin API
+ * Inference: per-request ExecutionContext (scheduled VM + cli-home).
+ * Protocol convert + official Claude Code CLI only. No client tools / no spoof.
  */
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadConfig, saveVmPatch } from './lib/config.mjs'
+import { loadConfig, saveVmPatch, reloadActiveVm } from './lib/config.mjs'
 import {
   extractApiKey, timingSafeEqualStr, redactSecrets, createRateLimiter,
   verifyPanelLogin, createPanelSession, verifyPanelSession, extractPanelToken, panelSessionCookie, clearPanelSessionCookie, revokePanelSession,
@@ -24,7 +25,7 @@ import {
 import { callClaudeCli, streamClaudeCli, sanitizeInboundBody, defaultSeedPolicy, seedCliCredentials } from './lib/cli-runner.mjs'
 import { updateVmClaudeCode, fetchLatestClaudeCodeVersion } from './lib/claude-code-update.mjs'
 import { sessionKeyToOAuth } from '../session-to-oauth.mjs'
-import { createOauthGuard } from './lib/oauth-refresh.mjs'
+import { createOauthGuard, persistOauthToVm, harvestHomeToVm } from './lib/oauth-refresh.mjs'
 import crypto from 'node:crypto'
 import { fingerprintRequest, alignToClaudeCodeStandard, officializeToClaudeCli, classifyClient } from './lib/client-fingerprint.mjs'
 import { extractSystemAudit } from './lib/system-prompt-policy.mjs'
@@ -40,6 +41,22 @@ import {
 } from './lib/errors.mjs'
 import * as panel from './lib/panel-api.mjs'
 import { ProxyPool } from './lib/proxy-pool.mjs'
+import {
+  buildExecutionContext,
+  harvestExecHome,
+  refreshExecOauth,
+  buildCliOptsFromExec,
+  GATEWAY_CAPABILITIES,
+} from './lib/execution-context.mjs'
+
+const FEATURES = ['passthrough', 'stream', 'protocol-convert', 'cli-forward']
+const LIMITATIONS = {
+  client_tools: 'dropped — text-completion proxy only',
+  images: 'not forwarded through claude -p',
+  multi_turn_native: 'messages flattened to a single prompt',
+  claude_session: 'sticky binds vm+account only; no --resume',
+  kernel: 'metadata-only; start/stop flip JSON flags, no KVM/QEMU',
+}
 
 const cfg = loadConfig()
 fs.mkdirSync(cfg.paths.captures, { recursive: true })
@@ -62,14 +79,13 @@ const stickyRouter = new StickyRouter({ dataDir, config: routingConfig })
 const accountQuota = new AccountQuota({
   dataDir,
   config: routingConfig,
-  accounts: [{
-    account_id: cfg.vm.account_uuid || cfg.vm.id,
-    vm_id: cfg.vm.id,
-    email: cfg.vm.email,
-    max_concurrency: cfg.vm.max_concurrency || 2,
-  }],
+  accounts: listVms(cfg.paths.project).map((v) => ({
+    account_id: v.account_uuid || v.id,
+    vm_id: v.id,
+    email: v.email,
+    max_concurrency: v.max_concurrency || 2,
+  })),
 })
-const ACTIVE_ACCOUNT = cfg.vm.account_uuid || cfg.vm.id
 
 const proxyPool = new ProxyPool({
   dataDir,
@@ -247,29 +263,47 @@ async function handleProtocol(req, res, protocol, pathName) {
   }
   const wantStream = !!inbound.stream
 
-  // Sticky conversation continuity (bind after validation)
-  const stickyKey = stickyRouter.extractKey(req, inbound)
-  let bound = stickyKey ? stickyRouter.resolve(stickyKey) : null
-  const accountId = bound?.accountId || ACTIVE_ACCOUNT
-  const vmId = bound?.vmId || cfg.vm.id
-  try {
-    const schedVm = getVm(cfg.paths.project, vmId)
-    const boundPolicy = defaultSeedPolicy(schedVm?.seed_policy || cfg.vm.seed_policy || {})
-    ctx = { ...ctx, body: sanitizeInboundBody(inbound, boundPolicy) }
-  } catch {}
-
-  // --- client fingerprint capture ---
-  const fp = fingerprintRequest(req, inbound)
-  const diffDir = path.join(cfg.paths.captures, 'client-diff')
-  fs.mkdirSync(diffDir, { recursive: true })
-  const fpFile = path.join(diffDir, `${Date.now()}-${fp.client_class}.json`)
-  fs.writeFileSync(fpFile, JSON.stringify(fp, null, 2))
-
+  const built = buildExecutionContext({
+    cfg, inbound, req, protocol, pathName, stickyRouter,
+  })
+  if (!built.ok) {
+    stats.errors++
+    return json(res, 503, makeError({
+      type: ErrorType.API,
+      code: 'no_schedulable_vm',
+      message: built.message || 'No schedulable VM',
+      status: 503,
+    }).body)
+  }
+  const exec = built.exec
+  const stickyKey = exec.stickyKey
+  const accountId = exec.accountId
+  const vmId = exec.vmId
+  accountQuota.ensure({
+    account_id: accountId,
+    vm_id: vmId,
+    email: exec.oauth.email,
+    max_concurrency: exec.vm.policy?.maxConcurrency || 2,
+  })
 
   const hdrRewrite = String(req.headers['x-kin-rewrite'] || '') === '1'
   const rewriteEnabled = cfg.rewrite.enabled || hdrRewrite
 
-  let ctx = { path: pathName, protocol, body: sanitizeInboundBody(inbound, cfg.vm.seed_policy || defaultSeedPolicy()), headers: { ...req.headers } }
+  const fp = fingerprintRequest(req, inbound)
+  const diffDir = path.join(cfg.paths.captures, 'client-diff')
+  fs.mkdirSync(diffDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(diffDir, `${Date.now()}-${fp.client_class}.json`),
+    JSON.stringify({ ...fp, exec_vm: vmId, exec_account: accountId }, null, 2),
+  )
+
+  let ctx = {
+    path: pathName,
+    protocol,
+    body: sanitizeInboundBody(inbound, exec.seedPolicy),
+    headers: { ...req.headers },
+    exec,
+  }
   ctx = applyIntercept(cfg.intercept.rules, 'before_convert', ctx)
 
   // VM already runs official Claude Code. Do not inject identity.
@@ -315,16 +349,14 @@ async function handleProtocol(req, res, protocol, pathName) {
   accountQuota.acquire(accountId)
   if (stickyKey) stickyRouter.bind(stickyKey, { accountId, vmId })
 
-  const homeDir = path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home')
-  await oauthGuard.ensureFresh({ homeDir })
-  // Gateway never calls grant_type=refresh_token. If access is gone but sessionKey
-  // remains, recover via CookieAuth once — not via refresh_token race.
-  if (!cfg.vm.access_token && cfg.vm.session_key) {
-    const rec = await oauthGuard.recoverFromSessionKey({
-      homeDir,
-      importFn: (sk, opts) => sessionKeyToOAuth(sk, opts),
-    })
-    if (!rec.ok) {
+  harvestExecHome(exec)
+  refreshExecOauth(exec)
+  if (!exec.oauth.access_token && exec.oauth.session_key) {
+    try {
+      const cred = await sessionKeyToOAuth(exec.oauth.session_key, { proxyUrl: exec.proxyUrl })
+      persistOauthToVm(exec.vmPath, { ...cred, session_key: exec.oauth.session_key })
+      refreshExecOauth(exec)
+    } catch (e) {
       accountQuota.release(accountId)
       stats.errors++
       return json(res, 401, makeError({
@@ -332,11 +364,11 @@ async function handleProtocol(req, res, protocol, pathName) {
         code: ErrorCode.OAUTH_NEED_REIMPORT,
         message: 'VM OAuth dead and sessionKey recovery failed. Re-import sessionKey.',
         status: 401,
-        details: { vm_id: cfg.vm.id, need_reimport: true },
+        details: { vm_id: vmId, need_reimport: true, error: String(e.message || e).slice(0, 200) },
       }).body)
     }
   }
-  if (!cfg.vm.access_token) {
+  if (!exec.oauth.access_token) {
     accountQuota.release(accountId)
     stats.errors++
     return json(res, 401, makeError({
@@ -344,7 +376,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       code: ErrorCode.OAUTH_NEED_REIMPORT,
       message: 'VM has no OAuth access_token. Import sessionKey.',
       status: 401,
-      details: { vm_id: cfg.vm.id, need_reimport: true },
+      details: { vm_id: vmId, need_reimport: true },
     }).body)
   }
 
@@ -415,13 +447,13 @@ async function handleProtocol(req, res, protocol, pathName) {
   if (wantStream) {
     stats.stream++
     const releaseStream = () => {
-      try { harvestCliHome() } catch {}
+      try { harvestExecHome(exec) } catch {}
       try { accountQuota.release(accountId) } catch {}
     }
     if (protocol === 'anthropic.messages') {
       // Official Anthropic SSE requires both event: and data: (RikkaHub uses event.event)
       writeSSEHeaders(res)
-      const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
+      const result = await streamClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }),
         onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
         onEvent: async (line) => {
           let evtName = "message"
@@ -444,8 +476,8 @@ async function handleProtocol(req, res, protocol, pathName) {
 
     if (protocol === 'openai.chat') {
       writeSSEHeaders(res)
-      const state = createOpenAIChatStreamState(inbound.model || claude.model, cfg.vm.id)
-      const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
+      const state = createOpenAIChatStreamState(inbound.model || claude.model, vmId)
+      const result = await streamClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }),
         onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
         onEvent: async (line) => {
           const chunks = claudeSSELineToOpenAIChatChunks(line, state)
@@ -463,8 +495,8 @@ async function handleProtocol(req, res, protocol, pathName) {
 
     if (protocol === 'openai.responses') {
       writeSSEHeaders(res)
-      const state = createResponsesStreamState(inbound.model || claude.model, cfg.vm.id)
-      const result = await streamClaudeCli({ ...buildCliOpts(cfg, ctx.body),
+      const state = createResponsesStreamState(inbound.model || claude.model, vmId)
+      const result = await streamClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }),
         onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
         onEvent: async (line) => {
           const events = claudeSSELineToResponsesEvents(line, state)
@@ -485,11 +517,11 @@ async function handleProtocol(req, res, protocol, pathName) {
   // -------- non-stream --------
   let upstream
   try {
-    upstream = await callClaudeCli({ ...buildCliOpts(cfg, ctx.body),
+    upstream = await callClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }),
     })
     ingestCliHopQuota(accountId, upstream)
   } finally {
-    try { harvestCliHome() } catch {}
+    try { harvestExecHome(exec) } catch {}
     accountQuota.release(accountId)
   }
 
@@ -520,12 +552,12 @@ async function handleProtocol(req, res, protocol, pathName) {
     out = { ...upstream.body }
     // debug only when X-Kin-Debug: 1
     if (String(req.headers['x-kin-debug'] || '') === '1') {
-      if (req.headers['x-kin-debug'] === '1') out = { ...out, kin: { vm_id: cfg.vm.id, mode } }
+      if (req.headers['x-kin-debug'] === '1') out = { ...out, kin: { vm_id: vmId, mode } }
     }
   } else if (protocol === 'openai.chat') {
-    out = fromClaudeToOpenAIChat(upstream.body, inbound.model, cfg.vm.id, mode)
+    out = fromClaudeToOpenAIChat(upstream.body, inbound.model, vmId, mode)
   } else {
-    out = fromClaudeToResponses(upstream.body, inbound.model, cfg.vm.id, mode)
+    out = fromClaudeToResponses(upstream.body, inbound.model, vmId, mode)
   }
 
   ctx = applyIntercept(cfg.intercept.rules, 'before_client', { ...ctx, body: out })
@@ -533,11 +565,6 @@ async function handleProtocol(req, res, protocol, pathName) {
 }
 
 
-
-function harvestCliHome() {
-  const homeDir = path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home')
-  return oauthGuard.harvestFromHome(homeDir)
-}
 
 function ingestCliHopQuota(accountId, hop) {
   if (!accountId || !hop) return
@@ -547,8 +574,27 @@ function ingestCliHopQuota(accountId, hop) {
   accountQuota.ingestCliRateLimit(accountId, infos, usage, { countRequest: true })
 }
 
-function vmCliHome(vmId = cfg.vm?.id) {
-  return path.join(cfg.paths.project, 'vms', vmId || 'default', 'cli-home')
+function vmCliHome(vmId = null) {
+  const id = vmId || getActiveVmId(cfg.paths.project) || cfg.vm?.id
+  return path.join(cfg.paths.project, 'vms', id || 'default', 'cli-home')
+}
+
+function activateVmSlot(id) {
+  setActiveVm(cfg.paths.project, id)
+  reloadActiveVm(cfg)
+  const vm = getVm(cfg.paths.project, id)
+  accountQuota.ensure({
+    account_id: vm?.claude?.account_uuid || id,
+    vm_id: id,
+    email: vm?.claude?.email || null,
+    max_concurrency: vm?.policy?.maxConcurrency || 2,
+  })
+  return {
+    ok: true,
+    active_vm: id,
+    runtime: GATEWAY_CAPABILITIES.runtime,
+    kernel: GATEWAY_CAPABILITIES.kernel,
+  }
 }
 
 async function oauthStatusWithCli() {
@@ -570,29 +616,6 @@ async function oauthStatusWithCli() {
       error: cli.error || null,
     },
   }
-}
-
-function buildCliOpts(cfg, body) {
-  const px = resolveVmProxyUrl(cfg)
-  const homeDir = path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home')
-  return {
-    model: body?.model,
-    body,
-    accessToken: cfg.vm.access_token,
-    refreshToken: cfg.vm.refresh_token || null,
-    expiresAt: cfg.vm.expires_at || null,
-    proxyUrl: px,
-    homeDir,
-    timezone: cfg.vm.timezone || 'UTC',
-    locale: cfg.vm.locale || 'en_US.UTF-8',
-    kernel: cfg.vm.kernel || null,
-    seedPolicy: defaultSeedPolicy(cfg.vm.seed_policy || {}),
-    timeoutMs: cfg.limits.upstream_timeout_ms || 180000,
-  }
-}
-
-function resolveVmProxyUrl(cfg) {
-  return null // CLI path: socks ALL_PROXY hangs claude binary; disable until fixed
 }
 
 const server = http.createServer(async (req, res) => {
@@ -648,8 +671,7 @@ const server = http.createServer(async (req, res) => {
       if (!requireAuth(req, res)) return
       const id = p.split('/')[3]
       if (!getVm(cfg.paths.project, id)) return json(res, 404, { error: { message: 'vm not found' } })
-      setActiveVm(cfg.paths.project, id)
-      return json(res, 200, { ok: true, active_vm: id })
+      return json(res, 200, activateVmSlot(id))
     }
     if (req.method === 'POST' && /^\/admin\/vms\/[^/]+\/probe$/.test(p)) {
       if (!requireAuth(req, res)) return
@@ -759,8 +781,7 @@ const server = http.createServer(async (req, res) => {
           const e = makeError({ type: ErrorType.NOT_FOUND, code: ErrorCode.VM_NOT_FOUND, message: 'vm not found', status: 404 })
           return json(res, e.status, { ok: false, error: e.body.error })
         }
-        setActiveVm(cfg.paths.project, id)
-        return json(res, 200, panel.ok({ active_vm: id }))
+        return json(res, 200, panel.ok(activateVmSlot(id)))
       }
 
       // POST /api/panel/vms/:id/update-claude-code
@@ -1030,7 +1051,7 @@ const server = http.createServer(async (req, res) => {
           } catch (e) {}
         }
         if (body.activate === true) {
-          try { setActiveVm(cfg.paths.project, id) } catch (e) {}
+          try { activateVmSlot(id) } catch (e) {}
         }
         const saved = getVm(cfg.paths.project, id) || vm
         return json(res, 200, panel.ok({ vm: summarizeVm(saved), allocated_proxy: allocated }))
@@ -1046,7 +1067,11 @@ const server = http.createServer(async (req, res) => {
         vm.schedule_disabled_reason = null
         vm.updated_at = new Date().toISOString()
         fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
-        return json(res, 200, panel.ok({ vm: summarizeVm(vm) }))
+        return json(res, 200, panel.ok({
+          vm: summarizeVm(vm),
+          runtime: GATEWAY_CAPABILITIES.runtime,
+          kernel: GATEWAY_CAPABILITIES.kernel,
+        }))
       }
       // POST /api/panel/vms/:id/stop
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/stop$/.test(p)) {
@@ -1059,7 +1084,11 @@ const server = http.createServer(async (req, res) => {
         vm.schedule_disabled_reason = 'stopped'
         vm.updated_at = new Date().toISOString()
         fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
-        return json(res, 200, panel.ok({ vm: summarizeVm(vm) }))
+        return json(res, 200, panel.ok({
+          vm: summarizeVm(vm),
+          runtime: GATEWAY_CAPABILITIES.runtime,
+          kernel: GATEWAY_CAPABILITIES.kernel,
+        }))
       }
 
       // POST /api/panel/vms/import
@@ -1136,10 +1165,23 @@ const server = http.createServer(async (req, res) => {
             existing.schedule_disabled_reason = null
           }
           fs.writeFileSync(vmPath, JSON.stringify(existing, null, 2))
-          if (body.activate !== false) {
-            try { setActiveVm(cfg.paths.project, vmId) } catch {}
+          try {
+            seedCliCredentials({
+              homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
+              accessToken: existing.claude.access_token,
+              refreshToken: existing.claude.refresh_token,
+              expiresAt: existing.claude.expires_at,
+              timezone: existing.timezone,
+              locale: existing.locale,
+              kernel: existing.kernel,
+              seedPolicy: existing.seed_policy || defaultSeedPolicy(),
+              force: true,
+            })
+          } catch (e) {
+            console.warn('[import] seed cli-home failed', e.message)
           }
-          if (existing.id === cfg.vm.id || body.activate !== false) {
+          if (body.activate !== false) {
+            try { activateVmSlot(vmId) } catch {}
             oauthGuard.noteImported({
               access_token: existing.claude.access_token,
               refresh_token: existing.claude.refresh_token,
@@ -1150,21 +1192,6 @@ const server = http.createServer(async (req, res) => {
               source: existing.claude.source || 'sessionKey-cookie-auth',
               session_key: existing.claude.session_key || null,
             })
-            try {
-              seedCliCredentials({
-                homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
-                accessToken: existing.claude.access_token,
-                refreshToken: existing.claude.refresh_token,
-                expiresAt: existing.claude.expires_at,
-                timezone: existing.timezone,
-                locale: existing.locale,
-                kernel: existing.kernel,
-                seedPolicy: existing.seed_policy || defaultSeedPolicy(),
-                force: true,
-              })
-            } catch (e) {
-              console.warn('[import] seed cli-home failed', e.message)
-            }
           }
           return json(res, 200, panel.ok({
             vm: summarizeVm(existing),
@@ -1177,12 +1204,20 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/oauth\/refresh$/.test(p)) {
-        const body = await readBody(req, 4096).catch(() => ({}))
-        const result = await oauthGuard.ensureFresh({
-          force: body?.force === true,
-          homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
-        })
-        return json(res, result.ok ? 200 : 401, panel.ok({ ...result, ...oauthGuard.status() }))
+        const id = p.split('/')[4]
+        const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
+        if (!fs.existsSync(vmPath)) {
+          return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        }
+        const homeDir = vmCliHome(id)
+        const harvested = harvestHomeToVm(homeDir, vmPath)
+        if (id === getActiveVmId(cfg.paths.project)) reloadActiveVm(cfg)
+        return json(res, 200, panel.ok({
+          ok: true,
+          harvested: !!harvested.harvested,
+          vm_id: id,
+          grant_type_refresh: false,
+        }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
         return json(res, 200, panel.ok(await oauthStatusWithCli()))
@@ -1312,9 +1347,11 @@ const server = http.createServer(async (req, res) => {
         base_url: cfg.base_url,
         rewrite: cfg.rewrite.enabled ? 'on' : 'off',
         intercept_rules: cfg.intercept.rules.length,
-        vm_id: cfg.vm.id,
+        active_vm: getActiveVmId(cfg.paths.project),
         claude_code_version: cfg.vm.claude_code_version,
-        features: ['passthrough', 'stream', 'tools', 'intercept-admin'],
+        features: FEATURES,
+        capabilities: GATEWAY_CAPABILITIES,
+        limitations: LIMITATIONS,
         stats,
       })
     }
@@ -1323,7 +1360,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         base_url: cfg.base_url,
         rewrite_default: cfg.rewrite.enabled,
-        features: ['stream', 'tools', 'passthrough', 'intercept-admin'],
+        features: FEATURES,
+        capabilities: GATEWAY_CAPABILITIES,
+        limitations: LIMITATIONS,
         endpoints: {
           chat_completions: '/v1/chat/completions',
           responses: '/v1/responses',
@@ -1391,7 +1430,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req, 4096).catch(() => ({}))
       const result = await oauthGuard.ensureFresh({
         force: body?.force === true,
-        homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
+        homeDir: vmCliHome(),
       })
       return json(res, result.ok ? 200 : 401, { ok: result.ok, ...result, ...oauthGuard.status() })
     }
@@ -1424,11 +1463,13 @@ const server = http.createServer(async (req, res) => {
 
 const pub = {
   base_url: cfg.base_url,
-  api_key: cfg.api_key,
+  api_key_set: !!cfg.api_key,
   rewrite_default: false,
   vm_id: cfg.vm.id,
   version: '2.1',
-  features: ['passthrough', 'stream', 'tools', 'intercept-admin'],
+  features: FEATURES,
+  capabilities: GATEWAY_CAPABILITIES,
+  limitations: LIMITATIONS,
   endpoints: {
     health: `${cfg.base_url}/health`,
     chat: `${cfg.base_url}/v1/chat/completions`,
@@ -1438,19 +1479,14 @@ const pub = {
     cc_update: `${cfg.base_url}/admin/vm/claude-code/update`,
   },
 }
-fs.writeFileSync(path.join(cfg.paths.root, 'config', 'gateway-v2.json'), JSON.stringify(pub, null, 2), { mode: 0o600 })
-fs.writeFileSync(path.join(cfg.paths.root, 'config', 'gateway-v2.public.json'), JSON.stringify({
-  ...pub,
-  api_key: cfg.api_key.slice(0, 12) + '…' + cfg.api_key.slice(-6),
-}, null, 2))
+// Never persist the raw API key. Public snapshot only.
+fs.writeFileSync(path.join(cfg.paths.root, 'config', 'gateway-v2.public.json'), JSON.stringify(pub, null, 2))
 
 process.on('uncaughtException', (e) => console.error('[uncaught]', e))
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
 
 server.listen(cfg.port, cfg.host, () => {
-  oauthGuard.startLoop(60_000, {
-    homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
-  })
+  oauthGuard.startLoop(60_000)
   try {
     const cat = harvestCliModelCatalog()
     console.log(JSON.stringify({
@@ -1465,8 +1501,9 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(JSON.stringify({
     event: 'kin-gateway-v2.1-started',
     base_url: cfg.base_url,
-    api_key: cfg.api_key,
+    active_vm: getActiveVmId(cfg.paths.project),
     features: pub.features,
+    capabilities: GATEWAY_CAPABILITIES,
     rewrite: cfg.rewrite.enabled,
-  }, null, 2))
+  }))
 })

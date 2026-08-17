@@ -1,5 +1,5 @@
 {
-  "base_url": "https://kin.fkcodex.com",
+  "base_url": "https://kin.example.com",
   "api_key": "sk-kin-REDACTED",
   "rewrite_default": false,
   "vm_id": "vm-01",

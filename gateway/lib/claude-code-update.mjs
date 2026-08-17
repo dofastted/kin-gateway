@@ -1,9 +1,10 @@
 /**
- * One-click Claude Code version update for a VM slot.
- * In this control-plane environment we record target version + simulate
- * install metadata (real hosts would run npm i -g @anthropic-ai/claude-code@ver).
+ * Claude Code version update for a VM *slot* (JSON + optional host npm).
+ * Default is simulated: this control plane is not a guest hypervisor.
+ * Set KIN_REAL_CC_UPDATE=1 to run `npm i -g @anthropic-ai/claude-code@ver` on the host.
  */
 import fs from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { saveVmPatch } from './config.mjs'
 
 const REGISTRY = 'https://registry.npmjs.org/@anthropic-ai/claude-code'
@@ -22,18 +23,47 @@ export async function updateVmClaudeCode(vmPath, { version = 'latest' } = {}) {
     if (!target) throw new Error('could not resolve latest claude-code version')
   }
 
-  // Simulated install steps (host agent would execute these inside the VM)
+  const real = process.env.KIN_REAL_CC_UPDATE === '1'
   const steps = [
     { step: 'resolve_version', status: 'ok', version: target },
-    { step: 'download_package', status: 'ok', package: `@anthropic-ai/claude-code@${target}` },
-    { step: 'install', status: 'ok', command: `npm install -g @anthropic-ai/claude-code@${target}` },
-    { step: 'verify', status: 'ok', expected: target },
   ]
+
+  if (real) {
+    const cmd = spawnSync('npm', ['install', '-g', `@anthropic-ai/claude-code@${target}`], {
+      encoding: 'utf8',
+      timeout: 180_000,
+    })
+    steps.push({
+      step: 'install',
+      status: cmd.status === 0 ? 'ok' : 'error',
+      command: `npm install -g @anthropic-ai/claude-code@${target}`,
+      stderr: String(cmd.stderr || '').slice(0, 400),
+    })
+    if (cmd.status !== 0) {
+      throw new Error(`host npm install failed: ${(cmd.stderr || cmd.stdout || '').slice(0, 300)}`)
+    }
+    steps.push({ step: 'verify', status: 'ok', expected: target, scope: 'host' })
+  } else {
+    steps.push({ step: 'download_package', status: 'skipped', reason: 'simulated' })
+    steps.push({
+      step: 'install',
+      status: 'simulated',
+      command: `npm install -g @anthropic-ai/claude-code@${target}`,
+      note: 'set KIN_REAL_CC_UPDATE=1 to install on the host; there is no guest VM',
+    })
+    steps.push({ step: 'verify', status: 'skipped', expected: target })
+  }
+
+  const status = real ? 'success' : 'simulated'
+  const previous = (() => {
+    try { return JSON.parse(fs.readFileSync(vmPath, 'utf8'))?.claude_code_version || null } catch { return null }
+  })()
 
   const vm = saveVmPatch(vmPath, {
     claude_code_version: target,
     claude_code_update: {
-      last_result: 'success',
+      last_result: status,
+      simulated: !real,
       steps,
       at: new Date().toISOString(),
     },
@@ -41,9 +71,10 @@ export async function updateVmClaudeCode(vmPath, { version = 'latest' } = {}) {
 
   return {
     vm_id: vm.id,
-    previous_version: vm.claude_code_version,
+    previous_version: previous,
     version: target,
     steps,
-    status: 'success',
+    status,
+    simulated: !real,
   }
 }

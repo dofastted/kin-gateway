@@ -41,6 +41,8 @@ export function loadConfig() {
       rate_capacity: Number(process.env.KIN_RATE_CAP || 60),
       rate_refill: Number(process.env.KIN_RATE_REFILL || 1),
     },
+    // Admin/status snapshot of the *active* VM only.
+    // Inference must use buildExecutionContext() — never this object.
     vm: {
       id: vm.id,
       name: vm.name,
@@ -74,6 +76,39 @@ function loadInterceptRules(file) {
   } catch {
     return []
   }
+}
+
+export function hydrateVmCfg(cfg, vm, projectRoot = cfg.paths?.project) {
+  if (!cfg || !vm) return cfg
+  const root = projectRoot || path.dirname(path.dirname(cfg.vm?.path || ''))
+  cfg.vm = {
+    id: vm.id,
+    name: vm.name,
+    email: vm.claude?.email,
+    account_uuid: vm.claude?.account_uuid || vm.id,
+    org_uuid: vm.claude?.org_uuid || null,
+    access_token: vm.claude?.access_token,
+    proxy: vm.proxy || null,
+    refresh_token: vm.claude?.refresh_token,
+    expires_at: vm.claude?.expires_at,
+    session_key: vm.claude?.session_key || null,
+    refresh_error: vm.claude?.refresh_error || null,
+    max_concurrency: vm.policy?.maxConcurrency || 2,
+    claude_code_version: vm.claude_code_version || 'unknown',
+    timezone: vm.timezone || 'UTC',
+    locale: vm.locale || 'en_US.UTF-8',
+    kernel: vm.kernel || null,
+    seed_policy: vm.seed_policy || null,
+    path: path.join(root, 'vms', `${vm.id}.json`),
+  }
+  return cfg
+}
+
+export function reloadActiveVm(cfg) {
+  const project = cfg.paths.project
+  const id = JSON.parse(fs.readFileSync(path.join(project, 'vms', 'active.json'), 'utf8')).active_vm
+  const vm = JSON.parse(fs.readFileSync(path.join(project, 'vms', `${id}.json`), 'utf8'))
+  return hydrateVmCfg(cfg, vm, project)
 }
 
 export function saveVmPatch(vmPath, patch) {

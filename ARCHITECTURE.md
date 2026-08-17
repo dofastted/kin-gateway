@@ -34,6 +34,24 @@ L6  配置层 Settings
 3. 透传优先，改写默认关
 4. 对话粘性可配置；额度 5h/7d 卡 95%
 5. 多 VM 是终态；单机是当前最小单元
+6. 推理热路径禁止读进程级 `cfg.vm`。每次请求构造独立 ExecutionContext（调度到的 VM、cli-home、OAuth、代理、额度账号、种子策略）
+7. 运行时是宿主机 CLI 槽（`kincli` + 每槽 cli-home）。`kernel` / start / stop 只是元数据，没有 KVM/QEMU。需要真内核时再加 Worker Agent，现在不加
+8. 定位是文本补全代理：`claude -p`。不宣称客户端 tools、图片、Claude session 连续性
+
+## 四、请求热路径
+
+```
+POST /v1/messages | /v1/chat/completions | /v1/responses
+  → buildExecutionContext(sticky | active | first schedulable)
+  → sanitize(exec.seedPolicy)
+  → quota.acquire(exec.accountId)
+  → harvestExecHome(exec)   # 只收割该槽 credentials.json
+  → prepareForVmClaude      # drop client tools, flatten to -p
+  → claude -p --output-format stream-json
+```
+
+激活 VM 会 `reloadActiveVm`，只刷新管理面快照与额度账户，不改变已在飞的 ExecutionContext。
+
 
 ## 三、UI 信息架构
 

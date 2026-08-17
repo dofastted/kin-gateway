@@ -105,6 +105,22 @@ export function persistOauthToVm(vmPath, cred) {
   return vm
 }
 
+export function harvestHomeToVm(homeDir, vmPath) {
+  const harvested = readCliOauth(homeDir)
+  if (!harvested?.access_token) return { harvested: false }
+  let existing = null
+  try {
+    if (vmPath && fs.existsSync(vmPath)) {
+      existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))?.claude || null
+    }
+  } catch {}
+  if (existing && shouldKeepCliOauth(existing, harvested)) {
+    return { harvested: false, kept_existing: true }
+  }
+  persistOauthToVm(vmPath, harvested)
+  return { harvested: true, oauth: harvested }
+}
+
 export function persistRefreshError(vmPath, err) {
   if (!vmPath || !fs.existsSync(vmPath)) return
   try {
@@ -213,8 +229,13 @@ export function createOauthGuard(cfg, deps = {}) {
    */
   async function doEnsureFresh({ force = false, homeDir = null } = {}) {
     rereadVmOauth(cfg)
-    if (homeDir) {
-      const h = harvestFromHome(homeDir)
+    const resolvedHome = homeDir || (
+      cfg.vm?.id && cfg.paths?.project
+        ? path.join(cfg.paths.project, 'vms', cfg.vm.id, 'cli-home')
+        : null
+    )
+    if (resolvedHome) {
+      const h = harvestFromHome(resolvedHome)
       if (h.harvested) {
         return { ok: true, refreshed: false, harvested: true, expires_at: cfg.vm.expires_at }
       }
