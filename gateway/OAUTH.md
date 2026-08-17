@@ -42,7 +42,7 @@ harvest credentials.json → 回写 vm + 内存
 
 ## 探测必须走虚拟机 Claude Code
 
-网关**禁止**再自己 `fetch` `api.anthropic.com/api/oauth/usage` 或伪装 `User-Agent: claude-cli/…`。
+网关**禁止**再自己 `fetch` Anthropic 用量接口或伪装 CLI UA。模型列表同样只信 VM 官方 Claude Code 的目录，不打 `/v1/models`。
 
 | 能力 | 官方入口 | 频率 |
 |---|---|---|

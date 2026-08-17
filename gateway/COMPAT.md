@@ -65,7 +65,7 @@ sub2api 对 Claw 的处理就是上面那套「人设搬进 messages + 假 CC sy
 | 现象 | 现在 | 结果 |
 |---|---|---|
 | 人设不在 Pi/Codex 正则里 | `classify=keep`，仍会 `append_persona_as_official_system` | 文本对话能通 |
-| `anthropic/claude-sonnet-5` | `validateOfficialModel` 400 | **直接失败** |
+| `anthropic/claude-sonnet-5` | 剥前缀后对照 VM CLI 目录 | 在目录里 → 改写成 `claude-sonnet-5` 再 hop；不在 → 400 |
 | `cacheRetention` / `extra_body` / `fastMode` | 不在剔除表，留在 body | `claude -p` 忽略，无害但脏 |
 | 48 个 Hermes tools | 全部 drop | 问答应 pong；**本地工具环断开** |
 | UA 未收录 | `client_class=unknown` | 清洗照走，只是审计难看 |
@@ -76,7 +76,7 @@ sub2api 对 Claw 的处理就是上面那套「人设搬进 messages + 假 CC sy
 ```text
 任意客户端
   ① 协议信封   Messages | Chat | Responses | 未知→400+抓包
-  ② 模型名     剥 provider 前缀，只留 claude-*
+  ② 模型名     剥 provider 前缀；只留这份 VM Claude Code 认识的 id / 家族别名
   ③ 字段白名单 只留 claude -p 吃得下的键，其余记入 decisions 后丢
   ④ system     官方身份/官方 agent 提示 → 剥
                官方 CWD → 留

@@ -29,7 +29,7 @@ import crypto from 'node:crypto'
 import { fingerprintRequest, alignToClaudeCodeStandard, officializeToClaudeCli, classifyClient } from './lib/client-fingerprint.mjs'
 import { extractSystemAudit } from './lib/system-prompt-policy.mjs'
 import { prepareForVmClaude } from './lib/prepare-cli.mjs'
-import { validateOfficialModel, listOfficialModels, fetchOfficialModels } from './lib/models.mjs'
+import { validateOfficialModel, fetchOfficialModels, harvestCliModelCatalog } from './lib/models.mjs'
 import { StickyRouter } from './lib/sticky-router.mjs'
 import { AccountQuota } from './lib/account-quota.mjs'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm-registry.mjs'
@@ -1339,13 +1339,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/v1/models') {
       if (!requireAuth(req, res)) return
       const force = String(new URL(req.url, 'http://x').searchParams.get('refresh') || '') === '1'
-      const result = await fetchOfficialModels(cfg.vm.access_token, { force })
+      const result = await fetchOfficialModels(null, { force })
       return json(res, 200, result)
     }
-    // Admin: force refresh models cache
+    // Admin: re-harvest models from the VM Claude Code binary
     if (req.method === 'POST' && p === '/admin/models/refresh') {
       if (!requireAuth(req, res)) return
-      const result = await fetchOfficialModels(cfg.vm.access_token, { force: true })
+      const result = await fetchOfficialModels(null, { force: true })
       return json(res, 200, result)
     }
 
@@ -1451,6 +1451,17 @@ server.listen(cfg.port, cfg.host, () => {
   oauthGuard.startLoop(60_000, {
     homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
   })
+  try {
+    const cat = harvestCliModelCatalog()
+    console.log(JSON.stringify({
+      event: 'cli-model-catalog',
+      source: 'claude_cli_catalog',
+      total: cat.ids.length,
+      cli_version: cat.version,
+    }))
+  } catch (e) {
+    console.warn('[cli-models] harvest failed', e.message)
+  }
   console.log(JSON.stringify({
     event: 'kin-gateway-v2.1-started',
     base_url: cfg.base_url,

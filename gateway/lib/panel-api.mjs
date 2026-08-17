@@ -235,18 +235,7 @@ export function buildUsage({ accountQuota, cfg }) {
 }
 
 export async function buildModels({ cfg, force = false }) {
-  // Prefer active VM token; fall back to any VM oauth token
-  const tokens = []
-  if (cfg.vm?.access_token) tokens.push(cfg.vm.access_token)
-  try {
-    const { listVms, getVm } = await import('./vm-registry.mjs')
-    for (const s of listVms(cfg.paths.project) || []) {
-      const vm = getVm(cfg.paths.project, s.id)
-      const tok = vm?.claude?.access_token
-      if (tok && !tokens.includes(tok)) tokens.push(tok)
-    }
-  } catch {}
-  const result = await fetchOfficialModels(tokens.length ? tokens : null, { force })
+  const result = await fetchOfficialModels(null, { force })
   const items = (result.data || []).map((m) => ({
     id: m.id,
     label: m.display_name || m.id,
@@ -258,7 +247,8 @@ export async function buildModels({ cfg, force = false }) {
     source: result.source,
     fetched_at: result.fetched_at || null,
     total: items.length,
-    upstream_status: result.upstream_status || null,
+    cli_version: result.cli_version || null,
+    aliases: result.aliases || [],
     note: result.note || result.error || null,
   })
 }
