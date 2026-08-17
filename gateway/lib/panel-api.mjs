@@ -6,11 +6,11 @@
  *   { ok: false, error: { type, code, message, ... } }
  */
 
+import os from 'node:os'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm } from './vm-registry.mjs'
 import { probeAccount } from './usage-probe.mjs'
 import { fetchOfficialModels } from './models.mjs'
 import { makeError, ErrorType, ErrorCode } from './errors.mjs'
-import path from 'node:path'
 
 export function ok(data, meta) {
   const out = { ok: true, data }
@@ -46,6 +46,7 @@ export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig,
       rewrite: cfg.rewrite?.enabled ? 'on' : 'off',
       base_url: cfg.base_url,
     },
+    host: hostStats(),
     summary: {
       vm_count: vms.length,
       account_count: accounts.length,
@@ -98,6 +99,8 @@ export function buildVmDetail({ cfg, accountQuota, id }) {
           utilization_7d: Number(acc.unified?.['7d']?.utilization || 0),
           reset_5h: acc.unified?.['5h']?.reset || null,
           reset_7d: acc.unified?.['7d']?.reset || null,
+          status_5h: acc.unified?.['5h']?.status || null,
+          status_7d: acc.unified?.['7d']?.status || null,
           inflight: acc.inflight,
           max_concurrency: acc.max_concurrency,
           requests: acc.requests,
@@ -110,7 +113,7 @@ export function buildVmDetail({ cfg, accountQuota, id }) {
   })
 }
 
-export async function buildProbeOne({ cfg, accountQuota, id, hop = true }) {
+export async function buildProbeOne({ cfg, accountQuota, id }) {
   const vm = getVm(cfg.paths.project, id)
   if (!vm) {
     return fail(
@@ -122,74 +125,50 @@ export async function buildProbeOne({ cfg, accountQuota, id, hop = true }) {
       }),
     )
   }
-  const homeDir = path.join(cfg.paths.project, 'vms', vm.id, 'cli-home')
   const token = vm.claude?.access_token
-  const inflight = accountQuota?.inflight?.get(vm.claude?.account_uuid || vm.id) || 0
-  const maxC = vm.policy?.maxConcurrency || 2
-  let doHop = hop
-  let hopReason = hop ? null : 'auth_status_only'
-  if (doHop && inflight >= maxC) {
-    doHop = false
-    hopReason = 'concurrency_limit'
+  if (!token) {
+    return fail(
+      makeError({
+        type: ErrorType.INVALID_REQUEST,
+        code: 'no_oauth_token',
+        message: 'VM has no OAuth access token',
+        status: 400,
+      }),
+    )
   }
-  const result = await probeAccount({
-    homeDir,
-    accessToken: token,
-    refreshToken: vm.claude?.refresh_token,
-    expiresAt: vm.claude?.expires_at,
-    hop: doHop,
-    hopReason,
-  })
-  if (result.ok && (result.five_hour || result.seven_day || result.usage)) {
+  const result = await probeAccount(token)
+  if (result.ok && result.data) {
     const accountId = vm.claude?.account_uuid || vm.id
     accountQuota.ensure({
       account_id: accountId,
       vm_id: vm.id,
-      email: result.auth?.email || vm.claude?.email,
+      email: vm.claude?.email,
       max_concurrency: vm.policy?.maxConcurrency,
     })
-    const infos = []
-    if (result.five_hour) {
-      infos.push({
-        rateLimitType: 'five_hour',
-        status: result.five_hour.status,
-        resetsAt: result.five_hour.resets_at,
-        overageStatus: result.five_hour.overage_status,
-        isUsingOverage: result.five_hour.is_using_overage,
-      })
-    }
-    if (result.seven_day) {
-      infos.push({
-        rateLimitType: 'seven_day',
-        status: result.seven_day.status,
-        resetsAt: result.seven_day.resets_at,
-        overageStatus: result.seven_day.overage_status,
-        isUsingOverage: result.seven_day.is_using_overage,
-      })
-    }
-    if (infos.length) {
-      accountQuota.ingestCliRateLimit(accountId, infos, result.usage, { countRequest: !!result.usage })
-    }
+    accountQuota.ingestHeaders(accountId, {
+      'anthropic-ratelimit-unified-5h-utilization': result.data.five_hour?.utilization,
+      'anthropic-ratelimit-unified-5h-reset': result.data.five_hour?.resets_at,
+      'anthropic-ratelimit-unified-7d-utilization': result.data.seven_day?.utilization,
+      'anthropic-ratelimit-unified-7d-reset': result.data.seven_day?.resets_at,
+    })
   }
   return ok({
     vm_id: id,
     account_uuid: vm.claude?.account_uuid || null,
     source: result.source,
-    cli: result.auth || null,
-    five_hour: result.five_hour || null,
-    seven_day: result.seven_day || null,
-    extra_usage: result.extra_usage || null,
-    hop_skipped: result.hop_skipped || hopReason,
+    five_hour: result.data?.five_hour || null,
+    seven_day: result.data?.seven_day || null,
+    extra_usage: result.data?.extra_usage || null,
     probed_at: result.probed_at,
     ok: result.ok,
   })
 }
 
-export async function buildProbeAll({ cfg, accountQuota, hop = true }) {
+export async function buildProbeAll({ cfg, accountQuota }) {
   const vms = listVms(cfg.paths.project)
   const items = []
   for (const s of vms) {
-    const one = await buildProbeOne({ cfg, accountQuota, id: s.id, hop })
+    const one = await buildProbeOne({ cfg, accountQuota, id: s.id })
     if (one.ok === false || one.status) {
       items.push({ vm_id: s.id, ok: false, error: one.body?.error || one })
     } else {
@@ -235,7 +214,18 @@ export function buildUsage({ accountQuota, cfg }) {
 }
 
 export async function buildModels({ cfg, force = false }) {
-  const result = await fetchOfficialModels(null, { force })
+  // Prefer active VM token; fall back to any VM oauth token
+  const tokens = []
+  if (cfg.vm?.access_token) tokens.push(cfg.vm.access_token)
+  try {
+    const { listVms, getVm } = await import('./vm-registry.mjs')
+    for (const s of listVms(cfg.paths.project) || []) {
+      const vm = getVm(cfg.paths.project, s.id)
+      const tok = vm?.claude?.access_token
+      if (tok && !tokens.includes(tok)) tokens.push(tok)
+    }
+  } catch {}
+  const result = await fetchOfficialModels(tokens.length ? tokens : null, { force })
   const items = (result.data || []).map((m) => ({
     id: m.id,
     label: m.display_name || m.id,
@@ -247,8 +237,7 @@ export async function buildModels({ cfg, force = false }) {
     source: result.source,
     fetched_at: result.fetched_at || null,
     total: items.length,
-    cli_version: result.cli_version || null,
-    aliases: result.aliases || [],
+    upstream_status: result.upstream_status || null,
     note: result.note || result.error || null,
   })
 }
@@ -262,22 +251,71 @@ export function buildRouting({ routingConfig, stickyRouter }) {
   })
 }
 
+function hostStats() {
+  const cpus = os.cpus() || []
+  const n = cpus.length || 1
+  const [load1, load5, load15] = os.loadavg()
+  const total = os.totalmem()
+  const free = os.freemem()
+  const used = Math.max(0, total - free)
+  const mem = process.memoryUsage()
+  return {
+    cpu_count: n,
+    load1,
+    load5,
+    load15,
+    cpu_pct: Math.round(Math.min(100, (load1 / n) * 1000) / 10),
+    mem_total: total,
+    mem_free: free,
+    mem_used: used,
+    mem_pct: total ? Math.round((used / total) * 1000) / 10 : 0,
+    rss: mem.rss,
+    heap_used: mem.heapUsed,
+    heap_total: mem.heapTotal,
+    uptime: os.uptime(),
+    proc_uptime: process.uptime(),
+  }
+}
+
 function enrichVm(v, accountQuota, active) {
   const acc = findAccount(accountQuota, v)
+  const u5 = acc ? Number(acc.unified?.['5h']?.utilization || 0) : null
+  const u7 = acc ? Number(acc.unified?.['7d']?.utilization || 0) : null
+  const safety = Number(accountQuota?.config?.safety_ratio || 0.95)
   return {
     id: v.id,
     name: v.name,
     status: v.status,
     active: v.id === active,
+    kernel: v.kernel || null,
+    region: v.region || null,
+    timezone: v.timezone || null,
+    locale: v.locale || null,
     email: v.email,
     account_uuid: v.account_uuid,
+    org_uuid: v.org_uuid || null,
     has_token: v.has_token,
+    expires_at: v.expires_at || null,
+    proxy: v.proxy || null,
+    proxy_id: v.proxy_id || v.proxy?.id || null,
+    seed_policy: v.seed_policy || null,
     max_concurrency: v.max_concurrency,
+    weight: v.weight ?? 1,
     claude_code_version: v.claude_code_version,
-    utilization_5h: acc ? Number(acc.unified?.['5h']?.utilization || 0) : null,
-    utilization_7d: acc ? Number(acc.unified?.['7d']?.utilization || 0) : null,
+    utilization_5h: u5,
+    utilization_7d: u7,
+    reset_5h: acc?.unified?.['5h']?.reset || null,
+    reset_7d: acc?.unified?.['7d']?.reset || null,
+    status_5h: acc?.unified?.['5h']?.status || null,
+    status_7d: acc?.unified?.['7d']?.status || null,
     inflight: acc?.inflight ?? 0,
     requests: acc?.requests ?? v.stats?.requests ?? 0,
+    tokens_in: acc?.tokens_in ?? 0,
+    tokens_out: acc?.tokens_out ?? 0,
+    near_limit: u5 != null && (u5 >= safety || (u7 != null && u7 >= safety)),
+    fingerprint: v.fingerprint || null,
+    schedulable: v.schedulable !== false,
+    created_at: v.created_at || null,
   }
 }
 
