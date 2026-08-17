@@ -1,7 +1,7 @@
 # KIN Gateway — 全面模拟测试计划（Simulation Test Plan）
 
-> 交付物：本文件（**计划 + 执行计划**）。本轮**只规划、不落地测试代码**。
-> 目标：在**无真实 `claude` 二进制 / 无真实 VM / 无真实 OAuth / 无外网**的前提下，用“模拟（mock/simulation）”手段把 gateway 的所有转发路径端到端跑通并断言，补上目前只有纯函数单测、缺少 HTTP 级 e2e 的空白。
+> 交付物：本文件（计划）+ 已落地测试缝 / mock / harness / e2e。
+> 目标：在**无真实 `claude` 二进制 / 无真实 VM / 无真实 OAuth / 无外网**的前提下，用“模拟（mock/simulation）”手段把 gateway 的所有转发路径端到端跑通并断言。
 
 ---
 
@@ -161,30 +161,30 @@ gateway/test/
 > 每阶段结束：`cd gateway && node --test test/**/*.test.mjs lib/*.test.mjs` 全绿并提交推送。
 
 ### P0 — 测试缝与基础设施（使一切可跑）
-- [ ] 新增 `lib/cli-launcher.mjs` + 两处 spawn/`chown`/`pkill` 接入；env：`KIN_CLI_LAUNCHER=direct`、`KIN_DISABLE_PRIVDROP=1`、`CLAUDE_CLI_PATH`。
-- [ ] `session-to-oauth.mjs` 增 `KIN_FAKE_SESSION_OAUTH` 分支。
-- [ ] `config.mjs` 支持 `KIN_PROJECT_ROOT`/`captures` env 覆盖（若尚不支持）。
-- [ ] `test/mocks/mock-claude.mjs`（场景 + argv/env trace）。
-- [ ] `test/harness.mjs`（PORT=0 起停 + 临时 PROJECT + env 组装 + 清理）。
-- [ ] 冒烟：harness 起服务 → `/health` 200，capabilities 正确。
+- [x] 新增 `lib/cli-launcher.mjs` + 两处 spawn/`chown`/`pkill` 接入；env：`KIN_CLI_LAUNCHER=direct`、`KIN_DISABLE_PRIVDROP=1`、`CLAUDE_CLI_PATH`。
+- [x] `session-to-oauth.mjs` 增 `KIN_FAKE_SESSION_OAUTH` 分支。
+- [x] `config.mjs` 支持 `KIN_PROJECT_ROOT`/`captures` env 覆盖（若尚不支持）。
+- [x] `test/mocks/mock-claude.mjs`（场景 + argv/env trace）。
+- [x] `test/harness.mjs`（PORT=0 起停 + 临时 PROJECT + env 组装 + 清理）。
+- [x] 冒烟：harness 起服务 → `/health` 200，capabilities 正确。
 - **验收**：新 seam 有单测；生产默认路径行为不变（快照对比 argv）。
 
 ### P1 — 核心转发 e2e（client 工作区）
-- [ ] `messages/openai-chat/openai-responses` 三协议 × stream/非stream。
-- [ ] 内容特性：多轮 / 图片 / 工具 / thinking / system 截断。
-- [ ] fail-closed 权限断言。
+- [x] `messages/openai-chat/openai-responses` 三协议 × stream/非stream。
+- [x] 内容特性：多轮 / 图片 / 工具 / thinking / system 截断。
+- [x] fail-closed 权限断言。
 - **验收**：矩阵 5.1–5.3 全覆盖、全绿。
 
 ### P2 — 凭证生命周期 + 错误路径 + vm 工作区
-- [ ] 5.5 导入/收割/清空 + 单写不变量。
-- [ ] 5.6 错误路径（含超时后无孤儿进程）。
-- [ ] 5.4 vm 工作区。
+- [x] 5.5 导入/收割/清空 + 单写不变量。
+- [x] 5.6 错误路径（含超时后无孤儿进程）。
+- [x] 5.4 vm 工作区。
 - **验收**：矩阵 5.4–5.6 全绿；grep 断言无 anthropic HTTP。
 
 ### P3 — 并发/竞态 + 面板 + CI
-- [ ] 5.7 并发 T7。
-- [ ] 5.8 面板/鉴权。
-- [ ] CI：新增 `package.json` script `"test": "node --test gateway/lib gateway/test"`；GitHub Actions（node 22，`npm ci` + `npm test`）。
+- [x] 5.7 并发 T7。
+- [x] 5.8 面板/鉴权。
+- [x] CI：新增 `package.json` script `"test": "node --test gateway/lib gateway/test"`；GitHub Actions（node 22，`npm ci` + `npm test`）。
 - **验收**：CI 绿；文档更新 README「离线验收」指向新套件。
 
 ---

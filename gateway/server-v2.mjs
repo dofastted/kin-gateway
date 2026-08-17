@@ -84,7 +84,7 @@ function loadRoutingConfig() {
   try { return JSON.parse(fs.readFileSync(routingConfigPath, 'utf8')) } catch { return {} }
 }
 let routingConfig = loadRoutingConfig()
-const dataDir = path.join(cfg.paths.root, 'data')
+const dataDir = cfg.paths.data || path.join(cfg.paths.root, 'data')
 const stickyRouter = new StickyRouter({ dataDir, config: routingConfig })
 const accountQuota = new AccountQuota({
   dataDir,
@@ -1679,6 +1679,8 @@ process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
 
 server.listen(cfg.port, cfg.host, () => {
   oauthGuard.startLoop(60_000)
+  const addr = server.address()
+  const boundPort = typeof addr === 'object' && addr ? addr.port : cfg.port
   try {
     const cat = harvestCliModelCatalog()
     console.log(JSON.stringify({
@@ -1692,6 +1694,7 @@ server.listen(cfg.port, cfg.host, () => {
   }
   console.log(JSON.stringify({
     event: 'kin-gateway-v2.1-started',
+    port: boundPort,
     base_url: cfg.base_url,
     active_vm: getActiveVmId(cfg.paths.project),
     features: pub.features,

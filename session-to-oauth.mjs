@@ -3,8 +3,6 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import fetch from 'node-fetch'
-import { SocksProxyAgent } from 'socks-proxy-agent'
 
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 const REDIRECT_URI = 'https://platform.claude.com/oauth/code/callback'
@@ -48,6 +46,10 @@ function redact(s, keep = 12) {
 }
 
 async function fetchJson(url, options = {}, proxyUrl = null) {
+  const [{ default: fetch }, { SocksProxyAgent }] = await Promise.all([
+    import('node-fetch'),
+    import('socks-proxy-agent'),
+  ])
   const opts = {
     ...options,
     headers: {
@@ -320,6 +322,20 @@ export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl =
   const sk = String(sessionKey || '').trim()
   if (!sk.startsWith('sk-ant-sid')) {
     throw new Error(`expected sk-ant-sid* sessionKey, got: ${redact(sk)}`)
+  }
+  if (process.env.KIN_FAKE_SESSION_OAUTH === '1' || process.env.KIN_FAKE_SESSION_OAUTH === 'true') {
+    const now = Math.floor(Date.now() / 1000)
+    return {
+      access_token: 'sk-ant-oat01-FAKE-SIM',
+      refresh_token: 'sk-ant-ort01-FAKE-SIM',
+      expires_at: now + 8 * 3600,
+      expiresAt: (now + 8 * 3600) * 1000,
+      email: 'fake-oauth@kin.test',
+      account_uuid: 'acct-fake-sim',
+      org_uuid: 'org-fake-sim',
+      source: 'KIN_FAKE_SESSION_OAUTH',
+      scope,
+    }
   }
   const proxies = []
   const px = normalizeSocks(proxyUrl)

@@ -5,7 +5,7 @@ import { hashKey } from './security.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
-const PROJECT = path.resolve(ROOT, '..')
+const PROJECT = path.resolve(process.env.KIN_PROJECT_ROOT || path.resolve(ROOT, '..'))
 
 export function loadConfig() {
   const keyFile = path.join(ROOT, 'config', 'test.key')
@@ -63,7 +63,12 @@ export function loadConfig() {
       seed_policy: vm.seed_policy || null,
       path: path.join(PROJECT, 'vms', `${vm.id}.json`),
     },
-    paths: { root: ROOT, project: PROJECT, captures: path.join(ROOT, 'captures') },
+    paths: {
+      root: ROOT,
+      project: PROJECT,
+      captures: process.env.KIN_CAPTURES_DIR || path.join(ROOT, 'captures'),
+      data: process.env.KIN_DATA_DIR || path.join(ROOT, 'data'),
+    },
   }
   return cfg
 }

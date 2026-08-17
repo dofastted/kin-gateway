@@ -131,12 +131,16 @@ ExecStart=/usr/bin/node server-v2.mjs
 
 关键环境变量：`KIN_API_KEY`、`PORT`、`PUBLIC_BASE_URL`、面板账号密码。
 
-### 离线验收（无真实 key）
+### 离线验收（无真实 key / 无真实 claude）
 
 ```bash
-cd /opt/kin-gateway/gateway/lib
-node --test          # 整个 lib 套件（含 client-cli-hop / vm-file / execution-context）
+# 纯函数单测 + HTTP 模拟 e2e
+npm test
+# 或
+cd gateway && node --test lib test
 ```
+
+模拟套件通过 `KIN_CLI_LAUNCHER=direct` + `gateway/test/mocks/mock-claude.mjs` 替换官方 CLI，不打 Anthropic HTTP。详见 [gateway/SIMULATION_TEST_PLAN.md](gateway/SIMULATION_TEST_PLAN.md)。
 
 夹具：`gateway/fixtures/`（抓包脱敏 + 合成 tools/metadata）。
 

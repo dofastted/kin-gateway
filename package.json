@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test gateway/lib/*.test.mjs gateway/test/unit/*.test.mjs gateway/test/e2e/*.e2e.test.mjs"
   },
   "keywords": [],
   "author": "",

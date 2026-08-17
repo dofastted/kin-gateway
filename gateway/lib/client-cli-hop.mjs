@@ -6,13 +6,13 @@
  * First tool_use is returned to the HTTP client (Windows/local Claude).
  * Supports non-stream (callClientWorkspaceCli) and stream (streamClientWorkspaceCli).
  */
-import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { writeCliHome } from './cli-runner.mjs'
 import { consumeCliNdjson } from './cli-probe.mjs'
+import { spawnClaudeProcess } from './cli-launcher.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BRIDGE = path.join(__dirname, 'mcp-bridge.mjs')
@@ -685,12 +685,12 @@ function spawnCli({ args, env, cwd, timeoutMs, stdin, onLine, shouldStop }) {
   return new Promise((resolve) => {
     // detached:true → new process group (setsid), so we can signal the whole
     // sudo→claude subtree and avoid orphaned CLI processes on early stop (T6).
-    const child = spawn('sudo', ['-u', 'kincli', '-E', 'claude', ...args], {
+    const child = spawnClaudeProcess(args, {
       env,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
-    })
+    }, { style: 'hop' })
     let stdout = ''
     let stderr = ''
     let buf = ''

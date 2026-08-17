@@ -1,0 +1,166 @@
+/**
+ * Spawn server-v2.mjs against a temp PROJECT + mock Claude CLI.
+ */
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+export const GATEWAY_ROOT = path.resolve(__dirname, '..')
+export const REPO_ROOT = path.resolve(GATEWAY_ROOT, '..')
+export const MOCK_CLAUDE = path.join(__dirname, 'mocks', 'mock-claude.mjs')
+export const TEST_API_KEY = 'sk-kin-test-sim-001'
+
+export function pickFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer()
+    s.on('error', reject)
+    s.listen(0, '127.0.0.1', () => {
+      const port = s.address().port
+      s.close((err) => (err ? reject(err) : resolve(port)))
+    })
+  })
+}
+
+export function seedVm({ project, id = 'vm-sim-01', oauth = true } = {}) {
+  const vms = path.join(project, 'vms')
+  fs.mkdirSync(path.join(vms, id, 'cli-home', '.claude'), { recursive: true })
+  const rec = {
+    id,
+    name: 'sim-01',
+    status: 'running',
+    schedulable: true,
+    timezone: 'UTC',
+    locale: 'en_US.UTF-8',
+    claude_code_version: '2.1.233',
+    seed_policy: { telemetry_disabled: true },
+    fingerprint: { device_id: 'dev-sim-01', session_id: 'sess-sim-01', machineID: 'mid-sim-01' },
+    policy: { maxConcurrency: 16, weight: 1 },
+    claude: oauth
+      ? {
+        access_token: 'sk-ant-oat01-FAKE-SEED',
+        refresh_token: 'sk-ant-ort01-FAKE-SEED',
+        expires_at: Math.floor(Date.now() / 1000) + 8 * 3600,
+        email: 'seed@kin.test',
+        account_uuid: 'acct-seed',
+        org_uuid: 'org-seed',
+        source: 'test-seed',
+      }
+      : {},
+  }
+  fs.writeFileSync(path.join(vms, `${id}.json`), JSON.stringify(rec, null, 2))
+  fs.writeFileSync(path.join(vms, 'active.json'), JSON.stringify({ active_vm: id }, null, 2))
+  return rec
+}
+
+export async function startGateway(opts = {}) {
+  const project = opts.project || fs.mkdtempSync(path.join(os.tmpdir(), 'kin-sim-'))
+  const captures = path.join(project, 'captures')
+  const dataDir = path.join(project, 'data')
+  fs.mkdirSync(captures, { recursive: true })
+  fs.mkdirSync(dataDir, { recursive: true })
+  if (!fs.existsSync(path.join(project, 'vms', 'active.json'))) {
+    seedVm({ project, oauth: opts.oauth !== false })
+  }
+  const port = opts.port || await pickFreePort()
+  const traceFile = opts.traceFile || path.join(project, 'mock-trace.json')
+  const env = {
+    ...process.env,
+    KIN_API_KEY: opts.apiKey || TEST_API_KEY,
+    KIN_ADMIN_USER: 'admin',
+    KIN_ADMIN_PASSWORD: 'testpass',
+    PORT: String(port),
+    HOST: '127.0.0.1',
+    PUBLIC_HOST: '127.0.0.1',
+    PUBLIC_SCHEME: 'http',
+    PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+    KIN_PROJECT_ROOT: project,
+    KIN_CAPTURES_DIR: captures,
+    KIN_DATA_DIR: dataDir,
+    KIN_CLI_LAUNCHER: 'direct',
+    KIN_DISABLE_PRIVDROP: '1',
+    CLAUDE_CLI_PATH: MOCK_CLAUDE,
+    KIN_FAKE_SESSION_OAUTH: '1',
+    KIN_DIFF_CAPTURE: opts.diffCapture ?? '0',
+    KIN_UPSTREAM_TIMEOUT: String(opts.timeoutMs ?? 8000),
+    KIN_MOCK_SCENARIO: opts.scenario || 'text',
+    KIN_MOCK_TRACE_FILE: traceFile,
+    KIN_MOCK_TEXT: opts.mockText || 'pong',
+    KIN_CLI_MODELS_CACHE: path.join(dataDir, 'cli-models.json'),
+  }
+  if (opts.env) Object.assign(env, opts.env)
+
+  const child = spawn(process.execPath, [path.join(GATEWAY_ROOT, 'server-v2.mjs')], {
+    env,
+    cwd: GATEWAY_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.on('data', (d) => { stdout += d.toString() })
+  child.stderr.on('data', (d) => { stderr += d.toString() })
+
+  const baseUrl = `http://127.0.0.1:${port}`
+  const deadline = Date.now() + (opts.readyMs || 8000)
+  let ready = false
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50))
+    try {
+      const r = await fetch(`${baseUrl}/health`)
+      if (r.ok) { ready = true; break }
+    } catch {}
+    if (child.exitCode != null) break
+  }
+  if (!ready) {
+    try { child.kill('SIGKILL') } catch {}
+    throw new Error(`gateway failed to start\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+  }
+
+  return {
+    baseUrl,
+    port,
+    project,
+    traceFile,
+    apiKey: env.KIN_API_KEY,
+    child,
+    stdout: () => stdout,
+    stderr: () => stderr,
+    async stop() {
+      if (child.exitCode == null) {
+        child.kill('SIGTERM')
+        await new Promise((r) => setTimeout(r, 150))
+        if (child.exitCode == null) child.kill('SIGKILL')
+      }
+    },
+  }
+}
+
+export async function api(gw, method, urlPath, { body, headers, stream } = {}) {
+  const h = {
+    authorization: `Bearer ${gw.apiKey}`,
+    ...(body != null ? { 'content-type': 'application/json' } : {}),
+    ...(headers || {}),
+  }
+  const res = await fetch(gw.baseUrl + urlPath, {
+    method,
+    headers: h,
+    body: body != null ? JSON.stringify(body) : undefined,
+  })
+  const text = await res.text()
+  let json = null
+  try { json = JSON.parse(text) } catch {}
+  return { status: res.status, headers: res.headers, text, json }
+}
+
+export function readTrace(gw) {
+  try { return JSON.parse(fs.readFileSync(gw.traceFile, 'utf8')) } catch { return null }
+}
+
+export function requireNoFetch() {
+  // unused helper kept for tests that want a local assert hook
+  return createRequire(import.meta.url)
+}
