@@ -57,18 +57,20 @@ export class StickyRouter {
       this._save()
       return null
     }
-    return { accountId: ent.account_id, vmId: ent.vm_id, key }
+    return { accountId: ent.account_id, vmId: ent.vm_id, sessionId: ent.session_id || null, key }
   }
 
-  bind(key, { accountId, vmId }) {
+  bind(key, { accountId, vmId, sessionId = null }) {
     if (!key || !this.config.enabled) return
     const ttl = (this.config.ttl_seconds || 86400) * 1000
+    const prev = this.map.sessions[key] || {}
     this.map.sessions[key] = {
       account_id: accountId,
       vm_id: vmId,
+      session_id: sessionId || prev.session_id || null,
       bound_at: Date.now(),
       expires_at: Date.now() + ttl,
-      hits: (this.map.sessions[key]?.hits || 0) + 1,
+      hits: (prev.hits || 0) + 1,
     }
     this._save()
   }

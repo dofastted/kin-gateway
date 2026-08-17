@@ -86,7 +86,7 @@ export function messagesToPrompt(body) {
  * Seed a pure CLI home for this VM.
  * NEVER copy host/user ~/.claude or settings.json — VM settings are the sole source.
  */
-function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy, force = false }) {
+export function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy, force = false }) {
   ensureDir(homeDir)
   const claudeDir = path.join(homeDir, '.claude')
   ensureDir(claudeDir)
@@ -140,8 +140,12 @@ function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone,
     settings = { ...pol.settings_json_override }
     settings.env = { ...(settings.env || {}), ...env }
   } else {
-    settings = { env, theme: pol.theme || 'dark' }
+    settings = { env, theme: pol.theme || 'dark', autoUpdates: false }
   }
+  env.TZ = timezone || env.TZ || 'UTC'
+  env.LANG = locale || env.LANG || 'en_US.UTF-8'
+  env.LC_ALL = locale || env.LC_ALL || env.LANG
+  settings.env = { ...(settings.env || {}), ...env }
   fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify(settings, null, 2))
   // Do not clobber an existing .claude.json (CLI stores machine/session ids there).
   const claudeJson = path.join(homeDir, '.claude.json')
@@ -294,6 +298,7 @@ export async function callClaudeCli({
   kernel,
   seedPolicy,
   timeoutMs = 120000,
+  serverTools = false,
 }) {
   if (!accessToken) {
     return {
@@ -308,6 +313,12 @@ export async function callClaudeCli({
   const prompt = messagesToPrompt(body)
   const mdl = model || body?.model || 'claude-haiku-4-5-20251001'
   const args = ['-p', prompt, '--model', mdl, '--output-format', 'stream-json', '--verbose']
+  if (serverTools) {
+    args.push('--allowedTools', 'Read,Write,Edit,Bash,Grep,Glob,WebFetch,WebSearch,Agent,Skill')
+    args.push('--permission-mode', 'acceptEdits')
+  } else {
+    args.push('--disallowedTools', 'Read,Write,Edit,Bash,Grep,Glob,WebFetch,WebSearch,Agent,Skill,NotebookEdit')
+  }
   const env = buildEnv({ workHome, accessToken, proxyUrl, timezone, locale, seedPolicy })
   const acc = { rate_limits: [] }
   const result = await spawnClaude({
@@ -383,6 +394,7 @@ export async function streamClaudeCli({
   onHeaders,
   onRateLimit,
   includeThinking = true,
+  serverTools = false,
 }) {
   if (!accessToken) {
     return {
@@ -408,6 +420,12 @@ export async function streamClaudeCli({
     '--verbose',
     '--include-partial-messages',
   ]
+  if (serverTools) {
+    args.push('--allowedTools', 'Read,Write,Edit,Bash,Grep,Glob,WebFetch,WebSearch,Agent,Skill')
+    args.push('--permission-mode', 'acceptEdits')
+  } else {
+    args.push('--disallowedTools', 'Read,Write,Edit,Bash,Grep,Glob,WebFetch,WebSearch,Agent,Skill,NotebookEdit')
+  }
   const env = buildEnv({ workHome, accessToken, proxyUrl, timezone, locale, seedPolicy })
 
   if (typeof onHeaders === 'function') {

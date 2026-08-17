@@ -1,0 +1,50 @@
+{
+  "seq": 2,
+  "ts": "2026-08-16T07:37:58.102Z",
+  "vm_id": "vm-2ba14a",
+  "inbound_protocol": "anthropic.messages",
+  "inbound_path": "/v1/messages",
+  "inbound_body": {
+    "model": "claude-haiku-4-5-20251001",
+    "max_tokens": 32,
+    "messages": [
+      {
+        "role": "user",
+        "content": "抓包测试B：只回复 CAP_MSG"
+      }
+    ]
+  },
+  "upstream_method": "POST",
+  "upstream_url": "https://api.anthropic.com/v1/messages",
+  "upstream_headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
+    "authorization": "Bearer sk-ant-oat01-***REDACTED***",
+    "x-app": "cli",
+    "user-agent": "claude-cli/2.1.161 (external, cli)"
+  },
+  "upstream_body": {
+    "model": "claude-haiku-4-5-20251001",
+    "max_tokens": 32,
+    "messages": [
+      {
+        "role": "user",
+        "content": "抓包测试B：只回复 CAP_MSG"
+      }
+    ]
+  },
+  "unified_claude_messages": true,
+  "schema_check": {
+    "has_model": true,
+    "model_is_claude": true,
+    "has_max_tokens": true,
+    "has_messages_array": true,
+    "roles_valid": true,
+    "no_openai_messages_shape": true,
+    "no_responses_input_field": true,
+    "no_stream_true": true
+  },
+  "upstream_status": 200,
+  "upstream_response_preview": "# 抓包测试B：只回复 CAP_MSG\n\n## 测试目的\n验证系统是否能"
+}

@@ -1,0 +1,46 @@
+{
+  "seq": 99,
+  "note": "synthetic from pkt-002 + tools/metadata for offline identity tests",
+  "inbound_protocol": "anthropic.messages",
+  "inbound_path": "/v1/messages",
+  "inbound_body": {
+    "model": "claude-haiku-4-5-20251001",
+    "max_tokens": 32,
+    "messages": [
+      {
+        "role": "user",
+        "content": "抓包测试B：只回复 CAP_MSG"
+      }
+    ],
+    "tools": [
+      {
+        "name": "Read",
+        "description": "Read a local file",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "file_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path"
+          ]
+        }
+      }
+    ],
+    "tool_choice": {
+      "type": "auto"
+    },
+    "metadata": {
+      "user_id": "{\"device_id\": \"windows-device-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"account_uuid\": \"client-account-uuid\", \"session_id\": \"windows-session-id\"}",
+      "machine_id": "WIN-MACHINE-1"
+    },
+    "settings": {
+      "theme": "light",
+      "env": {
+        "TZ": "Asia/Shanghai"
+      }
+    }
+  }
+}

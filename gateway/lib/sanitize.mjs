@@ -5,8 +5,7 @@
 
 const ALLOWED_TOP = new Set([
   'model', 'messages', 'max_tokens', 'system', 'temperature', 'top_p', 'top_k',
-  'stop_sequences', 'stream', 'metadata', 'tools', 'tool_choice',
-  // thinking often needs beta; keep only if type present and safe
+  'stop_sequences', 'stream', 'metadata', 'tools', 'tool_choice', 'thinking',
 ])
 
 export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) {
@@ -37,9 +36,8 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
   // tools: empty array → omit (cleaner)
   if (Array.isArray(out.tools) && out.tools.length === 0) delete out.tools
 
-  // Cap absurd max_tokens from CLI
-  if (typeof out.max_tokens === 'number' && out.max_tokens > 8192) {
-    out.max_tokens = 8192
+  if (typeof out.max_tokens === 'number' && out.max_tokens > 64000) {
+    out.max_tokens = 64000
   }
   if (!out.max_tokens) out.max_tokens = 4096
 

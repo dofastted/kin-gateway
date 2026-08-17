@@ -1,14 +1,20 @@
 /**
- * KIN OAuth lifecycle.
+ * OAuth single-writer policy (hard):
  *
- * sessionKey → CookieAuth import only (Chrome TLS).
- * Official CLI owns credentials.json and refresh_token rotation.
- * Gateway NEVER calls grant_type=refresh_token on the hot path or in the
- * background loop — that race is what burns Anthropic refresh tokens.
+ * ONLY `persistOauthToVm` may write access_token/refresh_token into vm.json.
+ * Allowed call sources:
+ *   1. harvestHomeToVm  — read official CLI credentials.json after CLI ran
+ *   2. admin panel sessionKey import — explicit human import only
  *
- * Recovery: if CLI oauth is dead and we still have a stored sessionKey,
- * re-run CookieAuth once (not refresh_token).
+ * NEVER:
+ *   - grant_type=refresh_token from the gateway
+ *   - Bearer OAuth against api.anthropic.com
+ *   - auto sessionKey→OAuth on the inference hot path
+ *
+ * Official Claude CLI owns token rotation inside the VM cli-home.
+ * Gateway only harvests the result.
  */
+
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -97,6 +103,8 @@ export function persistOauthToVm(vmPath, cred) {
   if (n.scope) vm.claude.scope = n.scope
   if (n.source) vm.claude.source = n.source
   if (n.session_key) vm.claude.session_key = n.session_key
+  if (cred?.mode) vm.claude.mode = cred.mode
+  else if (!vm.claude.mode) vm.claude.mode = 'oauth'
   vm.claude.refresh_error = null
   vm.claude.refreshed_at = new Date().toISOString()
   vm.claude._token_version = Date.now()
