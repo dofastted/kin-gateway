@@ -308,7 +308,7 @@ export function validateOfficialModel(model) {
   if (!cache.ids.length && cache.key !== 'test') harvestCliModelCatalog()
   const resolved = resolveCliModel(m, cache.ids)
   if (resolved.ok) {
-    return { ok: true, model: resolved.model, alias: resolved.alias || null, unverified: !!resolved.unverified }
+    return { ok: true, model: resolved.model, alias: resolved.alias || null }
   }
 
   return {
