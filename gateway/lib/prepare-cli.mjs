@@ -4,7 +4,7 @@
  * VM already runs official Claude Code — do not inject billing/identity.
  * Foreign 人设 (Pi / Codex / ChatGPT / Hermes / OpenClaw / unknown) is
  * rewritten into official system text blocks and appended.
- * Fields `claude -p` cannot take are dropped via allowlist.
+ * Tools are kept (official protocol). Unknown top-level keys still dropped via allowlist.
  */
 
 /** Only these top-level keys survive into the CLI hop. Unknown keys are dropped. */
@@ -19,6 +19,8 @@ const ALLOWED_TOP = new Set([
   'top_k',
   'stop_sequences',
   'stop',
+  'tools',
+  'tool_choice',
 ])
 
 const OFFICIAL_IDENTITY = [
@@ -165,14 +167,16 @@ export function prepareForVmClaude(body) {
 
   const next = { ...body }
 
+  // Keep tools — do not strip to text-only. Remap known Codex names to official Claude Code tools.
   if (next.tools) {
+    const before = Array.isArray(next.tools) ? next.tools : [next.tools]
+    next.tools = remapCodexTools(next.tools)
+    const names = (Array.isArray(next.tools) ? next.tools : []).map((t) => t?.name || t?.function?.name).filter(Boolean)
     decisions.push({
-      action: 'drop_client_tools',
-      count: Array.isArray(next.tools) ? next.tools.length : 1,
-      names: Array.isArray(next.tools) ? next.tools.map((t) => t?.name || t?.function?.name).filter(Boolean) : [],
+      action: 'keep_client_tools',
+      count: before.length,
+      names,
     })
-    delete next.tools
-    delete next.tool_choice
   }
 
   for (const k of Object.keys(next)) {

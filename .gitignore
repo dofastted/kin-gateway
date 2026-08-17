@@ -8,3 +8,7 @@ gateway/gateway.json
 **/.env
 **/.env.*
 !gateway/config/gateway-v2.example.json
+gateway/captures/
+gateway/data/
+vms/
+*.bak*

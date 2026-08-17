@@ -16,12 +16,12 @@ L3  账号层 Account / Credential
     OAuth（session→oat）、绑定关系、并发上限、粘性会话
 
 L4  用量层 Usage / Quota
-    官方 CLI `rate_limit_event`、5h·7d 状态、分配记录
+    官方 /api/oauth/usage、5h·7d 95% 安全线、分配记录
 
 L5  协议层 Protocol Gateway
     OpenAI Chat / Responses / Anthropic Messages
-    → 协议转换 + 拦截官方不接受的字段 → VM 内真实 Claude Code
-    外国 CLI 人设追加为官方 system 文本块；不注入 billing/身份
+    → 对齐 Claude Code 官方标准 → VM 转发
+    模型白名单、system 策略、错误分类
 
 L6  配置层 Settings
     粘性路由、额度策略、拦截规则、种子模板
@@ -30,28 +30,10 @@ L6  配置层 Settings
 ## 二、核心原则
 
 1. VM 内跑 Claude Code；网关做协议对齐，不是伪装
-2. 仅 VM 官方 Claude Code 认识的模型
+2. 仅官方 Claude 模型名
 3. 透传优先，改写默认关
 4. 对话粘性可配置；额度 5h/7d 卡 95%
 5. 多 VM 是终态；单机是当前最小单元
-6. 推理热路径禁止读进程级 `cfg.vm`。每次请求构造独立 ExecutionContext（调度到的 VM、cli-home、OAuth、代理、额度账号、种子策略）
-7. 运行时是宿主机 CLI 槽（`kincli` + 每槽 cli-home）。`kernel` / start / stop 只是元数据，没有 KVM/QEMU。需要真内核时再加 Worker Agent，现在不加
-8. 定位是文本补全代理：`claude -p`。不宣称客户端 tools、图片、Claude session 连续性
-
-## 四、请求热路径
-
-```
-POST /v1/messages | /v1/chat/completions | /v1/responses
-  → buildExecutionContext(sticky | active | first schedulable)
-  → sanitize(exec.seedPolicy)
-  → quota.acquire(exec.accountId)
-  → harvestExecHome(exec)   # 只收割该槽 credentials.json
-  → prepareForVmClaude      # drop client tools, flatten to -p
-  → claude -p --output-format stream-json
-```
-
-激活 VM 会 `reloadActiveVm`，只刷新管理面快照与额度账户，不改变已在飞的 ExecutionContext。
-
 
 ## 三、UI 信息架构
 

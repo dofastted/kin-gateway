@@ -42,7 +42,7 @@ test('strips official interactive-agent system, keeps CWD from Primary working d
   assert.doesNotMatch(prompt, /interactive agent that helps users/)
   assert.doesNotMatch(prompt, /x-anthropic-billing-header/)
   assert.ok(decisions.some((d) => d.action === 'strip_official_identity'))
-  assert.ok(decisions.some((d) => d.action === 'drop_client_tools'))
+  assert.ok(decisions.some((d) => d.action === 'keep_client_tools'))
   assert.ok(prompt.length < 400)
 })
 
@@ -66,7 +66,7 @@ test('Pi 人设 becomes official system block + CWD, not deleted', () => {
   assert.ok(decisions.some((d) => d.action === 'append_persona_as_official_system'))
   assert.ok(decisions.some((d) => d.action === 'append_official_cwd'))
   assert.ok(body.system.every((b) => b.type === 'text' && b.cache_control?.type === 'ephemeral'))
-  assert.ok(decisions.some((d) => d.action === 'drop_client_tools'))
+  assert.ok(decisions.some((d) => d.action === 'keep_client_tools'))
 })
 
 test('benign context is appended as official system field', () => {
@@ -110,7 +110,7 @@ test('Hermes / OpenClaw 人设 appended as official system; unknown keys dropped
   assert.match(hermes.prompt, /You are Hermes/)
   assert.match(hermes.prompt, /CWD: \/home\/me\/proj/)
   assert.match(hermes.prompt, /Reply with exactly: pong/)
-  assert.ok(hermes.decisions.some((d) => d.action === 'drop_client_tools' && d.count === 2))
+  assert.ok(hermes.decisions.some((d) => d.action === 'keep_client_tools' && d.count === 2))
   assert.ok(hermes.stripped.includes('extra_body'))
   assert.ok(hermes.stripped.includes('cacheRetention'))
   assert.ok(hermes.stripped.includes('fastMode'))

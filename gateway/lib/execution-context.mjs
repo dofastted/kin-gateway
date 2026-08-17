@@ -13,11 +13,14 @@ import { harvestHomeToVm, readCliOauth } from './oauth-refresh.mjs'
 export const GATEWAY_CAPABILITIES = {
   runtime: 'host-cli-slot',
   kernel: 'metadata-only',
-  client_tools: false,
-  images: false,
-  multi_turn_native: false,
+  client_tools: true,
+  images: true,
+  multi_turn_native: true,
   sticky: 'vm-account',
   claude_session: false,
+  workspace_default: 'client',
+  tool_execution: 'client',
+  forward_default: 'cli',
 }
 
 export function vmJsonPath(projectRoot, vmId) {

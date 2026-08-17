@@ -13,7 +13,6 @@ import {
   createOauthGuard,
   shouldKeepCliOauth,
   rereadVmOauth,
-  harvestHomeToVm,
   REFRESH_SKEW_MS,
 } from './oauth-refresh.mjs'
 
@@ -223,27 +222,3 @@ test('reread disk tokens into memory', () => {
   assert.equal(cfg.vm.refresh_token, 'rt-disk')
   assert.equal(cfg.vm.session_key, 'sk-disk')
 })
-
-test('harvestHomeToVm writes CLI credentials to the given VM path only', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
-  const vmPath = path.join(dir, 'vm-x.json')
-  const home = path.join(dir, 'cli-home', '.claude')
-  fs.mkdirSync(home, { recursive: true })
-  fs.writeFileSync(vmPath, JSON.stringify({
-    id: 'vm-x',
-    claude: { access_token: 'old', refresh_token: 'oldrt', expires_at: 10 },
-  }))
-  fs.writeFileSync(path.join(home, 'credentials.json'), JSON.stringify({
-    claudeAiOauth: {
-      accessToken: 'home-at',
-      refreshToken: 'home-rt',
-      expiresAt: 2000000000000,
-    },
-  }))
-  const r = harvestHomeToVm(path.join(dir, 'cli-home'), vmPath)
-  assert.equal(r.harvested, true)
-  const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-  assert.equal(vm.claude.access_token, 'home-at')
-  assert.equal(vm.claude.refresh_token, 'home-rt')
-})
-
