@@ -467,6 +467,20 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
 .modal .opt{align-items:center}
 .modal .opt em{display:none}
 
+
+.sheet{max-width:440px}
+.sheet .set-list{margin-top:2px}
+.preset{display:flex;flex-wrap:wrap;gap:6px}
+.preset button{height:30px;padding:0 10px;border:1px solid var(--line-2);border-radius:999px;background:rgba(248,250,252,.03);color:var(--muted);cursor:pointer;font-size:12px}
+.preset button.on,.preset button[aria-pressed="true"]{border-color:rgba(34,197,94,.5);background:rgba(34,197,94,.12);color:var(--fg)}
+.life{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.life .st{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--faint)}
+.life .st b{width:18px;height:18px;border-radius:99px;border:1px solid var(--line-2);display:grid;place-items:center;font-size:10px;font-weight:600}
+.life .st.on{color:var(--fg)}
+.life .st.on b{background:var(--ok);border-color:transparent;color:#052e16}
+.life .st.done b{background:rgba(34,197,94,.18);border-color:transparent;color:var(--ok)}
+.life .ln{width:16px;height:1px;background:var(--line-2)}
+
 /* ── page reconstruction ────────────────────────────────── */
 .cmd-strip{display:flex;align-items:stretch;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .cmd-strip .score{min-width:100px;padding:16px 18px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
@@ -610,7 +624,36 @@ function kernelTag(id) {
   return `<span class="k-tag" title="${esc(p.id)}${p.base?' · '+esc(p.base):''}"><i></i>${esc(p.name)}${p.size?' · '+esc(p.size):''}</span>`
 }
 
-let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null, clusterQ: '', clusterFilter: 'all', clusterView: 'list', vmTab: 'overview', loading: false, kernel: 'unikernel-min', createName: '', advOpen: false, usageSort: 'u5', usageDir: 'desc', proxySort: 'status', proxyDir: 'asc' }
+const SEED_FLAGS = [
+  ['telemetry_disabled', '关遥测'],
+  ['disable_nonessential_traffic', '关非必要'],
+  ['do_not_track', 'DNT'],
+  ['reject_client_settings', '拒 settings'],
+  ['reject_client_metadata_identity', '拒身份'],
+]
+const SEED_PRESETS = {
+  strict:   { telemetry_disabled:true,  disable_nonessential_traffic:true,  do_not_track:true,  reject_client_settings:true,  reject_client_metadata_identity:true  },
+  standard: { telemetry_disabled:true,  disable_nonessential_traffic:true,  do_not_track:true,  reject_client_settings:false, reject_client_metadata_identity:false },
+  open:     { telemetry_disabled:false, disable_nonessential_traffic:false, do_not_track:false, reject_client_settings:false, reject_client_metadata_identity:false },
+}
+function seedPolicyOf(name) {
+  const p = SEED_PRESETS[name] || SEED_PRESETS.strict
+  return { ...p, theme: 'dark' }
+}
+function matchSeedPreset(pol) {
+  if (!pol) return 'strict'
+  for (const [name, p] of Object.entries(SEED_PRESETS)) {
+    if (SEED_FLAGS.every(([k]) => !!p[k] === !!pol[k])) return name
+  }
+  return 'custom'
+}
+function seedPresetBar(cur, fn) {
+  const items = [['strict','严格'],['standard','标准'],['open','开放']]
+  return `<div class="preset" role="group">${items.map(([k,l]) => `<button type="button" data-p="${k}" class="${cur===k?'on':''}" aria-pressed="${cur===k}" onclick="${fn}('${k}')">${l}</button>`).join('')}${cur==='custom'?`<button type="button" class="on" aria-pressed="true">自定义</button>`:''}</div>`
+}
+
+
+let state = { view: 'overview', selectedVm: null, dashboard: null, usage: null, models: null, routing: null, detail: null, proxies: null, clusterQ: '', clusterFilter: 'all', clusterView: 'list', vmTab: 'overview', loading: false, kernel: 'unikernel-min', createName: '', advOpen: false, usageSort: 'u5', usageDir: 'desc', proxySort: 'status', proxyDir: 'asc', seedPreset: 'strict', createPreset: 'strict', createAfter: 'idle' }
 let bootstrapped = false
 
 function apiBase() {
@@ -921,10 +964,11 @@ async function probeOne(id) {
   } catch (e) { toast(e.message, 'err') }
 }
 
-async function openVm(id) {
+async function openVm(id, tab) {
   const switched = state.selectedVm !== id
   state.selectedVm = id
-  if (switched) state.vmTab = 'overview'
+  if (tab) state.vmTab = tab
+  else if (switched) state.vmTab = 'overview'
   try {
     const r = await api('/api/panel/vms/' + id)
     state.detail = r.data || r
@@ -1132,7 +1176,7 @@ function renderOverview() {
         <button class="btn btn-outline btn-sm" onclick="go('cluster')">全部</button>
       </div>
     </div>
-    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无节点', `<button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>`)}</div>
+    <div class="vm-grid">${vms.slice(0, 6).map(vmCard).join('') || emptyBox('暂无节点', `<button class="btn btn-primary btn-sm" onclick="openCreateVm()">创建</button>`)}</div>
   </section>`
 }
 
@@ -1187,10 +1231,10 @@ function renderCluster() {
           <button class="${state.clusterView!=='grid'?'on':''}" onclick="setClusterView('list')">列表</button>
           <button class="${state.clusterView==='grid'?'on':''}" onclick="setClusterView('grid')">网格</button>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>
+        <button class="btn btn-primary btn-sm" onclick="openCreateVm()">创建</button>
       </div>
     </div>
-    <div id="clusterBox">${vms.length ? (state.clusterView==='grid' ? `<div class="vm-grid">${vms.map(vmCard).join('')}</div>` : `<div class="vm-list">${vms.map(vmListRow).join('')}</div>`) : emptyBox(all.length ? '无匹配' : '空', all.length ? '' : `<button class="btn btn-primary btn-sm" onclick="go('vm')">创建</button>`)}</div>
+    <div id="clusterBox">${vms.length ? (state.clusterView==='grid' ? `<div class="vm-grid">${vms.map(vmCard).join('')}</div>` : `<div class="vm-list">${vms.map(vmListRow).join('')}</div>`) : emptyBox(all.length ? '无匹配' : '空', all.length ? '' : `<button class="btn btn-primary btn-sm" onclick="openCreateVm()">创建</button>`)}</div>
   </section>`
 }
 
@@ -1273,20 +1317,35 @@ document.addEventListener('keydown', (e) => {
   toggleKernelPanel(false)
   closeModal()
 })
-function createBoxHTML() {
+function createSheetHTML() {
+  const after = state.createAfter || 'idle'
+  const preset = state.createPreset || 'strict'
+  const k = state.kernel || 'unikernel-min'
   return `
-  <div class="create-box">
-    <div class="base-row">
-      <input id="vmCreateName" class="input name-in" placeholder="虚拟机名称" value="${esc(state.createName || '')}" oninput="state.createName=this.value" />
-      ${kernelPickerHTML()}
-      <button class="btn btn-primary" onclick="createVmFromPage()">创建</button>
-      <button type="button" id="advToggle" class="btn btn-ghost btn-sm adv-toggle ${state.advOpen ? 'on' : ''}" aria-expanded="${!!state.advOpen}" onclick="toggleAdv()">
-        高级
-        <svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
-      </button>
+    <h3>创建</h3>
+    <div class="set-list">
+      <div class="set-row"><span>名称</span>
+        <input id="vmCreateName" class="input" placeholder="可选" value="${esc(state.createName || '')}" oninput="state.createName=this.value" />
+      </div>
+      <div class="set-row"><span>内核</span>
+        <select id="vmCreateKernel" class="input" onchange="state.kernel=this.value">
+          ${KERNELS.map(x => `<option value="${esc(x.id)}" ${x.id===k?'selected':''}>${esc(x.name)} · ${esc(x.size)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="set-row"><span>种子</span>${seedPresetBar(preset, 'setCreatePreset')}</div>
+      <div class="set-row"><span>之后</span>
+        <select id="vmCreateAfter" class="input" onchange="state.createAfter=this.value">
+          <option value="idle" ${after==='idle'?'selected':''}>仅创建</option>
+          <option value="start" ${after==='start'?'selected':''}>开机</option>
+          <option value="proxy" ${after==='proxy'?'selected':''}>开机 + SOCKS5</option>
+          <option value="active" ${after==='active'?'selected':''}>开机 + 活跃</option>
+          <option value="full" ${after==='full'?'selected':''}>开机 + SOCKS5 + 活跃</option>
+        </select>
+      </div>
     </div>
-    <div class="adv-wrap" id="advWrap" ${state.advOpen ? '' : 'hidden'}>
-      <div class="form-grid">
+    <details class="import-box" ${state.advOpen?'open':''}>
+      <summary>高级</summary>
+      <div class="body form-grid">
         <label>区域
           <select id="vmCreateRegion" class="input">
             <option value="">自动</option>
@@ -1316,7 +1375,7 @@ function createBoxHTML() {
             <option value="C.UTF-8">C</option>
           </select>
         </label>
-        <label>Claude Code
+        <label>CLI
           <select id="vmCreateCC" class="input">
             <option value="">最新</option>
             <option value="2.1.233">2.1.233</option>
@@ -1329,7 +1388,6 @@ function createBoxHTML() {
             <option value="2" selected>2</option>
             <option value="4">4</option>
             <option value="8">8</option>
-            <option value="16">16</option>
           </select>
         </label>
         <label>权重
@@ -1338,18 +1396,44 @@ function createBoxHTML() {
             <option value="2">2</option>
             <option value="3">3</option>
             <option value="5">5</option>
-            <option value="10">10</option>
           </select>
         </label>
+        <label class="check"><input id="vmCreateProxyCli" type="checkbox" /> proxy CLI</label>
       </div>
-      <div class="switch-row" style="margin-top:12px">
-        <label class="chip-check"><input id="vmCreateStart" type="checkbox" /> 开机</label>
-        <label class="chip-check"><input id="vmCreateProxy" type="checkbox" /> SOCKS5</label>
-        <label class="chip-check"><input id="vmCreateActive" type="checkbox" /> 活跃</label>
-        <label class="chip-check"><input id="vmCreateProxyCli" type="checkbox" /> proxy CLI</label>
-      </div>
-    </div>
-  </div>`
+    </details>
+    <div class="foot">
+      <button class="btn btn-outline btn-sm" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary btn-sm" id="vmCreateGo" onclick="createVmFromPage()">创建</button>
+    </div>`
+}
+function setCreatePreset(name) {
+  state.createPreset = name
+  const bar = document.querySelector('.modal .preset')
+  if (bar) bar.querySelectorAll('button').forEach(b => {
+    const on = b.getAttribute('data-p') === name
+    b.classList.toggle('on', on)
+    b.setAttribute('aria-pressed', String(on))
+  })
+}
+function openCreateVm() {
+  state.advOpen = false
+  openModal(createSheetHTML())
+  const dlg = document.querySelector('#modalRoot .modal')
+  if (dlg) dlg.classList.add('sheet')
+  setTimeout(() => document.getElementById('vmCreateName')?.focus(), 0)
+}
+
+function lifeSteps(vm) {
+  const has = !!vm.has_token
+  const seeded = !!(state.seedSettings?.kin_seed || state.seedSettings?.seed_policy)
+  const run = vmRunning(vm)
+  const steps = [
+    [true, '建'],
+    [seeded, '种'],
+    [has, '证'],
+    [run && has, '跑'],
+  ]
+  return `<div class="life">${steps.map(([on,l],i) => `${i?'<span class="ln"></span>':''}<span class="st ${on?'done':''}"><b>${i+1}</b>${l}</span>`).join('')}</div>`
 }
 
 async function loadSeedSettings() {
@@ -1361,39 +1445,58 @@ async function loadSeedSettings() {
     render()
   } catch (e) { toast(e.message, 'err') }
 }
+function readSeedForm() {
+  const o = {}
+  for (const [k] of SEED_FLAGS) o[k] = !!document.getElementById('seed_' + k)?.checked
+  o.theme = document.getElementById('seedTheme')?.value || 'dark'
+  return o
+}
+function applySeedPreset(name) {
+  state.seedPreset = name
+  const p = SEED_PRESETS[name]
+  if (p) for (const [k, v] of Object.entries(p)) {
+    const el = document.getElementById('seed_' + k)
+    if (el) el.checked = v
+  }
+  const bar = document.querySelector('.wb-body .preset') || document.querySelector('.preset')
+  if (bar) bar.querySelectorAll('button').forEach(b => {
+    const on = b.getAttribute('data-p') === name
+    b.classList.toggle('on', on)
+    b.setAttribute('aria-pressed', String(on))
+  })
+}
+function onSeedChip() {
+  applySeedPreset(matchSeedPreset(readSeedForm()))
+}
 async function saveSeedSettings(id) {
   id = id || state.selectedVm
   if (!id) return
   let override = null
   const raw = document.getElementById('seedOverride')?.value?.trim() || ''
   if (raw) {
-    try { override = JSON.parse(raw) } catch { toast('settings JSON 无效', 'err'); return }
+    try { override = JSON.parse(raw) } catch { toast('JSON 无效', 'err'); return }
   }
-  const body = {
-    telemetry_disabled: !!document.getElementById('seedTel')?.checked,
-    disable_nonessential_traffic: !!document.getElementById('seedNonEss')?.checked,
-    do_not_track: !!document.getElementById('seedDnt')?.checked,
-    reject_client_settings: !!document.getElementById('seedRejSet')?.checked,
-    reject_client_metadata_identity: !!document.getElementById('seedRejMeta')?.checked,
-    theme: document.getElementById('seedTheme')?.value || 'dark',
-    settings_json_override: override,
-  }
+  const body = { ...readSeedForm(), settings_json_override: override }
+  const btn = document.getElementById('seedSave')
+  if (btn) { btn.disabled = true; btn.textContent = '写入…' }
   try {
     const r = await api('/api/panel/vms/' + id + '/seed-settings', { method: 'PUT', body: JSON.stringify(body) })
     state.seedSettings = r.data || r
-    toast('种子策略已保存')
+    toast('已播种')
     render()
-  } catch (e) { toast(e.message, 'err') }
+  } catch (e) {
+    toast(e.message, 'err')
+    if (btn) { btn.disabled = false; btn.textContent = '播种' }
+  }
 }
 
 function setVmTab(tab) { state.vmTab = tab; render() }
 function renderVm() {
   const vms = state.dashboard?.vms || []
   const det = state.detail
-  const create = createBoxHTML()
   if (!state.selectedVm && !det) {
     return `<section class="section">
-      ${create}
+      <div class="head"><div class="section-title">${vms.length}</div><button class="btn btn-primary btn-sm" onclick="openCreateVm()">创建</button></div>
       ${renderVmCollection(vms, '空')}
     </section>`
   }
@@ -1407,9 +1510,10 @@ function renderVm() {
   const running = vmRunning(vm)
   const kp = kernelProfile(vm.kernel)
   const tabs = [['overview','概览'],['account','账号'],['proxy','代理'],['ops','运维'],['seed','种子']]
+  const pol = state.seedSettings?.seed_policy || {}
+  const preset = matchSeedPreset(pol)
   return `
   <section class="section">
-    ${create}
     <div class="workbench">
       <div class="wb-head">
         <div class="wb-id">
@@ -1423,6 +1527,7 @@ function renderVm() {
           <button class="btn btn-outline btn-sm" onclick="startVm('${esc(vm.id)}')">开机</button>
           <button class="btn btn-outline btn-sm" onclick="stopVm('${esc(vm.id)}')">关机</button>
           <button class="btn btn-outline btn-sm" onclick="probeOne('${esc(vm.id)}')">CLI 探测</button>
+          <button class="btn btn-primary btn-sm" onclick="openCreateVm()">创建</button>
         </div>
       </div>
       <div class="tabs">
@@ -1430,6 +1535,7 @@ function renderVm() {
       </div>
       <div class="wb-body">
       ${tab === 'overview' ? `
+      ${lifeSteps(vm)}
       <div class="fact-grid">
         <div class="fact-cell">
           <div class="k">内核</div>
@@ -1468,11 +1574,12 @@ function renderVm() {
       <div class="actions" style="margin-top:14px"><button class="btn btn-outline btn-sm" onclick="allocateProxy('${esc(vm.id)}')">分配 SOCKS5</button></div>` : ''}
 
       ${tab === 'ops' ? `
+      ${lifeSteps(vm)}
       <div class="zone">
         <div class="actions">
           <button class="btn btn-outline btn-sm" onclick="activateVm('${esc(vm.id)}')">设为活跃</button>
           <button class="btn btn-outline btn-sm" onclick="updateClaudeCode('${esc(vm.id)}')">更新 CLI</button>
-          <button class="btn btn-outline btn-sm" onclick="resetFingerprint('${esc(vm.id)}')">重置指纹</button>
+          <button class="btn btn-outline btn-sm" onclick="setVmTab('seed');loadSeedSettings()">种子</button>
         </div>
         <dl class="kv">
           <dt>CLI</dt><dd>${esc(vm.claude_code_version || '—')}</dd>
@@ -1483,33 +1590,32 @@ function renderVm() {
       <div class="zone danger" style="margin-top:12px">
         <div class="actions">
           <button class="btn btn-outline btn-sm" onclick="openResetVm('${esc(vm.id)}')">重置</button>
-          <button class="btn btn-danger btn-sm" ${isActiveVm(vm.id) ? 'disabled title="活跃节点不可删"' : ''} onclick="openDeleteVm('${esc(vm.id)}')">删除</button>
+          <button class="btn btn-danger btn-sm" onclick="openDeleteVm('${esc(vm.id)}')">删除</button>
         </div>
       </div>` : ''}
 
       ${tab === 'seed' ? `
-      <div class="switch-row">
-        <label class="chip-check"><input id="seedTel" type="checkbox" ${state.seedSettings?.seed_policy?.telemetry_disabled!==false?'checked':''}/> 关遥测</label>
-        <label class="chip-check"><input id="seedNonEss" type="checkbox" ${state.seedSettings?.seed_policy?.disable_nonessential_traffic!==false?'checked':''}/> 关非必要</label>
-        <label class="chip-check"><input id="seedDnt" type="checkbox" ${state.seedSettings?.seed_policy?.do_not_track!==false?'checked':''}/> DNT</label>
-        <label class="chip-check"><input id="seedRejSet" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_settings!==false?'checked':''}/> 拒 settings</label>
-        <label class="chip-check"><input id="seedRejMeta" type="checkbox" ${state.seedSettings?.seed_policy?.reject_client_metadata_identity!==false?'checked':''}/> 拒身份</label>
+      ${lifeSteps(vm)}
+      ${seedPresetBar(preset, 'applySeedPreset')}
+      <div class="switch-row" style="margin-top:12px">
+        ${SEED_FLAGS.map(([k,l]) => `<label class="chip-check"><input id="seed_${k}" type="checkbox" ${pol[k]!==false && (k in pol ? !!pol[k] : SEED_PRESETS.strict[k]) ? 'checked':''} onchange="onSeedChip()"/> ${l}</label>`).join('')}
       </div>
-      <div class="set-row" style="margin-top:8px">
+      <div class="set-row" style="margin-top:10px">
         <span>主题</span>
         <select id="seedTheme" class="input">
-          <option value="dark" ${(state.seedSettings?.seed_policy?.theme||'dark')==='dark'?'selected':''}>深色</option>
-          <option value="light" ${state.seedSettings?.seed_policy?.theme==='light'?'selected':''}>浅色</option>
+          <option value="dark" ${(pol.theme||'dark')==='dark'?'selected':''}>深色</option>
+          <option value="light" ${pol.theme==='light'?'selected':''}>浅色</option>
         </select>
       </div>
+      <div class="m" style="margin-top:8px;color:var(--faint);font-size:11px">${esc(state.seedSettings?.kin_seed?.seeded_at || '未写入 kin-seed')}</div>
       <details class="import-box" style="margin-top:12px">
         <summary>JSON</summary>
         <div class="body">
-          <textarea id="seedOverride" class="input" placeholder='{"env":{}}'>${esc(state.seedSettings?.seed_policy?.settings_json_override ? JSON.stringify(state.seedSettings.seed_policy.settings_json_override, null, 2) : '')}</textarea>
+          <textarea id="seedOverride" class="input" placeholder='{"env":{}}'>${esc(pol.settings_json_override ? JSON.stringify(pol.settings_json_override, null, 2) : '')}</textarea>
         </div>
       </details>
       <div class="actions" style="margin-top:12px">
-        <button class="btn btn-primary" onclick="saveSeedSettings('${esc(vm.id)}')">保存</button>
+        <button class="btn btn-primary" id="seedSave" onclick="saveSeedSettings('${esc(vm.id)}')">播种</button>
         <button class="btn btn-outline" onclick="loadSeedSettings()">刷新</button>
       </div>
       <details class="import-box" style="margin-top:12px">
@@ -1556,7 +1662,7 @@ function renderImport() {
             ${kernelTag(vm.kernel)}
           </div>
           <button class="btn btn-outline btn-sm" onclick="state.selectedVm='${esc(selected)}';allocateProxy('${esc(selected)}')">分配 SOCKS5</button>
-          ` : emptyBox('先选虚拟机', `<button class="btn btn-outline btn-sm" onclick="go('vm')">创建</button>`)}
+          ` : emptyBox('先选虚拟机', `<button class="btn btn-outline btn-sm" onclick="openCreateVm()">创建</button>`)}
         </div>
       </div>
       <div class="workbench">
@@ -1910,23 +2016,37 @@ async function createVmFromPage() {
   const max_concurrency = Number(document.getElementById('vmCreateConc')?.value || 2)
   const weight = Number(document.getElementById('vmCreateWeight')?.value || 1)
   const claude_code_version = document.getElementById('vmCreateCC')?.value?.trim() || undefined
-  const start = !!document.getElementById('vmCreateStart')?.checked
-  const auto_allocate_proxy = !!document.getElementById('vmCreateProxy')?.checked
-  const activate = !!document.getElementById('vmCreateActive')?.checked
+  const after = document.getElementById('vmCreateAfter')?.value || state.createAfter || 'idle'
+  const start = after !== 'idle'
+  const auto_allocate_proxy = after === 'proxy' || after === 'full'
+  const activate = after === 'active' || after === 'full'
   const proxy_cli_enabled = !!document.getElementById('vmCreateProxyCli')?.checked
+  const seed_policy = seedPolicyOf(state.createPreset || 'strict')
+  const btn = document.getElementById('vmCreateGo')
+  if (btn) { btn.disabled = true; btn.textContent = '创建中' }
   try {
     const body = {
       name: name || undefined, kernel, timezone, locale, region,
       max_concurrency, weight, claude_code_version,
-      start, auto_allocate_proxy, activate, proxy_cli_enabled,
+      start, auto_allocate_proxy, activate, proxy_cli_enabled, seed_policy,
     }
     const r = await api('/api/panel/vms/create', { method: 'POST', body: JSON.stringify(body) })
     const d = r.data || r
+    const id = d.vm?.id
+    if (id) {
+      try {
+        await api('/api/panel/vms/' + id + '/seed-settings', { method: 'PUT', body: JSON.stringify(seed_policy) })
+      } catch {}
+    }
     state.createName = ''
-    toast('已创建 ' + (d.vm?.id || '') + (d.allocated_proxy ? ' · 已分配代理' : ''))
+    closeModal()
+    toast('已创建 ' + (id || ''))
     await refresh()
-    if (d.vm?.id) openVm(d.vm.id)
-  } catch (e) { toast(e.message, 'err') }
+    if (id) openVm(id, 'seed')
+  } catch (e) {
+    toast(e.message, 'err')
+    if (btn) { btn.disabled = false; btn.textContent = '创建' }
+  }
 }
 
 async function importOAuthWorkflow() {
@@ -2017,19 +2137,44 @@ function vmLabel(id) {
   return (name && name !== id ? esc(name) + ' · ' : '') + `<span class="mono">${esc(id)}</span>`
 }
 
+function applyResetPreset(name) {
+  const map = {
+    soft:  { rsStats:1, rsFp:1, rsSeed:1, rsOauth:0 },
+    fp:    { rsStats:0, rsFp:1, rsSeed:0, rsOauth:0 },
+    oauth: { rsStats:0, rsFp:0, rsSeed:0, rsOauth:1 },
+  }
+  const m = map[name]
+  if (!m) return
+  for (const [id, v] of Object.entries(m)) {
+    const el = document.getElementById(id)
+    if (el) el.checked = !!v
+  }
+  const bar = document.querySelector('.modal .preset')
+  if (bar) bar.querySelectorAll('button').forEach(b => {
+    const on = b.getAttribute('data-p') === name
+    b.classList.toggle('on', on)
+    b.setAttribute('aria-pressed', String(on))
+  })
+}
 function openResetVm(id) {
   modalVmId = id
   openModal(`
     <h3>重置</h3>
     <p class="who">${vmLabel(id)}</p>
+    <div class="preset" role="group">
+      <button type="button" data-p="soft" class="on" aria-pressed="true" onclick="applyResetPreset('soft')">软重置</button>
+      <button type="button" data-p="fp" onclick="applyResetPreset('fp')">指纹</button>
+      <button type="button" data-p="oauth" onclick="applyResetPreset('oauth')">清凭证</button>
+    </div>
     <label class="opt"><input id="rsStats" type="checkbox" checked /><span>清统计</span></label>
     <label class="opt"><input id="rsFp" type="checkbox" checked /><span>指纹</span></label>
-    <label class="opt"><input id="rsSeed" type="checkbox" checked /><span>种子</span></label>
+    <label class="opt"><input id="rsSeed" type="checkbox" checked /><span>重播种</span></label>
     <label class="opt"><input id="rsOauth" type="checkbox" /><span>清凭证</span></label>
     <div class="foot">
       <button class="btn btn-outline btn-sm" onclick="closeModal()">取消</button>
       <button class="btn btn-danger btn-sm" id="rsGo" onclick="doResetVm()">重置</button>
     </div>`)
+  applyResetPreset('soft')
 }
 async function doResetVm() {
   const id = modalVmId
@@ -2057,10 +2202,17 @@ async function doResetVm() {
 function openDeleteVm(id) {
   modalVmId = id
   const active = isActiveVm(id)
+  const others = (state.dashboard?.vms || []).filter(v => v.id !== id)
   openModal(`
     <h3 class="danger">删除</h3>
     <p class="who">${vmLabel(id)}</p>
-    ${active ? `<div class="danger-box">活跃节点，先切换后再删</div>` : ''}
+    ${active ? `
+    <div class="set-row"><span>活跃切到</span>
+      <select id="delSwitch" class="input" onchange="syncDeleteBtn()" ${others.length?'':'disabled'}>
+        <option value="">选择</option>
+        ${others.map(v => `<option value="${esc(v.id)}">${esc(v.name || v.id)}</option>`).join('')}
+      </select>
+    </div>` : ''}
     <input id="delConfirm" class="input mono" autocomplete="off" spellcheck="false" placeholder="${esc(id)}" aria-label="确认 ID"
            oninput="syncDeleteBtn()" onkeydown="if(event.key==='Enter')doDeleteVm()" />
     <div class="foot">
@@ -2074,11 +2226,21 @@ function deleteConfirmed() {
 }
 function syncDeleteBtn() {
   const btn = document.getElementById('delGo')
-  if (btn) btn.disabled = !deleteConfirmed()
+  if (!btn) return
+  const id = modalVmId
+  const needSwitch = isActiveVm(id)
+  const switched = !needSwitch || !!(document.getElementById('delSwitch')?.value)
+  btn.disabled = !(deleteConfirmed() && switched)
 }
 async function doDeleteVm() {
   const id = modalVmId
   if (!id || !deleteConfirmed()) return
+  if (isActiveVm(id)) {
+    const to = document.getElementById('delSwitch')?.value
+    if (!to) { toast('先切换活跃', 'err'); return }
+    try { await api('/api/panel/vms/' + to + '/activate', { method: 'POST' }) }
+    catch (e) { toast(e.message, 'err'); return }
+  }
   const wasSelected = state.selectedVm === id
   const btn = document.getElementById('delGo')
   if (btn) { btn.disabled = true; btn.textContent = '删除中…' }
