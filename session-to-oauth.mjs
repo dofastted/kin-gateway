@@ -278,6 +278,15 @@ function findCffiHelper() {
   return candidates.find((p) => fs.existsSync(p)) || null
 }
 
+function normalizeSocks(proxyUrl) {
+  if (!proxyUrl) return null
+  const s = String(proxyUrl)
+  if (s.startsWith('socks5://') && !s.startsWith('socks5h://')) {
+    return 'socks5h://' + s.slice('socks5://'.length)
+  }
+  return s
+}
+
 function spawnCffiImport(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
   const helper = findCffiHelper()
   if (!helper) {
@@ -291,7 +300,7 @@ function spawnCffiImport(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
         ...process.env,
         SESSION_KEY: sessionKey,
         SCOPE: scope,
-        PROXY_URL: proxyUrl || '',
+        PROXY_URL: normalizeSocks(proxyUrl) || '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -303,7 +312,7 @@ function spawnCffiImport(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
     child.on('close', (code) => {
       if (stderr.trim()) console.warn('[cffi-import]', stderr.trim().slice(0, 800))
       if (code !== 0) {
-        const err = new Error(`cffi import exited ${code}: ${stderr.trim().slice(0, 300)}`)
+        const err = new Error(`cffi import exited ${code}: ${stderr.trim().slice(-300)}`)
         err.code = 'cffi_import_failed'
         reject(err)
         return
@@ -366,14 +375,23 @@ export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl =
   if (!sk.startsWith('sk-ant-sid')) {
     throw new Error(`expected sk-ant-sid* sessionKey, got: ${redact(sk)}`)
   }
-  try {
-    const cred = await spawnCffiImport(sk, { scope, proxyUrl })
-    console.log('[import] via curl_cffi chrome TLS', redact(cred.access_token || ''))
-    return cred
-  } catch (e) {
-    console.warn('[import] curl_cffi unavailable, falling back to node-fetch:', e.message)
-    return sessionKeyToOAuthNode(sk, { scope, proxyUrl })
+  const proxies = []
+  const px = normalizeSocks(proxyUrl)
+  if (px) proxies.push(px)
+  proxies.push(null) // VPS chrome TLS can reach claude.ai without SOCKS
+  let lastErr
+  for (const p of proxies) {
+    try {
+      const cred = await spawnCffiImport(sk, { scope, proxyUrl: p })
+      console.log('[import] via curl_cffi chrome TLS', p ? 'socks5h' : 'direct', redact(cred.access_token || ''))
+      return cred
+    } catch (e) {
+      lastErr = e
+      console.warn('[import] curl_cffi', p ? 'socks5h' : 'direct', 'failed:', e.message)
+    }
   }
+  console.warn('[import] curl_cffi exhausted, falling back to node-fetch:', lastErr?.message)
+  return sessionKeyToOAuthNode(sk, { scope, proxyUrl: px })
 }
 
 import { pathToFileURL } from "node:url"

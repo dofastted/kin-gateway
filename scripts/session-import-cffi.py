@@ -63,6 +63,8 @@ def load_session() -> object:
 def main() -> int:
     sk = (os.environ.get("SESSION_KEY") or (sys.argv[1] if len(sys.argv) > 1 else "")).strip()
     proxy = (os.environ.get("PROXY_URL") or "").strip()
+    if proxy.startswith("socks5://") and not proxy.startswith("socks5h://"):
+        proxy = "socks5h://" + proxy[len("socks5://"):]
     scope_name = (os.environ.get("SCOPE") or "full").strip() or "full"
     if not sk.startswith("sk-ant-sid"):
         print("expected sk-ant-sid* sessionKey", file=sys.stderr)
@@ -80,13 +82,17 @@ def main() -> int:
     }
 
     print("[1/3] GET /api/organizations", file=sys.stderr)
-    r = sess.get(
-        f"{CLAUDE_WEB}/api/organizations",
-        cookies=cookies,
-        headers=headers,
-        proxies=proxies,
-        timeout=60,
-    )
+    try:
+        r = sess.get(
+            f"{CLAUDE_WEB}/api/organizations",
+            cookies=cookies,
+            headers=headers,
+            proxies=proxies,
+            timeout=60,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"orgs request failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     if r.status_code != 200:
         snippet = (r.text or "")[:240].replace("\n", " ")
         print(f"orgs failed: {r.status_code} {snippet}", file=sys.stderr)
