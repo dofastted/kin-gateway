@@ -1,16 +1,8 @@
-/**
- * KIN core: Claude sessionKey (sk-ant-sid*) → official OAuth credentials
- * Migrated from Wei-Shaw/sub2api CookieAuth flow.
- *
- * Flow:
- *  1) GET  claude.ai/api/organizations           (Cookie: sessionKey)
- *  2) POST claude.ai/v1/oauth/{org}/authorize    (Cookie: sessionKey + PKCE)
- *  3) POST platform.claude.com/v1/oauth/token    (authorization_code exchange)
- */
-
 import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import fetch from 'node-fetch'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 
@@ -26,6 +18,8 @@ const TOKEN_URLS = [
 const SCOPE_API =
   'user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload'
 const SCOPE_INFERENCE = 'user:inference'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 function b64url(buf) {
   return Buffer.from(buf)
@@ -276,10 +270,56 @@ export async function refreshOAuthToken(refreshToken, { proxyUrl = null } = {}) 
   throw lastErr || new Error('token refresh failed on all endpoints')
 }
 
-/**
- * Full conversion: sessionKey → OAuth credential object
- */
-export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
+function findCffiHelper() {
+  const candidates = [
+    path.join(__dirname, 'scripts', 'session-import-cffi.py'),
+    path.join(__dirname, '..', 'scripts', 'session-import-cffi.py'),
+  ]
+  return candidates.find((p) => fs.existsSync(p)) || null
+}
+
+function spawnCffiImport(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
+  const helper = findCffiHelper()
+  if (!helper) {
+    const err = new Error('session-import-cffi.py not found')
+    err.code = 'no_cffi_helper'
+    return Promise.reject(err)
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', [helper], {
+      env: {
+        ...process.env,
+        SESSION_KEY: sessionKey,
+        SCOPE: scope,
+        PROXY_URL: proxyUrl || '',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (d) => { stdout += d.toString('utf8') })
+    child.stderr.on('data', (d) => { stderr += d.toString('utf8') })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (stderr.trim()) console.warn('[cffi-import]', stderr.trim().slice(0, 800))
+      if (code !== 0) {
+        const err = new Error(`cffi import exited ${code}: ${stderr.trim().slice(0, 300)}`)
+        err.code = 'cffi_import_failed'
+        reject(err)
+        return
+      }
+      try {
+        const cred = JSON.parse(stdout.trim())
+        if (!cred?.access_token) throw new Error('cffi import returned no access_token')
+        resolve(cred)
+      } catch (e) {
+        reject(e)
+      }
+    })
+  })
+}
+
+async function sessionKeyToOAuthNode(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
   _activeProxyUrl = proxyUrl || null
   const sk = String(sessionKey || '').trim()
   if (!sk.startsWith('sk-ant-sid')) {
@@ -317,6 +357,25 @@ export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl =
   return credential
 }
 
+/**
+ * Full conversion: sessionKey → OAuth credential object.
+ * Prefers curl_cffi Chrome TLS (claude.ai is CF-gated). node-fetch is fallback.
+ */
+export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
+  const sk = String(sessionKey || '').trim()
+  if (!sk.startsWith('sk-ant-sid')) {
+    throw new Error(`expected sk-ant-sid* sessionKey, got: ${redact(sk)}`)
+  }
+  try {
+    const cred = await spawnCffiImport(sk, { scope, proxyUrl })
+    console.log('[import] via curl_cffi chrome TLS', redact(cred.access_token || ''))
+    return cred
+  } catch (e) {
+    console.warn('[import] curl_cffi unavailable, falling back to node-fetch:', e.message)
+    return sessionKeyToOAuthNode(sk, { scope, proxyUrl })
+  }
+}
+
 import { pathToFileURL } from "node:url"
 
 const isMain = !!(process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href)
@@ -331,7 +390,7 @@ if (isMain) {
   console.log("sessionKey:", redact(sessionKey))
   console.log("scope:", scope)
   try {
-    const cred = await sessionKeyToOAuth(sessionKey, { scope })
+    const cred = await sessionKeyToOAuth(sessionKey, { scope, proxyUrl: process.env.PROXY_URL || null })
     const outDir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "out")
     fs.mkdirSync(outDir, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, "-")

@@ -21,7 +21,7 @@ import {
   createResponsesStreamState,
   claudeSSELineToResponsesEvents,
 } from './lib/convert.mjs'
-import { callClaudeCli, streamClaudeCli, sanitizeInboundBody, defaultSeedPolicy } from './lib/cli-runner.mjs'
+import { callClaudeCli, streamClaudeCli, sanitizeInboundBody, defaultSeedPolicy, seedCliCredentials } from './lib/cli-runner.mjs'
 import { updateVmClaudeCode, fetchLatestClaudeCodeVersion } from './lib/claude-code-update.mjs'
 import { sessionKeyToOAuth } from '../session-to-oauth.mjs'
 import { createOauthGuard } from './lib/oauth-refresh.mjs'
@@ -1136,6 +1136,21 @@ const server = http.createServer(async (req, res) => {
               org_uuid: existing.claude.org_uuid,
               source: existing.claude.source || 'sessionKey-cookie-auth',
             })
+            try {
+              seedCliCredentials({
+                homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
+                accessToken: existing.claude.access_token,
+                refreshToken: existing.claude.refresh_token,
+                expiresAt: existing.claude.expires_at,
+                timezone: existing.timezone,
+                locale: existing.locale,
+                kernel: existing.kernel,
+                seedPolicy: existing.seed_policy || defaultSeedPolicy(),
+                force: true,
+              })
+            } catch (e) {
+              console.warn('[import] seed cli-home failed', e.message)
+            }
           }
           return json(res, 200, panel.ok({
             vm: summarizeVm(existing),
@@ -1148,7 +1163,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/oauth\/refresh$/.test(p)) {
-        const result = await oauthGuard.ensureFresh({ force: true })
+        const body = await readBody(req, 4096).catch(() => ({}))
+        const result = await oauthGuard.ensureFresh({
+          force: body?.force === true,
+          homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
+        })
         return json(res, result.ok ? 200 : 401, panel.ok({ ...result, ...oauthGuard.status() }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
@@ -1356,7 +1375,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/admin/vm/oauth/refresh') {
       if (!requireAuth(req, res)) return
       const body = await readBody(req, 4096).catch(() => ({}))
-      const result = await oauthGuard.ensureFresh({ force: body?.force === true })
+      const result = await oauthGuard.ensureFresh({
+        force: body?.force === true,
+        homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
+      })
       return json(res, result.ok ? 200 : 401, { ok: result.ok, ...result, ...oauthGuard.status() })
     }
 
@@ -1412,7 +1434,9 @@ process.on('uncaughtException', (e) => console.error('[uncaught]', e))
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
 
 server.listen(cfg.port, cfg.host, () => {
-  oauthGuard.startLoop(60_000)
+  oauthGuard.startLoop(60_000, {
+    homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
+  })
   console.log(JSON.stringify({
     event: 'kin-gateway-v2.1-started',
     base_url: cfg.base_url,

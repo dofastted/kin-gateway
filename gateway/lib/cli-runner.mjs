@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { prepareForVmClaude } from './prepare-cli.mjs'
+import { shouldKeepCliOauth } from './oauth-refresh.mjs'
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true })
@@ -84,7 +84,7 @@ export function messagesToPrompt(body) {
  * Seed a pure CLI home for this VM.
  * NEVER copy host/user ~/.claude or settings.json — VM settings are the sole source.
  */
-function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy }) {
+function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy, force = false }) {
   ensureDir(homeDir)
   const claudeDir = path.join(homeDir, '.claude')
   ensureDir(claudeDir)
@@ -98,20 +98,28 @@ function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone,
       scopes: ['user:inference', 'user:sessions:claude_code', 'user:profile'],
     },
   }
-  const incomingExp = creds.claudeAiOauth.expiresAt
   let keepExisting = false
-  try {
-    const prevPath = path.join(claudeDir, 'credentials.json')
-    if (fs.existsSync(prevPath)) {
-      const prev = JSON.parse(fs.readFileSync(prevPath, 'utf8'))
-      const po = prev.claudeAiOauth || {}
-      let prevExp = Number(po.expiresAt) || 0
-      if (prevExp && prevExp < 10_000_000_000) prevExp *= 1000
-      if (prevExp > incomingExp + 1000 && (po.accessToken || po.refreshToken)) {
-        keepExisting = true
+  if (!force) {
+    try {
+      const prevPath = path.join(claudeDir, 'credentials.json')
+      if (fs.existsSync(prevPath)) {
+        const prev = JSON.parse(fs.readFileSync(prevPath, 'utf8'))
+        const po = prev.claudeAiOauth || {}
+        keepExisting = shouldKeepCliOauth(
+          {
+            access_token: po.accessToken || po.access_token,
+            refresh_token: po.refreshToken || po.refresh_token,
+            expires_at: po.expiresAt || po.expires_at,
+          },
+          {
+            access_token: accessToken,
+            refresh_token: refreshToken,
+            expires_at: expMs || creds.claudeAiOauth.expiresAt,
+          },
+        )
       }
-    }
-  } catch {}
+    } catch {}
+  }
   if (!keepExisting) {
     fs.writeFileSync(path.join(claudeDir, '.credentials.json'), JSON.stringify(creds, null, 2), { mode: 0o600 })
     fs.writeFileSync(path.join(claudeDir, 'credentials.json'), JSON.stringify(creds, null, 2), { mode: 0o600 })
@@ -157,6 +165,10 @@ function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, timezone,
   try {
     spawn('chown', ['-R', 'kincli:kincli', homeDir], { stdio: 'ignore' })
   } catch {}
+}
+
+export function seedCliCredentials(opts) {
+  return writeCliHome(opts)
 }
 
 function toAnthropicMessage({ text, model, usage }) {
