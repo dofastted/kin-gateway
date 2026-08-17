@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { shouldKeepCliOauth } from './oauth-refresh.mjs'
+import { prepareForVmClaude } from './prepare-cli.mjs'
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true })

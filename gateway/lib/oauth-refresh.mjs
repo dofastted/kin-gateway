@@ -1,23 +1,18 @@
 /**
- * KIN OAuth lifecycle — alignment, not spoofing.
+ * KIN OAuth lifecycle.
  *
- * sessionKey (CookieAuth) is import-only: it yields access_token + refresh_token.
- * Official Claude Code owns inference identity via credentials.json and is the
- * primary refresher. KIN only:
- *   1. harvests CLI-rotated tokens
- *   2. calls grant_type=refresh_token as a backup when the CLI is absent or
- *      the access token is fully expired
- * Never race the CLI for the same refresh_token (Anthropic rotates / one-time).
+ * sessionKey → CookieAuth import only (Chrome TLS).
+ * Official CLI owns credentials.json and refresh_token rotation.
+ * Gateway NEVER calls grant_type=refresh_token on the hot path or in the
+ * background loop — that race is what burns Anthropic refresh tokens.
+ *
+ * Recovery: if CLI oauth is dead and we still have a stored sessionKey,
+ * re-run CookieAuth once (not refresh_token).
  */
 import fs from 'node:fs'
 import path from 'node:path'
 
-async function defaultRefreshFn(refreshToken, opts) {
-  const { refreshOAuthToken } = await import('../../session-to-oauth.mjs')
-  return refreshOAuthToken(refreshToken, opts)
-}
-
-/** Match sub2api skew (~3m) with a bit more margin. */
+/** Kept for status / diagnostics only — not used to trigger gateway refresh. */
 export const REFRESH_SKEW_MS = 5 * 60 * 1000
 
 export function expiresAtToMs(expiresAt) {
@@ -68,6 +63,7 @@ export function normalizeOauth(cred = {}) {
     org_uuid: cred.org_uuid || cred.orgUuid || null,
     scope: cred.scope || null,
     source: cred.source || null,
+    session_key: cred.session_key || cred.sessionKey || null,
     _token_version: cred._token_version || cred.token_version || null,
   }
 }
@@ -81,6 +77,7 @@ export function applyOauthToCfg(cfg, cred) {
   if (n.email) cfg.vm.email = n.email
   if (n.account_uuid) cfg.vm.account_uuid = n.account_uuid
   if (n.org_uuid) cfg.vm.org_uuid = n.org_uuid
+  if (n.session_key) cfg.vm.session_key = n.session_key
   if (n._token_version) cfg.vm._token_version = n._token_version
   cfg.vm.refresh_error = null
   return cfg
@@ -99,6 +96,7 @@ export function persistOauthToVm(vmPath, cred) {
   if (n.org_uuid) vm.claude.org_uuid = n.org_uuid
   if (n.scope) vm.claude.scope = n.scope
   if (n.source) vm.claude.source = n.source
+  if (n.session_key) vm.claude.session_key = n.session_key
   vm.claude.refresh_error = null
   vm.claude.refreshed_at = new Date().toISOString()
   vm.claude._token_version = Date.now()
@@ -129,13 +127,14 @@ export function rereadVmOauth(cfg) {
   try {
     const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
     const c = vm.claude || {}
-    if (!c.access_token && !c.refresh_token) return false
+    if (!c.access_token && !c.refresh_token && !c.session_key) return false
     const beforeRt = cfg.vm.refresh_token
     const beforeAt = cfg.vm.access_token
     if (c.access_token) cfg.vm.access_token = c.access_token
     if (c.refresh_token) cfg.vm.refresh_token = c.refresh_token
     if (c.expires_at) cfg.vm.expires_at = c.expires_at
     if (c.email) cfg.vm.email = c.email
+    if (c.session_key) cfg.vm.session_key = c.session_key
     cfg.vm.refresh_error = c.refresh_error || null
     cfg.vm._token_version = c._token_version || cfg.vm._token_version || null
     return beforeRt !== cfg.vm.refresh_token || beforeAt !== cfg.vm.access_token
@@ -167,7 +166,6 @@ export function readCliOauth(homeDir) {
 }
 
 export function createOauthGuard(cfg, deps = {}) {
-  const refreshFn = deps.refreshFn || defaultRefreshFn
   let chain = Promise.resolve()
   let timer = null
   let last = { at: 0, result: 'idle' }
@@ -185,6 +183,7 @@ export function createOauthGuard(cfg, deps = {}) {
       vm_id: cfg.vm?.id || null,
       has_access: !!cfg.vm?.access_token,
       has_refresh: !!cfg.vm?.refresh_token,
+      has_session_key: !!cfg.vm?.session_key,
       expires_at: exp || null,
       ttl_sec: exp ? exp - now : null,
       needs_refresh: needsRefresh(cfg.vm?.expires_at),
@@ -208,72 +207,93 @@ export function createOauthGuard(cfg, deps = {}) {
     return { harvested: true, expires_at: harvested.expires_at }
   }
 
-  async function doRefresh({ force = false, homeDir = null } = {}) {
+  /**
+   * Harvest-only. Never calls grant_type=refresh_token.
+   * force is ignored for Anthropic refresh (kept for API compat; still only harvests).
+   */
+  async function doEnsureFresh({ force = false, homeDir = null } = {}) {
     rereadVmOauth(cfg)
     if (homeDir) {
       const h = harvestFromHome(homeDir)
-      if (h.harvested && !force && !needsRefresh(cfg.vm?.expires_at)) {
-        last = { at: Date.now(), result: 'harvested', expires_at: cfg.vm.expires_at }
+      if (h.harvested) {
         return { ok: true, refreshed: false, harvested: true, expires_at: cfg.vm.expires_at }
       }
     }
-    if (!force && cfg.vm?.refresh_error?.need_reimport) {
-      last = { at: Date.now(), result: 'need_reimport' }
-      return { ok: false, refreshed: false, need_reimport: true, error: 'oauth_need_reimport' }
-    }
-    if (!force && !needsRefresh(cfg.vm?.expires_at)) {
-      last = { at: Date.now(), result: 'fresh' }
-      return { ok: true, refreshed: false, expires_at: cfg.vm.expires_at }
-    }
-    // Official CLI owns refresh while access is still valid. KIN calling
-    // grant_type=refresh_token in the same window races and burns the token.
-    if (!force && homeDir && !isFullyExpired(cfg.vm?.expires_at) && cfg.vm?.access_token) {
-      last = { at: Date.now(), result: 'defer_to_cli', expires_at: cfg.vm.expires_at }
-      return { ok: true, refreshed: false, defer_to_cli: true, expires_at: cfg.vm.expires_at }
-    }
-    const rt = cfg.vm?.refresh_token
-    if (!rt) {
-      const expired = needsRefresh(cfg.vm?.expires_at, Date.now(), 0)
-      last = { at: Date.now(), result: 'no_refresh_token' }
-      return { ok: !expired, refreshed: false, need_reimport: expired, error: 'no_refresh_token' }
-    }
-    try {
-      // Refresh hits api.anthropic.com — do NOT send VM SOCKS (import-only).
-      const cred = await refreshFn(rt, { proxyUrl: null })
-      const n = normalizeOauth({ ...cred, source: 'refresh_token' })
-      if (!n.access_token) throw new Error('refresh returned no access_token')
-      if (!n.refresh_token) n.refresh_token = rt
-      applyOauthToCfg(cfg, n)
-      persistOauthToVm(cfg.vm.path, n)
-      last = { at: Date.now(), result: 'refreshed', expires_at: n.expires_at }
-      return { ok: true, refreshed: true, expires_at: n.expires_at }
-    } catch (e) {
-      const msg = String(e.message || e)
-      const invalid = e.code === 'invalid_grant' || /invalid_grant|invalid.refresh|expired.*refresh/i.test(msg)
-      last = { at: Date.now(), result: invalid ? 'invalid_grant' : 'error', error: msg.slice(0, 200) }
-      persistRefreshError(cfg.vm?.path, { ...last, need_reimport: invalid })
-      if (homeDir) {
-        const h = harvestFromHome(homeDir)
-        if (h.harvested) {
-          return { ok: true, refreshed: false, harvested: true, expires_at: cfg.vm.expires_at }
-        }
+    if (cfg.vm?.access_token) {
+      last = {
+        at: Date.now(),
+        result: needsRefresh(cfg.vm.expires_at) ? 'defer_to_cli' : 'fresh',
+        expires_at: cfg.vm.expires_at,
       }
-      rereadVmOauth(cfg)
-      if (invalid && cfg.vm?.refresh_token && cfg.vm.refresh_token !== rt) {
-        last = { at: Date.now(), result: 'race_recovered' }
-        return { ok: true, refreshed: false, harvested: true, expires_at: cfg.vm.expires_at }
+      return {
+        ok: true,
+        refreshed: false,
+        defer_to_cli: needsRefresh(cfg.vm.expires_at) || force,
+        expires_at: cfg.vm.expires_at,
       }
-      if (invalid) cfg.vm.refresh_error = { need_reimport: true, result: 'invalid_grant', message: msg.slice(0, 200) }
-      return { ok: false, refreshed: false, need_reimport: invalid, error: msg.slice(0, 300) }
     }
+    if (cfg.vm?.session_key) {
+      last = { at: Date.now(), result: 'no_access_has_session' }
+      return { ok: true, refreshed: false, need_session_recover: true }
+    }
+    last = { at: Date.now(), result: 'no_credentials' }
+    return { ok: false, refreshed: false, need_reimport: true, error: 'no_access_token' }
   }
 
   function ensureFresh(opts) {
-    return withLock(() => doRefresh(opts))
+    return withLock(() => doEnsureFresh(opts))
+  }
+
+  /**
+   * Last-resort recovery: CookieAuth with stored sessionKey.
+   * Does NOT use grant_type=refresh_token.
+   */
+  async function recoverFromSessionKey({ homeDir = null, importFn = null } = {}) {
+    return withLock(async () => {
+      rereadVmOauth(cfg)
+      const sk = cfg.vm?.session_key
+      if (!sk) {
+        last = { at: Date.now(), result: 'no_session_key' }
+        return { ok: false, need_reimport: true, error: 'no_session_key' }
+      }
+      if (typeof importFn !== 'function') {
+        last = { at: Date.now(), result: 'no_import_fn' }
+        return { ok: false, need_reimport: true, error: 'no_import_fn' }
+      }
+      try {
+        const cred = await importFn(sk, { proxyUrl: null })
+        const n = normalizeOauth({
+          ...cred,
+          session_key: sk,
+          source: cred.source || 'sessionKey-cookie-auth-recover',
+        })
+        if (!n.access_token) throw new Error('CookieAuth recovery returned no access_token')
+        applyOauthToCfg(cfg, n)
+        persistOauthToVm(cfg.vm.path, n)
+        if (homeDir && deps.seedFn) {
+          deps.seedFn({
+            homeDir,
+            accessToken: n.access_token,
+            refreshToken: n.refresh_token,
+            expiresAt: n.expires_at,
+            force: true,
+          })
+        }
+        last = { at: Date.now(), result: 'session_reimport', expires_at: n.expires_at }
+        return { ok: true, reimported: true, expires_at: n.expires_at }
+      } catch (e) {
+        const msg = String(e.message || e)
+        last = { at: Date.now(), result: 'session_reimport_failed', error: msg.slice(0, 200) }
+        persistRefreshError(cfg.vm?.path, { result: 'session_reimport_failed', error: msg, need_reimport: true })
+        cfg.vm.refresh_error = { need_reimport: true, result: 'session_reimport_failed', message: msg.slice(0, 200) }
+        return { ok: false, need_reimport: true, error: msg.slice(0, 300) }
+      }
+    })
   }
 
   function startLoop(intervalMs = 60_000, opts = {}) {
     if (timer) return
+    // Harvest-only loop — never hits Anthropic token endpoint.
     timer = setInterval(() => {
       ensureFresh(opts).catch(() => {})
     }, intervalMs)
@@ -290,5 +310,13 @@ export function createOauthGuard(cfg, deps = {}) {
     last = { at: Date.now(), result: 'imported', expires_at: cfg.vm.expires_at }
   }
 
-  return { ensureFresh, harvestFromHome, startLoop, stopLoop, status, noteImported }
+  return {
+    ensureFresh,
+    harvestFromHome,
+    recoverFromSessionKey,
+    startLoop,
+    stopLoop,
+    status,
+    noteImported,
+  }
 }

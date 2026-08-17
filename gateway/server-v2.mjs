@@ -315,20 +315,36 @@ async function handleProtocol(req, res, protocol, pathName) {
   accountQuota.acquire(accountId)
   if (stickyKey) stickyRouter.bind(stickyKey, { accountId, vmId })
 
-  const oauth = await oauthGuard.ensureFresh({
-    homeDir: path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home'),
-  })
-  if (!oauth.ok) {
+  const homeDir = path.join(cfg.paths.project, 'vms', cfg.vm.id || 'default', 'cli-home')
+  await oauthGuard.ensureFresh({ homeDir })
+  // Gateway never calls grant_type=refresh_token. If access is gone but sessionKey
+  // remains, recover via CookieAuth once — not via refresh_token race.
+  if (!cfg.vm.access_token && cfg.vm.session_key) {
+    const rec = await oauthGuard.recoverFromSessionKey({
+      homeDir,
+      importFn: (sk, opts) => sessionKeyToOAuth(sk, opts),
+    })
+    if (!rec.ok) {
+      accountQuota.release(accountId)
+      stats.errors++
+      return json(res, 401, makeError({
+        type: ErrorType.AUTH,
+        code: ErrorCode.OAUTH_NEED_REIMPORT,
+        message: 'VM OAuth dead and sessionKey recovery failed. Re-import sessionKey.',
+        status: 401,
+        details: { vm_id: cfg.vm.id, need_reimport: true },
+      }).body)
+    }
+  }
+  if (!cfg.vm.access_token) {
     accountQuota.release(accountId)
     stats.errors++
     return json(res, 401, makeError({
       type: ErrorType.AUTH,
-      code: oauth.need_reimport ? ErrorCode.OAUTH_NEED_REIMPORT : ErrorCode.OAUTH_REFRESH_FAILED,
-      message: oauth.need_reimport
-        ? 'VM OAuth expired and refresh_token is invalid. Re-import sessionKey.'
-        : `VM OAuth refresh failed: ${oauth.error || 'unknown'}`,
+      code: ErrorCode.OAUTH_NEED_REIMPORT,
+      message: 'VM has no OAuth access_token. Import sessionKey.',
       status: 401,
-      details: { vm_id: cfg.vm.id, need_reimport: !!oauth.need_reimport },
+      details: { vm_id: cfg.vm.id, need_reimport: true },
     }).body)
   }
 
@@ -1115,6 +1131,9 @@ const server = http.createServer(async (req, res) => {
             source: oauth.source || 'sessionKey-cookie-auth',
             refresh_error: null,
           }
+          if (sessionKey) {
+            existing.claude.session_key = String(sessionKey).trim()
+          }
           if (body.name) existing.name = body.name
           existing.updated_at = new Date().toISOString()
           if (body.start !== false) {
@@ -1135,6 +1154,7 @@ const server = http.createServer(async (req, res) => {
               account_uuid: existing.claude.account_uuid,
               org_uuid: existing.claude.org_uuid,
               source: existing.claude.source || 'sessionKey-cookie-auth',
+              session_key: existing.claude.session_key || null,
             })
             try {
               seedCliCredentials({

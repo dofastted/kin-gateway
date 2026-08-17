@@ -51,6 +51,7 @@ export function loadConfig() {
       proxy: vm.proxy || null,
       refresh_token: vm.claude?.refresh_token,
       expires_at: vm.claude?.expires_at,
+      session_key: vm.claude?.session_key || null,
       refresh_error: vm.claude?.refresh_error || null,
       max_concurrency: vm.policy?.maxConcurrency || 2,
       claude_code_version: vm.claude_code_version || 'unknown',

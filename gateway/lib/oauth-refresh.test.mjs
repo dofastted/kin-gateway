@@ -46,7 +46,7 @@ test('persist + apply keep other vm fields', () => {
   fs.writeFileSync(vmPath, JSON.stringify({
     id: 'vm-x',
     policy: { maxConcurrency: 2 },
-    claude: { email: 'a@b.c', access_token: 'old', refresh_token: 'oldrt', extra: 1 },
+    claude: { email: 'a@b.c', access_token: 'old', refresh_token: 'oldrt', extra: 1, session_key: 'sk-keep' },
   }))
   persistOauthToVm(vmPath, { access_token: 'new', refresh_token: 'newrt', expires_at: 99 })
   const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
@@ -56,6 +56,7 @@ test('persist + apply keep other vm fields', () => {
   assert.equal(vm.claude.access_token, 'new')
   assert.equal(vm.claude.refresh_token, 'newrt')
   assert.equal(vm.claude.expires_at, 99)
+  assert.equal(vm.claude.session_key, 'sk-keep')
   assert.ok(vm.claude._token_version > 0)
 
   const cfg = { vm: { access_token: 'old', refresh_token: 'oldrt', expires_at: 1 } }
@@ -64,7 +65,7 @@ test('persist + apply keep other vm fields', () => {
   assert.equal(cfg.vm.expires_at, 99)
 })
 
-test('guard refreshes only when needed and single-flights', async () => {
+test('ensureFresh never calls refreshFn — harvest only', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
   const vmPath = path.join(dir, 'vm-x.json')
   const nowSec = Math.floor(Date.now() / 1000)
@@ -85,40 +86,19 @@ test('guard refreshes only when needed and single-flights', async () => {
   const guard = createOauthGuard(cfg, {
     refreshFn: async () => {
       calls += 1
-      await new Promise((r) => setTimeout(r, 20))
       return { access_token: 'new', refresh_token: 'rt2', expires_in: 28800 }
     },
   })
   const [a, b] = await Promise.all([guard.ensureFresh(), guard.ensureFresh()])
   assert.equal(a.ok, true)
   assert.equal(b.ok, true)
-  assert.equal(calls, 1)
-  assert.equal(cfg.vm.access_token, 'new')
-  assert.equal(cfg.vm.refresh_token, 'rt2')
-  assert.ok(cfg.vm.expires_at > nowSec + 1000)
+  assert.equal(calls, 0, 'must never call grant_type=refresh_token')
+  assert.equal(cfg.vm.access_token, 'old')
+  assert.equal(a.refreshed, false)
 
-  const again = await guard.ensureFresh()
-  assert.equal(again.refreshed, false)
-  assert.equal(calls, 1)
-})
-
-test('invalid_grant asks for sessionKey reimport', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
-  const vmPath = path.join(dir, 'vm-x.json')
-  fs.writeFileSync(vmPath, JSON.stringify({ id: 'vm-x', claude: {} }))
-  const cfg = {
-    vm: { id: 'vm-x', path: vmPath, access_token: 'x', refresh_token: 'dead', expires_at: 1 },
-  }
-  const guard = createOauthGuard(cfg, {
-    refreshFn: async () => {
-      const e = new Error('token refresh failed: 400 invalid_grant')
-      e.code = 'invalid_grant'
-      throw e
-    },
-  })
-  const r = await guard.ensureFresh({ force: true })
-  assert.equal(r.ok, false)
-  assert.equal(r.need_reimport, true)
+  const forced = await guard.ensureFresh({ force: true })
+  assert.equal(forced.ok, true)
+  assert.equal(calls, 0, 'force still must not call Anthropic refresh')
 })
 
 test('harvest picks up newer CLI credentials', () => {
@@ -137,7 +117,7 @@ test('harvest picks up newer CLI credentials', () => {
   const vmPath = path.join(dir, 'vm-x.json')
   fs.writeFileSync(vmPath, JSON.stringify({ id: 'vm-x', claude: { access_token: 'old' } }))
   const cfg = { vm: { id: 'vm-x', path: vmPath, access_token: 'old', expires_at: 10 } }
-  const guard = createOauthGuard(cfg, { refreshFn: async () => { throw new Error('no') } })
+  const guard = createOauthGuard(cfg)
   const h = guard.harvestFromHome(home)
   assert.equal(h.harvested, true)
   assert.equal(cfg.vm.access_token, 'cli')
@@ -155,7 +135,7 @@ test('shouldKeepCliOauth keeps same-window rotation', () => {
   ), false)
 })
 
-test('defer to CLI when home exists and access is not fully expired', async () => {
+test('ensureFresh harvests CLI and does not refresh', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
   const home = path.join(dir, 'cli-home')
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
@@ -166,7 +146,11 @@ test('defer to CLI when home exists and access is not fully expired', async () =
     claude: { access_token: 'old', refresh_token: 'rt1', expires_at: nowSec + 30 },
   }))
   fs.writeFileSync(path.join(home, '.claude', 'credentials.json'), JSON.stringify({
-    claudeAiOauth: { accessToken: 'old', refreshToken: 'rt1', expiresAt: (nowSec + 30) * 1000 },
+    claudeAiOauth: {
+      accessToken: 'cli-new',
+      refreshToken: 'rt-cli',
+      expiresAt: (nowSec + 8000) * 1000,
+    },
   }))
   const cfg = {
     vm: { id: 'vm-x', path: vmPath, access_token: 'old', refresh_token: 'rt1', expires_at: nowSec + 30 },
@@ -177,64 +161,64 @@ test('defer to CLI when home exists and access is not fully expired', async () =
   })
   const r = await guard.ensureFresh({ homeDir: home })
   assert.equal(r.ok, true)
-  assert.equal(r.defer_to_cli, true)
+  assert.equal(r.harvested, true)
+  assert.equal(cfg.vm.access_token, 'cli-new')
   assert.equal(calls, 0)
 })
 
-test('reread disk refresh_token before calling refreshFn', async () => {
+test('recoverFromSessionKey uses CookieAuth not refresh_token', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
+  const vmPath = path.join(dir, 'vm-x.json')
+  fs.writeFileSync(vmPath, JSON.stringify({
+    id: 'vm-x',
+    claude: { session_key: 'sk-ant-sid-test', access_token: 'dead' },
+  }))
+  const cfg = {
+    vm: { id: 'vm-x', path: vmPath, session_key: 'sk-ant-sid-test', access_token: 'dead' },
+  }
+  let refreshCalls = 0
+  let importCalls = 0
+  const guard = createOauthGuard(cfg, {
+    refreshFn: async () => { refreshCalls += 1; throw new Error('should not refresh') },
+  })
+  const r = await guard.recoverFromSessionKey({
+    importFn: async (sk) => {
+      importCalls += 1
+      assert.equal(sk, 'sk-ant-sid-test')
+      return { access_token: 'new-at', refresh_token: 'new-rt', expires_in: 28800 }
+    },
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.reimported, true)
+  assert.equal(importCalls, 1)
+  assert.equal(refreshCalls, 0)
+  assert.equal(cfg.vm.access_token, 'new-at')
+  assert.equal(cfg.vm.refresh_token, 'new-rt')
+})
+
+test('no credentials → need_reimport', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
+  const vmPath = path.join(dir, 'vm-x.json')
+  fs.writeFileSync(vmPath, JSON.stringify({ id: 'vm-x', claude: {} }))
+  const cfg = { vm: { id: 'vm-x', path: vmPath } }
+  const guard = createOauthGuard(cfg)
+  const r = await guard.ensureFresh()
+  assert.equal(r.ok, false)
+  assert.equal(r.need_reimport, true)
+})
+
+test('reread disk tokens into memory', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
   const vmPath = path.join(dir, 'vm-x.json')
   const nowSec = Math.floor(Date.now() / 1000)
   fs.writeFileSync(vmPath, JSON.stringify({
     id: 'vm-x',
-    claude: { access_token: 'disk', refresh_token: 'rt-disk', expires_at: nowSec - 10 },
+    claude: { access_token: 'disk', refresh_token: 'rt-disk', expires_at: nowSec - 10, session_key: 'sk-disk' },
   }))
   const cfg = {
     vm: { id: 'vm-x', path: vmPath, access_token: 'mem', refresh_token: 'rt-mem', expires_at: nowSec - 10 },
   }
   assert.equal(rereadVmOauth(cfg), true)
   assert.equal(cfg.vm.refresh_token, 'rt-disk')
-  let seen = null
-  const guard = createOauthGuard(cfg, {
-    refreshFn: async (rt) => {
-      seen = rt
-      return { access_token: 'new', refresh_token: 'rt-new', expires_in: 28800 }
-    },
-  })
-  const r = await guard.ensureFresh({ force: true })
-  assert.equal(r.ok, true)
-  assert.equal(seen, 'rt-disk')
-})
-
-test('need_reimport short-circuits without burning refresh again', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
-  const vmPath = path.join(dir, 'vm-x.json')
-  const nowSec = Math.floor(Date.now() / 1000)
-  fs.writeFileSync(vmPath, JSON.stringify({
-    id: 'vm-x',
-    claude: {
-      access_token: 'x',
-      refresh_token: 'dead',
-      expires_at: nowSec + 1000,
-      refresh_error: { need_reimport: true, result: 'invalid_grant' },
-    },
-  }))
-  const cfg = {
-    vm: {
-      id: 'vm-x',
-      path: vmPath,
-      access_token: 'x',
-      refresh_token: 'dead',
-      expires_at: nowSec + 1000,
-      refresh_error: { need_reimport: true },
-    },
-  }
-  let calls = 0
-  const guard = createOauthGuard(cfg, {
-    refreshFn: async () => { calls += 1; return { access_token: 'nope' } },
-  })
-  const r = await guard.ensureFresh()
-  assert.equal(r.ok, false)
-  assert.equal(r.need_reimport, true)
-  assert.equal(calls, 0)
+  assert.equal(cfg.vm.session_key, 'sk-disk')
 })
