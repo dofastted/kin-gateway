@@ -3,7 +3,7 @@
  * Inference must NEVER use process-global cfg.vm. Every hop reads the
  * scheduled VM record: home, OAuth, seed, proxy, quota account, kernel metadata.
  *
- * Runtime is a host CLI slot (kincli + cli-home), not KVM/QEMU.
+ * Runtime is a Docker container per VM (isolated PID/net/fs). Host has no nested KVM.
  */
 import path from 'node:path'
 import { getVm, listVms, getActiveVmId } from './vm-registry.mjs'
@@ -11,8 +11,8 @@ import { defaultSeedPolicy } from './cli-runner.mjs'
 import { harvestHomeToVm, readCliOauth } from './oauth-refresh.mjs'
 
 export const GATEWAY_CAPABILITIES = {
-  runtime: 'host-cli-slot',
-  kernel: 'metadata-only',
+  runtime: 'docker-container',
+  kernel: 'mixed-os-docker',
   // Honest capability surface (see LIMITATIONS in server-v2 for wording):
   client_tools: true,            // forwarded in official Messages; executed on the caller
   images: true,                  // active-turn image blocks forwarded natively into the CLI hop
@@ -21,7 +21,7 @@ export const GATEWAY_CAPABILITIES = {
   claude_session: false,
   workspace_default: 'client',
   tool_execution: 'client',
-  forward_default: 'cli',
+  forward_default: 'relay',
 }
 
 export function vmJsonPath(projectRoot, vmId) {
@@ -94,7 +94,12 @@ export function buildExecutionContext({
   const project = cfg.paths.project
   const stickyKey = stickyRouter ? stickyRouter.extractKey(req, inbound) : null
   const bound = stickyKey && stickyRouter ? stickyRouter.resolve(stickyKey) : null
-  const vmId = pickSchedulableVmId(project, preferredVmId || bound?.vmId || null)
+  let vmId = null
+  if (preferredVmId && getVm(project, preferredVmId)) {
+    vmId = preferredVmId
+  } else {
+    vmId = pickSchedulableVmId(project, bound?.vmId || null)
+  }
   if (!vmId) {
     return { ok: false, error: 'no_schedulable_vm', message: 'No schedulable VM with credentials' }
   }

@@ -45,7 +45,7 @@ export function summarizeVm(vm) {
     oauth_source: vm.claude?.source || null,
     has_refresh: !!vm.claude?.refresh_token,
     has_session_key: !!vm.claude?.session_key,
-    max_concurrency: vm.policy?.maxConcurrency ?? 2,
+    max_concurrency: vm.policy?.maxConcurrency ?? 20,
     weight: vm.policy?.weight ?? 1,
     timezone: vm.timezone || null,
     locale: vm.locale || null,
@@ -56,7 +56,12 @@ export function summarizeVm(vm) {
     schedulable: vm.schedulable !== false,
     schedule_disabled_reason: vm.schedule_disabled_reason || null,
     proxy_id: vm.proxy?.id || null,
+    proxy_cli_enabled: !!vm.proxy_cli_enabled,
     created_at: vm.created_at || null,
+    runtime: vm.runtime || null,
+    ip: vm.runtime?.ip || null,
+    pid: vm.runtime?.pid || null,
+    container: vm.runtime?.container || null,
   }
 }
 

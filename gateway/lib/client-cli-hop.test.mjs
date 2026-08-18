@@ -100,17 +100,17 @@ test('empty messages → Hello fallback', () => {
   assert.deepEqual(line.message.content, [{ type: 'text', text: 'Hello' }])
 })
 
-test('OpenAI assistant tool_calls + tool role are preserved in history', () => {
+test('OpenAI assistant tool_calls + tool role are preserved across hop lines (CLI fallback)', () => {
   const r = buildStreamJsonTurns([
     { role: 'user', content: 'run it' },
     { role: 'assistant', content: null, tool_calls: [{ id: 'c1', function: { name: 'Read', arguments: '{"path":"/x"}' } }] },
     { role: 'tool', tool_call_id: 'c1', content: 'file body' },
     { role: 'user', content: 'thanks' },
   ])
-  const [line] = parseLines(r)
-  const text = JSON.stringify(line.message.content)
-  assert.match(text, /tool_use Read/)
-  assert.match(text, /file body/)
+  const blob = r.lines.join('\n')
+  assert.match(blob, /tool_use/)
+  assert.match(blob, /mcp__kinclient__Read|Read/)
+  assert.match(blob, /file body/)
 })
 
 // ---------- args: fail-closed perms (T5) ----------
@@ -133,15 +133,16 @@ test('buildHopArgs: client tools become mcp allowlist entries', () => {
   assert.equal(args[a + 1], 'mcp__kinclient__Read,mcp__kinclient__Grep')
 })
 
-// ---------- args: system truncation recorded (T8) ----------
-test('buildHopArgs: long system prompt truncation is recorded', () => {
+// ---------- args: CLI fallback does not truncate official system ----------
+test('buildHopArgs: official system is passthrough, not truncated', () => {
   const big = 'x'.repeat(30000)
   const { args, sysMeta } = buildHopArgs({ mdl: 'm', mcpCfg: '/tmp/m.json', tools: [], body: { system: big }, resumeSessionId: null })
-  assert.equal(sysMeta.truncated, true)
+  assert.equal(sysMeta.truncated, false)
+  assert.equal(sysMeta.passthrough, true)
   assert.equal(sysMeta.orig_len, 30000)
-  assert.ok(sysMeta.kept_len < 30000)
-  const s = args.indexOf('--append-system-prompt')
-  assert.ok(args[s + 1].length < 30000)
+  const s = args.indexOf('--system-prompt')
+  assert.ok(s > -1)
+  assert.equal(args[s + 1].length, 30000)
 })
 
 // ---------- args: param mapping (T4) ----------

@@ -1,9 +1,10 @@
 /**
  * Workspace ownership.
  *
- * client (default): tools / files / shell run on the caller's machine
- *   (Windows Claude Code, IDE, Hermes, …). Gateway is protocol + identity.
- * vm (opt-in): tools run inside the VM cli-home. Header: x-kin-workspace: vm
+ * client (default): tools / files / shell run on the caller's machine.
+ *   Transport default is CRS HTTP (official Messages). CLI is fallback.
+ * vm (opt-in): tools run inside the VM via the Claude Code process.
+ *   Header: x-kin-workspace: vm
  */
 export function resolveWorkspaceMode(req = {}, inbound = {}, clientClass = '') {
   const raw = String(
@@ -20,4 +21,3 @@ export function resolveWorkspaceMode(req = {}, inbound = {}, clientClass = '') {
 export function isOfficialClaudeClient(clientClass) {
   return clientClass === 'claude_code_official' || clientClass === 'claude_official_cli'
 }
-

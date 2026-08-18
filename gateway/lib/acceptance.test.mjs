@@ -14,6 +14,7 @@ import {
   applyVmStandardReplace,
   resolveForwardMode,
   VM_STANDARD_REPLACE,
+  CRS_REPLACE,
   FORWARD_MODES,
 } from './forward-mode.mjs'
 import { resolveWorkspaceMode } from './workspace-mode.mjs'
@@ -84,12 +85,12 @@ test('pkt-003 openai.responses → Claude preserves user text', () => {
 })
 
 // ---------- identity replace / body preserve ----------
-test('cli and relay share full VM_STANDARD_REPLACE set', () => {
+test('cli uses VM_STANDARD_REPLACE; relay uses CRS_REPLACE', () => {
   assert.deepEqual([...FORWARD_MODES.cli.replace], [...VM_STANDARD_REPLACE])
-  assert.deepEqual([...FORWARD_MODES.relay.replace], [...VM_STANDARD_REPLACE])
+  assert.deepEqual([...FORWARD_MODES.relay.replace], [...CRS_REPLACE])
 })
 
-test('synth: tools and messages preserved after identity replace', () => {
+test('synth: tools and messages preserved after CLI identity replace', () => {
   const pkt = loadPkt('synth-tools-metadata.anthropic.json')
   const official = officialMessagesBody(pkt.inbound_body)
   const out = applyForwardReplace('cli', official, VM_IDENTITY)
@@ -98,14 +99,26 @@ test('synth: tools and messages preserved after identity replace', () => {
   assert.equal(out.tool_choice?.type, 'auto')
   const text = JSON.stringify(out.messages)
   assert.match(text, /CAP_MSG/)
-  // client settings dropped
   assert.equal(out.settings, undefined)
-  // metadata.user_id is VM standard
   const uid = JSON.parse(out.metadata.user_id)
   assert.equal(uid.session_id, 'vm-session-fixed')
   assert.equal(uid.account_uuid, 'vm-account-uuid')
   assert.equal(uid.device_id, 'b'.repeat(64))
-  assert.notEqual(uid.device_id.includes('windows'), true)
+})
+
+test('relay replaces VM device_id only; session hashed CRS-style; tools kept', () => {
+  const pkt = loadPkt('synth-tools-metadata.anthropic.json')
+  const official = officialMessagesBody(pkt.inbound_body)
+  official.metadata = {
+    user_id: JSON.stringify({ device_id: 'caller-device', account_uuid: '', session_id: 'caller-sess' }),
+  }
+  const out = applyForwardReplace('relay', official, VM_IDENTITY, official)
+  assert.equal(out.tools[0].name, 'Read')
+  const uid = JSON.parse(out.metadata.user_id)
+  assert.equal(uid.device_id, VM_IDENTITY.deviceId)
+  assert.equal(uid.account_uuid, 'vm-account-uuid')
+  assert.notEqual(uid.session_id, 'caller-sess')
+  assert.notEqual(uid.session_id, 'vm-session-fixed')
 })
 
 test('applyVmStandardReplace drops client settings and machine identity', () => {
@@ -121,10 +134,12 @@ test('applyVmStandardReplace drops client settings and machine identity', () => 
   assert.equal(out.metadata.machine_id, undefined)
 })
 
-test('resolveForwardMode defaults to cli; aliases work', () => {
-  assert.equal(resolveForwardMode({}, {}), 'cli')
+test('resolveForwardMode defaults to relay; cli is explicit fallback', () => {
+  assert.equal(resolveForwardMode({}, {}), 'relay')
   assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'sub2api' } }, {}), 'relay')
+  assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'crs' } }, {}), 'relay')
   assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'cliproxy' } }, {}), 'cli')
+  assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'cli' } }, {}), 'cli')
 })
 
 test('workspace defaults to client', () => {
@@ -132,15 +147,15 @@ test('workspace defaults to client', () => {
   assert.equal(resolveWorkspaceMode({ headers: { 'x-kin-workspace': 'vm' } }, {}, ''), 'vm')
 })
 
-// ---------- HTTP OAuth permanently disabled ----------
-test('callAnthropicMessages is disabled (no HTTP)', async () => {
+// ---------- host-process HTTP hop stays disabled; CRS uses uid worker ----------
+test('callAnthropicMessages host hop is disabled (CRS is uid worker)', async () => {
   const r = await callAnthropicMessages({ accessToken: 'sk-ant-oat01-FAKE' })
   assert.equal(r.status, 501)
   assert.equal(r.ok, false)
-  assert.match(String(r.body?.error?.message || ''), /disabled|must not call/i)
+  assert.match(String(r.body?.error?.message || ''), /disabled|crs-relay|VM UID/i)
 })
 
-test('streamAnthropicMessages is disabled (no HTTP)', async () => {
+test('streamAnthropicMessages host hop is disabled', async () => {
   const r = await streamAnthropicMessages({ accessToken: 'sk-ant-oat01-FAKE' })
   assert.equal(r.status, 501)
   assert.equal(r.ok, false)
