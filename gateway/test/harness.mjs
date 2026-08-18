@@ -160,6 +160,13 @@ export function readTrace(gw) {
   try { return JSON.parse(fs.readFileSync(gw.traceFile, 'utf8')) } catch { return null }
 }
 
+/** Snapshot then unlink so the next hop writes a fresh trace. */
+export function takeTrace(gw) {
+  const t = readTrace(gw)
+  try { fs.unlinkSync(gw.traceFile) } catch {}
+  return t
+}
+
 export function requireNoFetch() {
   // unused helper kept for tests that want a local assert hook
   return createRequire(import.meta.url)

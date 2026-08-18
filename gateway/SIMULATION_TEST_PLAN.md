@@ -154,6 +154,12 @@ gateway/test/
 ### 5.8 面板/鉴权
 - 无 key → 401；`Bearer testkey` → 放行；面板 `login`→cookie→`/me`；`/v1/models` 返回 seed 目录。
 
+### 5.9 长会话 × 多协议（补强，P4）
+- 同一 `x-session-id`：第 1 跳无 `--resume`；第 2+ 跳 `--resume <mock session_id>`，stdin 只含尾轮。
+- 同一 sticky key 串行：`anthropic.messages` → `openai.chat` → `openai.responses` → anthropic stream，resume 不断。
+- 不同 `x-session-id` 互不继承 `--resume`。
+- 连续 N 轮后 `data/sticky-map.json` 合法，hits / session_id / vm_id 正确。
+
 ---
 
 ## 6. 执行计划（分阶段）
@@ -181,11 +187,22 @@ gateway/test/
 - [x] 5.4 vm 工作区。
 - **验收**：矩阵 5.4–5.6 全绿；grep 断言无 anthropic HTTP。
 
-### P3 — 并发/竞态 + 面板 + CI
-- [x] 5.7 并发 T7。
-- [x] 5.8 面板/鉴权。
-- [x] CI：新增 `package.json` script `"test": "node --test gateway/lib gateway/test"`；GitHub Actions（node 22，`npm ci` + `npm test`）。
-- **验收**：CI 绿；文档更新 README「离线验收」指向新套件。
+### P4 — 长会话 + 多协议（本轮）
+- [x] 同一 `x-session-id` 跨请求 `--resume` + 尾轮 stdin。
+- [x] 三协议串行 + 末轮 stream。
+- [x] 不同 session 隔离；长序列 sticky-map 合法。
+- **验收**：`gateway/test/e2e/long-session.e2e.test.mjs` 全绿。
+
+### 计划仍缺（未做 / 弱断言）
+- [ ] 5.2 `hop_meta.params.dropped` / `hop_meta.system.truncated` 未在 HTTP 响应上断言（仅 mock argv）。
+- [ ] 5.2 OpenAI `image_url`(data/http) 入站形状未 e2e（仅 Anthropic `image` block）。
+- [ ] 5.1 openai.chat / responses 的 `choices`/`usage` 结构只做了文本匹配。
+- [ ] 5.6 hang 后无孤儿进程（沙箱无 `ps`，只断言 504）。
+- [ ] 5.7 并发导入 vs 收割 `withVmLock` 竞态未单独测。
+- [ ] OpenAI tools → `tool_calls` 流式转换未 e2e。
+- [ ] Hermes agent 分类 / 入站未纳入本矩阵。
+- [ ] `package.json` test 脚本用 glob（`lib/*.test.mjs` …），与原文 `node --test gateway/lib gateway/test` 不完全一致。
+
 
 ---
 
