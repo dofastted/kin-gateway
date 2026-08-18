@@ -35,6 +35,7 @@ import { validateOfficialModel, fetchOfficialModels, harvestCliModelCatalog } fr
 import { StickyRouter } from './lib/sticky-router.mjs'
 import { AccountQuota } from './lib/account-quota.mjs'
 import { ApiKeyStore, publicKeyView } from './lib/api-keys.mjs'
+import { RequestLogStore, summarizeBody } from './lib/request-log.mjs'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm-registry.mjs'
 import { runClaudeAuthStatus } from './lib/cli-probe.mjs'
 import {
@@ -99,6 +100,8 @@ const accountQuota = new AccountQuota({
 })
 
 const apiKeyStore = new ApiKeyStore({ dataDir: cfg.paths.data })
+const requestLog = new RequestLogStore({ dataDir: cfg.paths.data, mode: process.env.KIN_REQUEST_LOG_MODE || 'normal' })
+try { requestLog.cleanup() } catch {}
 
 const proxyPool = new ProxyPool({
   dataDir,
@@ -122,24 +125,28 @@ const stats = {
 
 function json(res, status, body) {
   const data = JSON.stringify(body)
-  res.writeHead(status, {
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token',
-    'access-control-allow-methods': 'GET,POST,OPTIONS,PUT,DELETE',
+    'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token, x-request-id, x-kin-debug, x-kin-log',
+    'access-control-allow-methods': 'GET,POST,OPTIONS,PUT,DELETE,PATCH',
     'x-kin-rewrite': cfg.rewrite.enabled ? 'on' : 'off',
-  })
+  }
+  if (res._kinRequestId) headers['x-request-id'] = res._kinRequestId
+  res.writeHead(status, headers)
   res.end(data)
 }
 
 function writeSSEHeaders(res) {
-  res.writeHead(200, {
+  const headers = {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
     connection: 'keep-alive',
     'access-control-allow-origin': '*',
     'x-kin-rewrite': cfg.rewrite.enabled ? 'on' : 'off',
-  })
+  }
+  if (res._kinRequestId) headers['x-request-id'] = res._kinRequestId
+  res.writeHead(200, headers)
 }
 
 function readBody(req, maxBytes) {
@@ -271,12 +278,17 @@ function requireAuth(req, res) {
   return true
 }
 
-function capture(entry) {
+function capture(entry, logBag = null) {
   const safe = JSON.parse(redactSecrets(entry))
   fs.writeFileSync(
     path.join(cfg.paths.captures, `v2-${Date.now()}-${entry.protocol || 'x'}.json`),
     JSON.stringify(safe, null, 2),
   )
+  if (logBag) {
+    if (entry.hop_meta) logBag.hop_meta = entry.hop_meta
+    if (entry.upstream_status != null) logBag.upstream_status = entry.upstream_status
+    if (entry.workspace) logBag.workspace = entry.workspace
+  }
 }
 
 // Per-request diff artifacts are debug-only. Sample them so the captures dir
@@ -314,11 +326,51 @@ function reloadRules() {
 
 async function handleProtocol(req, res, protocol, pathName) {
   if (!requireAuth(req, res)) return
+
+  const logCtx = requestLog.start(req, { protocol, pathName })
+  res._kinRequestId = logCtx.request_id
+  const logBag = {
+    protocol,
+    model: null,
+    stream: false,
+    inbound_body: null,
+    inbound_summary: null,
+    hop_meta: null,
+    upstream_status: null,
+    outbound_body: null,
+    outbound_summary: null,
+    vm_id: null,
+    account_id: null,
+    workspace: null,
+    has_tools: null,
+    usage: null,
+    error_code: null,
+    error_message: null,
+  }
+  const bindLogFinish = () => {
+    if (res._kinLogBound) return
+    res._kinLogBound = true
+    res.on('finish', () => {
+      try {
+        requestLog.finish(logCtx, {
+          status: res.statusCode || 0,
+          api_key_kind: req.apiKeyKind || null,
+          api_key_id: req.apiKeyRecord?.id || null,
+          ...logBag,
+        })
+      } catch {}
+    })
+  }
+  bindLogFinish()
+  res._kinLogBag = logBag
+
   let inbound
   try {
     inbound = await readBody(req, cfg.limits.max_body_bytes)
   } catch (err) {
     stats.errors++
+    logBag.error_code = err?.body?.error?.code || ErrorCode.INVALID_JSON
+    logBag.error_message = err?.body?.error?.message || String(err?.message || err)
     if (err?.body?.error) return json(res, err.status || 400, err.body)
     return json(res, 400, makeError({
       type: ErrorType.INVALID_REQUEST,
@@ -327,6 +379,11 @@ async function handleProtocol(req, res, protocol, pathName) {
       status: 400,
     }).body)
   }
+  logBag.inbound_body = inbound
+  logBag.inbound_summary = summarizeBody(inbound)
+  logBag.model = inbound?.model || null
+  logBag.stream = !!inbound.stream
+  logBag.has_tools = Array.isArray(inbound?.tools) && inbound.tools.length > 0
   const wantStream = !!inbound.stream
 
   const built = buildExecutionContext({
@@ -345,6 +402,8 @@ async function handleProtocol(req, res, protocol, pathName) {
   const stickyKey = exec.stickyKey
   const accountId = exec.accountId
   const vmId = exec.vmId
+  logBag.vm_id = vmId
+  logBag.account_id = accountId
   accountQuota.ensure({
     account_id: accountId,
     vm_id: vmId,
@@ -383,6 +442,8 @@ async function handleProtocol(req, res, protocol, pathName) {
   if (!bodyCheck.ok) {
     stats.errors++
     const er = bodyCheck.errorResult
+    logBag.error_code = er.body?.error?.code || 'invalid_request'
+    logBag.error_message = er.body?.error?.message || null
     er.body.error.details = {
       ...(er.body.error.details || {}),
       body_inspect: inspectRequestBody(ctx.body),
@@ -396,6 +457,8 @@ async function handleProtocol(req, res, protocol, pathName) {
   if (!modelCheck.ok) {
     stats.errors++
     const e = mapModelError(modelCheck)
+    logBag.error_code = e.body?.error?.code || 'model_not_supported'
+    logBag.error_message = e.body?.error?.message || null
     e.body.error.details = {
       ...(e.body.error.details || {}),
       body_inspect: inspectRequestBody(ctx.body),
@@ -471,6 +534,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: claude })
 
   const workspace = resolveWorkspaceMode(req, inbound, fp.client_class)
+  logBag.workspace = workspace
   const forwardMode = resolveForwardMode(req, inbound)
   ctx = { ...ctx, workspace, forwardMode }
 
@@ -558,7 +622,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           })
           if (result?.ok) res.write('data: [DONE]\n\n')
         }
-        ingestCliHopQuota(accountId, result || {})
+        ingestCliHopQuota(accountId, result || {}, logBag)
         if (stickyKey && result?.session_id) {
           stickyRouter.bind(stickyKey, { accountId, vmId, sessionId: result.session_id })
         }
@@ -580,7 +644,7 @@ async function handleProtocol(req, res, protocol, pathName) {
         via: result?.via || 'vm-cli-forward-stream',
         stream: true,
         hop_meta: result?.hop_meta || null,
-      })
+      }, logBag)
       return res.end()
     }
 
@@ -591,7 +655,7 @@ async function handleProtocol(req, res, protocol, pathName) {
         ...hopBase,
         onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
       })
-      ingestCliHopQuota(accountId, upstream)
+      ingestCliHopQuota(accountId, upstream, logBag)
       if (stickyKey && upstream.session_id) {
         stickyRouter.bind(stickyKey, { accountId, vmId, sessionId: upstream.session_id })
       }
@@ -611,7 +675,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       via: upstream.via || 'vm-cli-forward',
       stop_reason: upstream.body?.stop_reason || null,
       hop_meta: upstream.hop_meta || null,
-    })
+    }, logBag)
     if (upstream.status !== 200) {
       stats.errors++
       const mapped = mapUpstreamError(upstream.status, upstream.body, upstream.headers || {})
@@ -713,7 +777,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           res.write("event: " + evtName + "\ndata: " + payload + "\n\n")
         },
       })
-      ingestCliHopQuota(accountId, result)
+      ingestCliHopQuota(accountId, result, logBag)
       if (!result.ok) {
         res.write(`event: error\ndata: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
       }
@@ -731,7 +795,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
         },
       })
-      ingestCliHopQuota(accountId, result)
+      ingestCliHopQuota(accountId, result, logBag)
       if (!result.ok) {
         res.write(`data: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
       }
@@ -750,7 +814,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           for (const e of events) res.write(`data: ${JSON.stringify(e)}\n\n`)
         },
       })
-      ingestCliHopQuota(accountId, result)
+      ingestCliHopQuota(accountId, result, logBag)
       if (!result.ok) {
         res.write(`data: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
       }
@@ -766,7 +830,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   try {
     upstream = await callClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }), serverTools: true,
     })
-    ingestCliHopQuota(accountId, upstream)
+    ingestCliHopQuota(accountId, upstream, logBag)
   } finally {
     try { harvestExecHome(exec) } catch {}
     releaseSlots()
@@ -780,7 +844,7 @@ async function handleProtocol(req, res, protocol, pathName) {
     rewrite_enabled: rewriteEnabled,
     has_tools: Array.isArray(ctx.body.tools) && ctx.body.tools.length > 0,
     upstream_status: upstream.status,
-  })
+  }, logBag)
 
   if (upstream.status !== 200) {
     stats.errors++
@@ -814,10 +878,15 @@ async function handleProtocol(req, res, protocol, pathName) {
 
 
 
-function ingestCliHopQuota(accountId, hop) {
+function ingestCliHopQuota(accountId, hop, logBag = null) {
   if (!accountId || !hop) return
   const infos = hop.rate_limits?.length ? hop.rate_limits : (hop.rate_limit ? [hop.rate_limit] : [])
   const usage = hop.usage || hop.body?.usage || null
+  if (logBag) {
+    logBag.usage = usage
+    if (hop.hop_meta) logBag.hop_meta = hop.hop_meta
+    if (hop.status != null) logBag.upstream_status = hop.status
+  }
   if (!infos.length && !usage) return
   accountQuota.ingestCliRateLimit(accountId, infos, usage, { countRequest: true })
 }
@@ -1068,6 +1137,34 @@ const server = http.createServer(async (req, res) => {
         if (!ok) return json(res, 404, { ok: false, error: { message: 'api key not found' } })
         return json(res, 200, { ok: true, deleted: id })
       }
+
+      // ---- Request logs (normal summary + debug full) ----
+      if (req.method === 'GET' && p === '/api/panel/request-logs') {
+        const u = new URL(req.url, 'http://x')
+        const mode = (u.searchParams.get('mode') || 'normal').toLowerCase()
+        const limit = Number(u.searchParams.get('limit') || 50)
+        if (mode === 'debug') {
+          return json(res, 200, {
+            ok: true,
+            mode: 'debug',
+            config: requestLog.snapshot(),
+            items: requestLog.listDebug({ limit }),
+          })
+        }
+        return json(res, 200, {
+          ok: true,
+          mode: 'normal',
+          config: requestLog.snapshot(),
+          items: requestLog.listNormal({ limit }),
+        })
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/request-logs\/[^/]+$/.test(p)) {
+        const id = p.split('/').pop()
+        const rec = requestLog.getDebug(id)
+        if (!rec) return json(res, 404, { ok: false, error: { message: 'debug log not found' } })
+        return json(res, 200, { ok: true, item: rec })
+      }
+
 
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
