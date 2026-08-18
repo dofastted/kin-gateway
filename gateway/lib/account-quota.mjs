@@ -24,6 +24,12 @@ export class AccountQuota {
   /** Kept for API compat + post-restore hook (no in-memory cache to refresh). */
   reload() {}
 
+  /** Re-bind to a fresh DB connection (after backup restore). */
+  rebind(db) {
+    this.db = db
+    this.repo = new AccountsRepo(db)
+  }
+
   ensure(account) {
     const id = account.account_id || account.account_uuid || account.id
     if (!id) return

@@ -78,6 +78,12 @@ export class ApiKeyStore {
   /** Re-read from DB (no-op cache-wise; kept for API compat + post-restore). */
   reload() {}
 
+  /** Re-bind to a fresh DB connection (after backup restore). */
+  rebind(db) {
+    this.db = db
+    this.repo = new ApiKeysRepo(db)
+  }
+
   list({ reveal = false } = {}) {
     return this.repo.list().map((k) => {
       const v = publicKeyView(k, { reveal })

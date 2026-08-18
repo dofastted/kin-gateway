@@ -123,6 +123,13 @@ export class RequestLogStore {
     this._mem = []
   }
 
+  /** Re-bind to a fresh DB connection (after backup restore). */
+  rebind(db) {
+    this.db = db
+    this.repo = new RequestLogsRepo(db)
+    this._mem = []
+  }
+
   start(req, { protocol = null, pathName = null } = {}) {
     const requestId = newRequestId(req)
     try { req.headers = req.headers || {} } catch {}

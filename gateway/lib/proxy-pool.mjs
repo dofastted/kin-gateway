@@ -95,6 +95,13 @@ export class ProxyPool {
     this.load()
   }
 
+  /** Re-bind to a fresh DB connection (after backup restore) and re-read. */
+  rebind(db) {
+    this.db = db
+    this.repo = new ProxiesRepo(db)
+    this.load()
+  }
+
   save() {
     this.repo.setConfig(this.state.config)
     this.repo.replaceAll(this.state.proxies)

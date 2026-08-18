@@ -17,6 +17,12 @@ export class StickyRouter {
   /** Kept for API compat + post-restore hook (state lives in DB). */
   reload() {}
 
+  /** Re-bind to a fresh DB connection (after backup restore). */
+  rebind(db) {
+    this.db = db
+    this.repo = new StickyRepo(db)
+  }
+
   extractKey(req, body = {}) {
     if (!this.config.enabled) return null
     const headers = req.headers || {}
