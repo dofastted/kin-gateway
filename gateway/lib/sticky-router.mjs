@@ -1,31 +1,26 @@
 /**
- * Configurable sticky / conversation-continuity routing.
+ * Configurable sticky / conversation-continuity routing (SQLite-backed).
  * Binds conversation key → account/VM for the TTL window.
  */
 
-import fs from 'node:fs'
-import path from 'node:path'
 import crypto from 'node:crypto'
+import { resolveStoreDb } from './db/database.mjs'
+import { StickyRepo } from './db/repos/sticky-repo.mjs'
 
 export class StickyRouter {
-  constructor({ dataDir, config }) {
-    this.dataDir = dataDir
+  constructor({ dataDir, db, config }) {
+    this.db = resolveStoreDb({ db, dataDir })
+    this.repo = new StickyRepo(this.db)
     this.config = config?.sticky || { enabled: true, mode: 'conversation', ttl_seconds: 86400 }
-    this.file = path.join(dataDir, 'sticky-map.json')
-    this.map = this._load()
   }
 
-  _load() {
-    try {
-      return JSON.parse(fs.readFileSync(this.file, 'utf8'))
-    } catch {
-      return { sessions: {} }
-    }
-  }
+  /** Kept for API compat + post-restore hook (state lives in DB). */
+  reload() {}
 
-  _save() {
-    fs.mkdirSync(this.dataDir, { recursive: true })
-    fs.writeFileSync(this.file, JSON.stringify(this.map, null, 2))
+  /** Re-bind to a fresh DB connection (after backup restore). */
+  rebind(db) {
+    this.db = db
+    this.repo = new StickyRepo(db)
   }
 
   extractKey(req, body = {}) {
@@ -50,11 +45,10 @@ export class StickyRouter {
   resolve(key) {
     if (!key || !this.config.enabled) return null
     this._purge()
-    const ent = this.map.sessions[key]
+    const ent = this.repo.get(key)
     if (!ent) return null
     if (Date.now() > ent.expires_at) {
-      delete this.map.sessions[key]
-      this._save()
+      this.repo.remove(key)
       return null
     }
     return { accountId: ent.account_id, vmId: ent.vm_id, sessionId: ent.session_id || null, key }
@@ -63,37 +57,29 @@ export class StickyRouter {
   bind(key, { accountId, vmId, sessionId = null }) {
     if (!key || !this.config.enabled) return
     const ttl = (this.config.ttl_seconds || 86400) * 1000
-    const prev = this.map.sessions[key] || {}
-    this.map.sessions[key] = {
+    const prev = this.repo.get(key) || {}
+    this.repo.upsert(key, {
       account_id: accountId,
       vm_id: vmId,
       session_id: sessionId || prev.session_id || null,
       bound_at: Date.now(),
       expires_at: Date.now() + ttl,
       hits: (prev.hits || 0) + 1,
-    }
-    this._save()
+    })
   }
 
   _purge() {
-    const now = Date.now()
-    let dirty = false
-    for (const [k, v] of Object.entries(this.map.sessions)) {
-      if (now > v.expires_at) {
-        delete this.map.sessions[k]
-        dirty = true
-      }
-    }
-    if (dirty) this._save()
+    this.repo.purgeExpired(Date.now())
   }
 
   stats() {
     this._purge()
+    const sessions = this.repo.all()
     return {
       enabled: !!this.config.enabled,
       mode: this.config.mode,
-      active_sessions: Object.keys(this.map.sessions).length,
-      sessions: this.map.sessions,
+      active_sessions: Object.keys(sessions).length,
+      sessions,
     }
   }
 

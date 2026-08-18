@@ -1,4 +1,21 @@
-# PR：KIN Gateway 最终需求对齐与工程收敛
+# PR：SQLite 数据库持久化 + 凭证入库 + 本地自动备份（参考 sub2api）
+
+> 分支：`cursor/bc-…` → `main`  
+> 范围：数据层（新增 `lib/db/`）、五大 Store 改造、VM/凭证镜像、日志入库、备份服务、控制台备份 UI
+
+## Summary
+
+- **SQLite 数据层**（Node 22 内置 `node:sqlite`，零新依赖）：版本化 SQL 迁移 + SHA-256 校验（仿 sub2api migrations_runner）、Repository 层（`lib/db/repos/*`）。
+- **各类数据入库**：api_keys、accounts + account_allocations、sticky_sessions、proxies、request_logs / request_log_debug、settings、backup_records；`ApiKeyStore / AccountQuota / StickyRouter / ProxyPool / RequestLogStore` 对外接口不变。
+- **凭证入库（写穿镜像）**：`vms` 表持有完整 `vm_json` + 凭证列；`atomicWriteJson` 写钩子覆盖 oauth-refresh / vm-registry / saveVmPatch / 面板全部写入点；启动 mtime 对账 + `fs.watch` 兜底；文件缺失可从 DB 反向重建；可选 `KIN_DB_SECRET` AES-256-GCM 加密落库。
+- **旧文件一次性迁移**：首启导入 `data/*.json`、`request-logs/*`、`vms/*.json`，`settings.legacy_import_done` 幂等；原文件保留。
+- **日志系统对接**：`request_logs` 表 + 面板过滤/分页/`total`、新增 `/api/panel/request-logs/stats` 聚合、dashboard `db_totals`；`KIN_REQUEST_LOG_JSONL=1` 可镜像旧 JSONL。
+- **本地自动备份（默认开启）**：`BackupService` — `VACUUM INTO` + tar.gz（manifest + db + vms + config，0600）；默认 24h / 保留 7 份 / 启动补跑；面板列表/立即备份/下载/恢复/调度配置；恢复自动 `pre_restore` 快照 + sha256 校验 + 恢复期间协议 503；不做 S3。
+- **测试**：新增 45 个单测（db/迁移、各 repo、vm 镜像/加密、legacy 导入、备份）+ 2 个 e2e 套件（persistence、backup）；全量 `npm test` 188/188 通过。
+
+---
+
+# 上一轮 PR：KIN Gateway 最终需求对齐与工程收敛
 
 > 分支建议：`feat/final-forward-oauth-ui` → `main`  
 > 范围：gateway 运行时、控制台、OAuth 策略、离线验收、死代码清理

@@ -14,6 +14,22 @@ import crypto from 'node:crypto'
 
 const locks = new Map()
 
+/**
+ * Optional post-write hook (installed by lib/vm-db-sync.mjs) so every
+ * vm.json write is mirrored into the SQLite `vms` table. Kept as a
+ * registration seam to avoid an import cycle and to keep unit tests
+ * (no DB) behavior-identical.
+ */
+let vmWriteHook = null
+export function setVmWriteHook(fn) {
+  vmWriteHook = typeof fn === 'function' ? fn : null
+}
+
+function notifyVmWrite(filePath) {
+  if (!vmWriteHook) return
+  try { vmWriteHook(filePath) } catch {}
+}
+
 export function withVmLock(key, fn) {
   const prev = locks.get(key) || Promise.resolve()
   const run = prev.then(fn, fn)
@@ -35,6 +51,7 @@ export function atomicWriteJson(filePath, obj, { mode } = {}) {
     throw e
   }
   if (mode) { try { fs.chmodSync(filePath, mode) } catch {} }
+  notifyVmWrite(filePath)
   return true
 }
 

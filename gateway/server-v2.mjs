@@ -55,6 +55,10 @@ import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/workspace-mo
 import { officialMessagesBody } from './lib/anthropic-messages.mjs'
 import { loadVmIdentity, persistVmSettings, persistVmFingerprint } from './lib/vm-identity.mjs'
 import { withVmLock, atomicWriteJson } from './lib/vm-file.mjs'
+import { openDatabase, closeDatabase } from './lib/db/database.mjs'
+import { runLegacyImport } from './lib/db/legacy-import.mjs'
+import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm-db-sync.mjs'
+import { BackupService } from './lib/backup-service.mjs'
 import { resolveForwardMode, applyForwardReplace, modeSpec } from './lib/forward-mode.mjs'
 import { callClientWorkspaceCli, streamClientWorkspaceCli } from './lib/client-cli-hop.mjs'
 
@@ -80,13 +84,26 @@ const allowRate = createRateLimiter({
 })
 
 
+// --- Persistent store (SQLite, sub2api-inspired) ---
+const dataDir = cfg.paths.data || path.join(cfg.paths.root, 'data')
+openDatabase({ dataDir })
+// one-time migration of legacy JSON files (data/*.json + request-logs) into the DB
+const legacyImport = runLegacyImport({ dataDir, projectRoot: cfg.paths.project })
+if (legacyImport?.imported) {
+  console.log('[db] legacy JSON import done:', JSON.stringify(legacyImport.counts || {}))
+}
+// VM/credential mirror: write-through hook + startup reconcile + fs.watch
+const vmSync = initVmDbSync(cfg.paths.project)
+if (vmSync.upserted || vmSync.rebuilt) {
+  console.log(`[db] vm mirror reconciled: upserted=${vmSync.upserted} rebuilt=${vmSync.rebuilt}`)
+}
+
 // --- P3 sticky + quota ---
 const routingConfigPath = path.join(cfg.paths.root, 'config', 'routing.json')
 function loadRoutingConfig() {
   try { return JSON.parse(fs.readFileSync(routingConfigPath, 'utf8')) } catch { return {} }
 }
 let routingConfig = loadRoutingConfig()
-const dataDir = cfg.paths.data || path.join(cfg.paths.root, 'data')
 const stickyRouter = new StickyRouter({ dataDir, config: routingConfig })
 const accountQuota = new AccountQuota({
   dataDir,
@@ -111,6 +128,21 @@ const proxyPool = new ProxyPool({
   },
 })
 proxyPool.startScheduler()
+
+// --- Local backup service (auto schedule default ON; no S3 by design) ---
+const backupService = new BackupService({
+  dataDir,
+  projectRoot: cfg.paths.project,
+  configDir: path.join(cfg.paths.root, 'config'),
+})
+backupService.onRestored((db) => {
+  // re-bind every store to the freshly restored connection
+  for (const store of [apiKeyStore, accountQuota, stickyRouter, proxyPool, requestLog]) {
+    try { store.rebind(db) } catch {}
+  }
+  try { reloadActiveVm(cfg) } catch {}
+})
+backupService.startScheduler()
 
 
 const stats = {
@@ -949,6 +981,16 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`)
     const p = url.pathname
 
+    // While a backup restore is swapping the DB, fail protocol traffic fast.
+    if (backupService.isRestoring && (p.startsWith('/v1/') || p === '/messages' || p === '/chat/completions' || p === '/responses')) {
+      return json(res, 503, makeError({
+        type: ErrorType.OVERLOADED,
+        code: 'restore_in_progress',
+        message: 'Gateway is restoring from backup; retry shortly',
+        status: 503,
+      }).body)
+    }
+
     if (p === '/admin/routing' && req.method === 'GET') {
       if (!requireAuth(req, res)) return
       return json(res, 200, { routing: routingConfig, sticky: stickyRouter.stats() })
@@ -1135,7 +1177,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, deleted: id })
       }
 
-      // ---- Request logs (normal summary + debug full) ----
+      // ---- Request logs (normal summary + debug full; DB-backed filters/pagination) ----
       if (req.method === 'GET' && p === '/api/panel/request-logs') {
         const u = new URL(req.url, 'http://x')
         const mode = (u.searchParams.get('mode') || 'normal').toLowerCase()
@@ -1148,11 +1190,44 @@ const server = http.createServer(async (req, res) => {
             items: requestLog.listDebug({ limit }),
           })
         }
+        const filters = {
+          limit,
+          offset: Number(u.searchParams.get('offset') || 0),
+          api_key_id: u.searchParams.get('api_key_id') || null,
+          vm_id: u.searchParams.get('vm_id') || null,
+          account_id: u.searchParams.get('account_id') || null,
+          model: u.searchParams.get('model') || null,
+          protocol: u.searchParams.get('protocol') || null,
+          status: u.searchParams.get('status') || null,
+          since: u.searchParams.get('since') || null,
+          until: u.searchParams.get('until') || null,
+          q: u.searchParams.get('q') || null,
+        }
+        const { items, total } = requestLog.queryNormal(filters)
         return json(res, 200, {
           ok: true,
           mode: 'normal',
           config: requestLog.snapshot(),
-          items: requestLog.listNormal({ limit }),
+          items,
+          total,
+          limit: filters.limit,
+          offset: filters.offset,
+        })
+      }
+      // ---- Aggregated usage stats from request_logs (charts) ----
+      if (req.method === 'GET' && p === '/api/panel/request-logs/stats') {
+        const u = new URL(req.url, 'http://x')
+        const bucket = (u.searchParams.get('bucket') || 'day').toLowerCase() === 'hour' ? 'hour' : 'day'
+        const since = u.searchParams.get('since')
+          || new Date(Date.now() - 7 * 86400_000).toISOString()
+        const until = u.searchParams.get('until') || null
+        return json(res, 200, {
+          ok: true,
+          bucket,
+          since,
+          until,
+          totals: requestLog.totals(),
+          buckets: requestLog.aggregate({ since, until, bucket }),
         })
       }
       if (req.method === 'GET' && /^\/api\/panel\/request-logs\/[^/]+$/.test(p)) {
@@ -1162,10 +1237,76 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, item: rec })
       }
 
+      // ---- Backups (local auto/manual, download, restore) ----
+      if (req.method === 'GET' && p === '/api/panel/backups') {
+        return json(res, 200, {
+          ok: true,
+          items: backupService.list(),
+          config: backupService.getSchedule(),
+          next_auto_at: backupService.nextAutoAt(),
+          restoring: backupService.isRestoring,
+        })
+      }
+      if (req.method === 'POST' && p === '/api/panel/backups') {
+        try {
+          const rec = backupService.createBackup({ kind: 'manual' })
+          return json(res, 201, { ok: true, item: rec })
+        } catch (e) {
+          const status = e.code === 'backup_in_progress' ? 409 : 500
+          return json(res, status, { ok: false, error: { message: String(e.message || e), code: e.code || 'backup_failed' } })
+        }
+      }
+      if (req.method === 'GET' && p === '/api/panel/backups/config') {
+        return json(res, 200, { ok: true, config: backupService.getSchedule(), next_auto_at: backupService.nextAutoAt() })
+      }
+      if (req.method === 'PUT' && p === '/api/panel/backups/config') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        try {
+          const config = backupService.updateSchedule(body || {})
+          return json(res, 200, { ok: true, config, next_auto_at: backupService.nextAutoAt() })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: { message: String(e.message || e), code: e.code } })
+        }
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/backups\/[^/]+\/download$/.test(p)) {
+        const id = p.split('/')[4]
+        const rec = backupService.get(id)
+        if (!rec || !rec.file_path || !fs.existsSync(rec.file_path)) {
+          return json(res, 404, { ok: false, error: { message: 'backup file not found' } })
+        }
+        res.writeHead(200, {
+          'content-type': 'application/gzip',
+          'content-length': fs.statSync(rec.file_path).size,
+          'content-disposition': `attachment; filename="${rec.file_name}"`,
+          'x-kin-backup-sha256': rec.sha256 || '',
+        })
+        fs.createReadStream(rec.file_path).pipe(res)
+        return
+      }
+      if (req.method === 'POST' && /^\/api\/panel\/backups\/[^/]+\/restore$/.test(p)) {
+        const id = p.split('/')[4]
+        const body = await readBody(req, 4096).catch(() => ({}))
+        if (body?.confirm !== true) {
+          return json(res, 400, { ok: false, error: { message: 'restore requires {"confirm": true}', code: 'confirm_required' } })
+        }
+        try {
+          const out = backupService.restoreBackup(id)
+          return json(res, 200, { ok: true, ...out })
+        } catch (e) {
+          const map = { backup_not_found: 404, backup_file_missing: 404, restore_in_progress: 409, backup_corrupt: 422, backup_not_ok: 422 }
+          return json(res, map[e.code] || 500, { ok: false, error: { message: String(e.message || e), code: e.code || 'restore_failed' } })
+        }
+      }
+      if (req.method === 'DELETE' && /^\/api\/panel\/backups\/[^/]+$/.test(p)) {
+        const id = p.split('/').pop()
+        if (!backupService.remove(id)) return json(res, 404, { ok: false, error: { message: 'backup not found' } })
+        return json(res, 200, { ok: true, deleted: id })
+      }
+
 
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
-        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats }))
+        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog }))
       }
       // GET /api/panel/vms
       if (req.method === 'GET' && p === '/api/panel/vms') {
@@ -1234,6 +1375,8 @@ const server = http.createServer(async (req, res) => {
           fs.rmSync(path.join(cfg.paths.project, 'vms', id), { recursive: true, force: true })
         } catch {}
         fs.unlinkSync(vmPath)
+        // drop the DB credential mirror row too
+        try { removeVmFromDb(id) } catch {}
         // optional chat side files
         try {
           const chat = path.join(cfg.paths.project, 'vms', `${id}-chat.json`)
@@ -1267,7 +1410,7 @@ const server = http.createServer(async (req, res) => {
           vm.schedule_disabled_reason = 'oauth_cleared'
         }
         vm.updated_at = new Date().toISOString()
-        fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
+        atomicWriteJson(vmPath, vm, { mode: 0o600 })
         if (reseeds) {
           try {
             const homeDir = path.join(cfg.paths.project, 'vms', id, 'cli-home')
@@ -1312,7 +1455,7 @@ const server = http.createServer(async (req, res) => {
           session_id: crypto.randomUUID(),
           reset_at: new Date().toISOString(),
         }
-        fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
+        atomicWriteJson(vmPath, vm, { mode: 0o600 })
         return json(res, 200, panel.ok({ id, fingerprint: vm.fingerprint }))
       }
 
@@ -1356,7 +1499,7 @@ const server = http.createServer(async (req, res) => {
         if (body.extra_env !== undefined) next.extra_env = body.extra_env || {}
         vm.seed_policy = next
         vm.updated_at = new Date().toISOString()
-        fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
+        atomicWriteJson(vmPath, vm, { mode: 0o600 })
         const homeDir = path.join(cfg.paths.project, 'vms', id, 'cli-home')
         const claudeDir = path.join(homeDir, '.claude')
         fs.mkdirSync(claudeDir, { recursive: true })
@@ -1426,7 +1569,7 @@ const server = http.createServer(async (req, res) => {
           proxy_cli_enabled: body.proxy_cli_enabled === true,
           seed_policy: defaultSeedPolicy(body.seed_policy || {}),
         }
-        fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
+        atomicWriteJson(vmPath, vm, { mode: 0o600 })
         try {
           const homeDir = path.join(vmsDir, id, 'cli-home')
           const claudeDir = path.join(homeDir, '.claude')
@@ -1477,7 +1620,7 @@ const server = http.createServer(async (req, res) => {
         vm.schedulable = true
         vm.schedule_disabled_reason = null
         vm.updated_at = new Date().toISOString()
-        fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
+        atomicWriteJson(vmPath, vm, { mode: 0o600 })
         return json(res, 200, panel.ok({
           vm: summarizeVm(vm),
           runtime: GATEWAY_CAPABILITIES.runtime,
@@ -1494,7 +1637,7 @@ const server = http.createServer(async (req, res) => {
         vm.schedulable = false
         vm.schedule_disabled_reason = 'stopped'
         vm.updated_at = new Date().toISOString()
-        fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
+        atomicWriteJson(vmPath, vm, { mode: 0o600 })
         return json(res, 200, panel.ok({
           vm: summarizeVm(vm),
           runtime: GATEWAY_CAPABILITIES.runtime,
@@ -1907,6 +2050,23 @@ fs.writeFileSync(path.join(cfg.paths.root, 'config', 'gateway-v2.public.json'), 
 
 process.on('uncaughtException', (e) => console.error('[uncaught]', e))
 process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
+
+// Graceful shutdown: stop schedulers/watchers, close the DB (WAL checkpoint).
+let _shuttingDown = false
+function shutdown(signal) {
+  if (_shuttingDown) return
+  _shuttingDown = true
+  console.log(`[shutdown] ${signal} — closing`)
+  try { backupService.stopScheduler() } catch {}
+  try { proxyPool.stopScheduler() } catch {}
+  try { stopVmWatch() } catch {}
+  try { oauthGuard.stopLoop() } catch {}
+  try { server.close(() => {}) } catch {}
+  try { closeDatabase() } catch {}
+  process.exit(0)
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
 
 server.listen(cfg.port, cfg.host, () => {
   oauthGuard.startLoop(60_000)

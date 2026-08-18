@@ -1,17 +1,19 @@
 /**
- * Multi API-key store (sub2api-inspired, file-backed).
+ * Multi API-key store (sub2api-inspired, SQLite-backed).
  *
  * Fields aligned to sub2api basics:
  *   name, status, expires_at, quota (+ used), rate windows → rpm,
  *   concurrency (per-key, sub2api puts this on User).
  *
  * Master env key KIN_API_KEY is separate and unlimited.
- * Managed keys live in data/api-keys.json.
+ * Managed keys live in the `api_keys` table (see lib/db/).
+ * Transient state (inflight concurrency, RPM buckets) stays in memory,
+ * mirroring sub2api's Redis-transient split.
  */
 
-import fs from 'node:fs'
-import path from 'node:path'
 import crypto from 'node:crypto'
+import { resolveStoreDb } from './db/database.mjs'
+import { ApiKeysRepo } from './db/repos/api-keys-repo.mjs'
 
 const KEY_PREFIX = 'sk-kin-'
 
@@ -66,37 +68,24 @@ function timingSafeEqualStr(a, b) {
 }
 
 export class ApiKeyStore {
-  constructor({ dataDir } = {}) {
-    this.dataDir = dataDir || path.join(process.cwd(), 'data')
-    this.file = path.join(this.dataDir, 'api-keys.json')
+  constructor({ dataDir, db } = {}) {
+    this.db = resolveStoreDb({ db, dataDir })
+    this.repo = new ApiKeysRepo(this.db)
     this.inflight = new Map() // id → count
     this.rpmBuckets = new Map() // id → number[] timestamps ms
-    this.state = this._load()
   }
 
-  _load() {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'))
-      if (!raw || !Array.isArray(raw.keys)) return { keys: [], version: 1 }
-      return { keys: raw.keys, version: raw.version || 1 }
-    } catch {
-      return { keys: [], version: 1 }
-    }
-  }
+  /** Re-read from DB (no-op cache-wise; kept for API compat + post-restore). */
+  reload() {}
 
-  _save() {
-    fs.mkdirSync(this.dataDir, { recursive: true })
-    const tmp = this.file + '.tmp'
-    fs.writeFileSync(tmp, JSON.stringify({ version: 1, keys: this.state.keys }, null, 2), { mode: 0o600 })
-    fs.renameSync(tmp, this.file)
-  }
-
-  reload() {
-    this.state = this._load()
+  /** Re-bind to a fresh DB connection (after backup restore). */
+  rebind(db) {
+    this.db = db
+    this.repo = new ApiKeysRepo(db)
   }
 
   list({ reveal = false } = {}) {
-    return this.state.keys.map((k) => {
+    return this.repo.list().map((k) => {
       const v = publicKeyView(k, { reveal })
       v.inflight = this.inflight.get(k.id) || 0
       return v
@@ -104,12 +93,12 @@ export class ApiKeyStore {
   }
 
   getById(id) {
-    return this.state.keys.find((k) => k.id === id) || null
+    return this.repo.getById(id)
   }
 
   authenticate(token) {
     if (!token) return { ok: false, reason: 'missing' }
-    for (const rec of this.state.keys) {
+    for (const rec of this.repo.list()) {
       if (timingSafeEqualStr(token, rec.key)) {
         return { ok: true, record: rec }
       }
@@ -124,7 +113,7 @@ export class ApiKeyStore {
     if (!/^[A-Za-z0-9_-]+$/.test(key)) {
       throw Object.assign(new Error('key has invalid characters'), { code: 'key_invalid' })
     }
-    if (this.state.keys.some((k) => k.key === key)) {
+    if (this.repo.getByKey(key)) {
       throw Object.assign(new Error('key already exists'), { code: 'key_exists' })
     }
 
@@ -148,13 +137,11 @@ export class ApiKeyStore {
     if (rec.expires_at && Number.isNaN(Date.parse(rec.expires_at))) {
       throw Object.assign(new Error('invalid expires_at'), { code: 'invalid_expires_at' })
     }
-    this.state.keys.push(rec)
-    this._save()
-    return rec
+    return this.repo.insert(rec)
   }
 
   update(id, patch = {}) {
-    const rec = this.getById(id)
+    const rec = this.repo.getById(id)
     if (!rec) return null
     if (patch.name != null) rec.name = String(patch.name).trim().slice(0, 100) || rec.name
     if (patch.status != null) {
@@ -175,17 +162,14 @@ export class ApiKeyStore {
     }
     if (patch.reset_quota === true) rec.quota_used = 0
     rec.updated_at = nowIso()
-    this._save()
-    return rec
+    return this.repo.update(rec)
   }
 
   remove(id) {
-    const idx = this.state.keys.findIndex((k) => k.id === id)
-    if (idx < 0) return false
-    this.state.keys.splice(idx, 1)
+    const removed = this.repo.remove(id)
+    if (!removed) return false
     this.inflight.delete(id)
     this.rpmBuckets.delete(id)
-    this._save()
     return true
   }
 
@@ -269,23 +253,19 @@ export class ApiKeyStore {
 
   recordUsage(recOrId, usage = {}) {
     const id = typeof recOrId === 'string' ? recOrId : recOrId?.id
-    const rec = this.getById(id)
-    if (!rec) return null
-    rec.requests = (rec.requests || 0) + 1
-    rec.quota_used = (rec.quota_used || 0) + 1
-    rec.tokens_in = (rec.tokens_in || 0) + (Number(usage.input_tokens) || Number(usage.tokens_in) || 0)
-    rec.tokens_out = (rec.tokens_out || 0) + (Number(usage.output_tokens) || Number(usage.tokens_out) || 0)
-    rec.last_used_at = nowIso()
-    rec.updated_at = rec.last_used_at
-    this._save()
-    return rec
+    if (!this.repo.getById(id)) return null
+    return this.repo.recordUsage(id, {
+      tokens_in: Number(usage.input_tokens) || Number(usage.tokens_in) || 0,
+      tokens_out: Number(usage.output_tokens) || Number(usage.tokens_out) || 0,
+    })
   }
 
   snapshot() {
+    const keys = this.list({ reveal: false })
     return {
-      total: this.state.keys.length,
-      active: this.state.keys.filter((k) => k.status === 'active').length,
-      keys: this.list({ reveal: false }),
+      total: keys.length,
+      active: keys.filter((k) => k.status === 'active').length,
+      keys,
     }
   }
 }

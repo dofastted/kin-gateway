@@ -1,15 +1,18 @@
 /**
- * SOCKS5 Proxy Pool
+ * SOCKS5 Proxy Pool (SQLite-backed)
  * - Bulk import
  * - 1 proxy ↔ 1 VM binding
  * - Auto-assign free proxy on VM create
  * - Health probe every 5/10/30/60 min
  * - On failure: disable proxy + disable bound VM scheduling
+ *
+ * Persistence: `proxies` table + `settings.proxy_pool_config`.
+ * Working set stays in memory (probe loop mutates it); save() writes through.
  */
-import fs from 'node:fs'
-import path from 'node:path'
 import net from 'node:net'
 import crypto from 'node:crypto'
+import { resolveStoreDb } from './db/database.mjs'
+import { ProxiesRepo } from './db/repos/proxies-repo.mjs'
 
 const DEFAULT_CONFIG = {
   probe_interval_min: 10, // 5 | 10 | 30 | 60
@@ -68,9 +71,9 @@ export function parseSocks5Line(line) {
 }
 
 export class ProxyPool {
-  constructor({ dataDir, onDisableVm } = {}) {
-    this.dataDir = dataDir
-    this.file = path.join(dataDir, 'proxy-pool.json')
+  constructor({ dataDir, db, onDisableVm } = {}) {
+    this.db = resolveStoreDb({ db, dataDir })
+    this.repo = new ProxiesRepo(this.db)
     this.onDisableVm = onDisableVm // (vmId, reason) => void
     this.state = { config: { ...DEFAULT_CONFIG }, proxies: [] }
     this._timer = null
@@ -78,21 +81,30 @@ export class ProxyPool {
     this.load()
   }
 
+  /** Re-read working set from DB (startup + post-restore). */
   load() {
     try {
-      if (fs.existsSync(this.file)) {
-        this.state = JSON.parse(fs.readFileSync(this.file, 'utf8'))
-        this.state.config = { ...DEFAULT_CONFIG, ...(this.state.config || {}) }
-        if (!Array.isArray(this.state.proxies)) this.state.proxies = []
-      }
+      this.state.config = { ...DEFAULT_CONFIG, ...(this.repo.getConfig({}) || {}) }
+      this.state.proxies = this.repo.loadAll()
     } catch {
       this.state = { config: { ...DEFAULT_CONFIG }, proxies: [] }
     }
   }
 
+  reload() {
+    this.load()
+  }
+
+  /** Re-bind to a fresh DB connection (after backup restore) and re-read. */
+  rebind(db) {
+    this.db = db
+    this.repo = new ProxiesRepo(db)
+    this.load()
+  }
+
   save() {
-    fs.mkdirSync(this.dataDir, { recursive: true })
-    fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2))
+    this.repo.setConfig(this.state.config)
+    this.repo.replaceAll(this.state.proxies)
   }
 
   snapshot() {

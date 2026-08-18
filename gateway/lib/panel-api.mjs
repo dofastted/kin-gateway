@@ -26,7 +26,7 @@ export function fail(errorResult) {
   }
 }
 
-export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats }) {
+export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog = null }) {
   const active = getActiveVmId(cfg.paths.project)
   const vms = listVms(cfg.paths.project).map((v) => enrichVm(v, accountQuota, active))
   const snap = accountQuota.snapshot()
@@ -66,6 +66,8 @@ export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig,
       safety_ratio: routingConfig?.quota?.safety_ratio ?? 0.95,
     },
     gateway_stats: stats,
+    // historic totals straight from the request_logs table (survives restarts)
+    db_totals: (() => { try { return requestLog?.totals() || null } catch { return null } })(),
   })
 }
 

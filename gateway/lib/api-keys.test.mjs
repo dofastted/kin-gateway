@@ -91,3 +91,20 @@ test('custom key rejected when duplicate', () => {
   store.create({ name: 'a', key: 'sk-kin-customkey0001' })
   assert.throws(() => store.create({ name: 'b', key: 'sk-kin-customkey0001' }), /exists/)
 })
+
+test('keys persist in sqlite across store re-open (same dataDir)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-keys-'))
+  const store = new ApiKeyStore({ dataDir: dir })
+  const rec = store.create({ name: 'persist', quota_requests: 9 })
+  store.recordUsage(rec.id, { input_tokens: 11, output_tokens: 22 })
+
+  const store2 = new ApiKeyStore({ dataDir: dir })
+  const again = store2.getById(rec.id)
+  assert.ok(again, 'record should survive re-open')
+  assert.equal(again.name, 'persist')
+  assert.equal(again.quota_used, 1)
+  assert.equal(again.tokens_in, 11)
+  assert.equal(again.tokens_out, 22)
+  assert.equal(store2.authenticate(rec.key).ok, true)
+  assert.ok(fs.existsSync(path.join(dir, 'kin.db')), 'kin.db file exists')
+})

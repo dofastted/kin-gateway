@@ -1,10 +1,14 @@
 /**
- * Request logging — sub2api UsageLog + access-log inspired.
+ * Request logging — sub2api UsageLog + access-log inspired (SQLite-backed).
  *
  * Modes:
  *   off    — no writes
- *   normal — summary JSONL (tokens, status, duration, key/vm ids; no bodies)
+ *   normal — summary row (tokens, status, duration, key/vm ids; no bodies)
  *   debug  — normal + full redacted request record (headers/body/hop_meta)
+ *
+ * Storage: `request_logs` (summaries) + `request_log_debug` (full records).
+ * Optional JSONL mirror for external log shippers: KIN_REQUEST_LOG_JSONL=1
+ * (writes the previous data/request-logs/YYYY-MM-DD.jsonl format alongside).
  *
  * Env: KIN_REQUEST_LOG_MODE=off|normal|debug (default normal)
  * Per-request override: X-Kin-Debug: 1 or X-Kin-Log: debug|normal|off
@@ -14,6 +18,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { redactSecrets } from './security.mjs'
+import { resolveStoreDb } from './db/database.mjs'
+import { RequestLogsRepo } from './db/repos/request-logs-repo.mjs'
 
 const MODES = new Set(['off', 'normal', 'debug'])
 
@@ -94,19 +100,34 @@ export function newRequestId(req) {
 export class RequestLogStore {
   constructor({
     dataDir,
+    db,
     mode = process.env.KIN_REQUEST_LOG_MODE || 'normal',
     maxDebugBodyChars = Number(process.env.KIN_REQUEST_LOG_DEBUG_CHARS || 200000),
     retainDays = Number(process.env.KIN_REQUEST_LOG_RETAIN_DAYS || 7),
+    jsonlMirror = process.env.KIN_REQUEST_LOG_JSONL === '1',
   } = {}) {
     this.dataDir = dataDir || path.join(process.cwd(), 'data')
+    this.db = resolveStoreDb({ db, dataDir: this.dataDir })
+    this.repo = new RequestLogsRepo(this.db)
     this.root = path.join(this.dataDir, 'request-logs')
-    this.debugRoot = path.join(this.root, 'debug')
     this.mode = MODES.has(String(mode).toLowerCase()) ? String(mode).toLowerCase() : 'normal'
     this.maxDebugBodyChars = Number.isFinite(maxDebugBodyChars) ? maxDebugBodyChars : 200000
     this.retainDays = Number.isFinite(retainDays) && retainDays > 0 ? retainDays : 7
-    this._mem = [] // recent normal summaries for panel
+    this.jsonlMirror = !!jsonlMirror
+    this._mem = [] // recent normal summaries for panel hot path
     this._memMax = 200
-    fs.mkdirSync(this.debugRoot, { recursive: true })
+  }
+
+  /** Kept for API compat + post-restore hook (state lives in DB). */
+  reload() {
+    this._mem = []
+  }
+
+  /** Re-bind to a fresh DB connection (after backup restore). */
+  rebind(db) {
+    this.db = db
+    this.repo = new RequestLogsRepo(db)
+    this._mem = []
   }
 
   start(req, { protocol = null, pathName = null } = {}) {
@@ -159,7 +180,8 @@ export class RequestLogStore {
       has_tools: extra.has_tools ?? null,
     }
 
-    this._appendNormal(summary)
+    try { this.repo.insertSummaryIfAbsent(summary) } catch {}
+    if (this.jsonlMirror) this._appendJsonl(summary)
     this._mem.push(summary)
     if (this._mem.length > this._memMax) this._mem = this._mem.slice(-this._memMax)
 
@@ -174,12 +196,13 @@ export class RequestLogStore {
         outbound_summary: extra.outbound_summary || null,
         outbound_body: extra.outbound_body != null ? clampBody(extra.outbound_body, this.maxDebugBodyChars) : null,
       }
-      this._writeDebug(debugRec)
+      try { this.repo.insertDebug(summary.request_id || summary.id, summary.ts, debugRec) } catch {}
     }
     return summary
   }
 
-  _appendNormal(summary) {
+  /** Optional legacy JSONL mirror for external log collectors. */
+  _appendJsonl(summary) {
     try {
       fs.mkdirSync(this.root, { recursive: true })
       const file = path.join(this.root, `${dayKey()}.jsonl`)
@@ -187,62 +210,36 @@ export class RequestLogStore {
     } catch {}
   }
 
-  _writeDebug(rec) {
-    try {
-      const day = dayKey()
-      const dir = path.join(this.debugRoot, day)
-      fs.mkdirSync(dir, { recursive: true })
-      const file = path.join(dir, `${rec.request_id || rec.id}.json`)
-      fs.writeFileSync(file, JSON.stringify(rec, null, 2), { mode: 0o600 })
-    } catch {}
-  }
-
-  listNormal({ limit = 50 } = {}) {
+  listNormal({ limit = 50, ...filters } = {}) {
     const n = Math.max(1, Math.min(500, Number(limit) || 50))
-    // newest first: memory then file tail
-    if (this._mem.length) {
+    const hasFilters = Object.values(filters).some((v) => v != null && v !== '')
+    if (!hasFilters && this._mem.length >= n) {
       return this._mem.slice(-n).reverse()
     }
-    return this._readJsonlTail(path.join(this.root, `${dayKey()}.jsonl`), n)
+    return this.repo.query({ limit: n, ...filters }).items
   }
 
-  listDebug({ limit = 20, day = null } = {}) {
-    const n = Math.max(1, Math.min(100, Number(limit) || 20))
-    const d = day || dayKey()
-    const dir = path.join(this.debugRoot, d)
-    if (!fs.existsSync(dir)) return []
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort().reverse()
-    const out = []
-    for (const f of files.slice(0, n)) {
-      try {
-        out.push(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')))
-      } catch {}
-    }
-    return out
+  /** Filtered + paginated query with total (panel). */
+  queryNormal(opts = {}) {
+    return this.repo.query(opts)
   }
 
-  getDebug(requestId, { day = null } = {}) {
+  /** Aggregated stats for charts. */
+  aggregate(opts = {}) {
+    return this.repo.aggregate(opts)
+  }
+
+  totals() {
+    return this.repo.totals()
+  }
+
+  listDebug({ limit = 20 } = {}) {
+    return this.repo.listDebug({ limit })
+  }
+
+  getDebug(requestId) {
     if (!requestId) return null
-    const days = day ? [day] : [dayKey(), dayKey(new Date(Date.now() - 86400_000))]
-    for (const d of days) {
-      const file = path.join(this.debugRoot, d, `${requestId}.json`)
-      if (fs.existsSync(file)) {
-        try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null }
-      }
-    }
-    return null
-  }
-
-  _readJsonlTail(file, n) {
-    try {
-      if (!fs.existsSync(file)) return []
-      const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean)
-      return lines.slice(-n).reverse().map((l) => {
-        try { return JSON.parse(l) } catch { return null }
-      }).filter(Boolean)
-    } catch {
-      return []
-    }
+    return this.repo.getDebug(requestId)
   }
 
   snapshot() {
@@ -250,26 +247,34 @@ export class RequestLogStore {
       mode: this.mode,
       retain_days: this.retainDays,
       recent_normal: this._mem.length,
-      today_file: path.join(this.root, `${dayKey()}.jsonl`),
+      backend: 'sqlite',
+      jsonl_mirror: this.jsonlMirror,
+      total_rows: (() => { try { return this.repo.count() } catch { return null } })(),
     }
   }
 
-  /** Best-effort retention: drop old day folders/files. */
+  /** Retention: delete rows older than retainDays (+ legacy jsonl files). */
   cleanup() {
+    try { this.repo.cleanup(this.retainDays) } catch {}
+    // best-effort: also age out legacy/mirrored jsonl + debug dirs on disk
     const cutoff = Date.now() - this.retainDays * 86400_000
     try {
-      for (const name of fs.readdirSync(this.root)) {
-        if (!/^\d{4}-\d{2}-\d{2}/.test(name)) continue
-        const dayMs = Date.parse(name.slice(0, 10) + 'T00:00:00Z')
-        if (!Number.isFinite(dayMs) || dayMs >= cutoff) continue
-        const p = path.join(this.root, name)
-        fs.rmSync(p, { recursive: true, force: true })
-      }
-      for (const name of fs.readdirSync(this.debugRoot)) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(name)) continue
-        const dayMs = Date.parse(name + 'T00:00:00Z')
-        if (!Number.isFinite(dayMs) || dayMs >= cutoff) continue
-        fs.rmSync(path.join(this.debugRoot, name), { recursive: true, force: true })
+      if (fs.existsSync(this.root)) {
+        for (const name of fs.readdirSync(this.root)) {
+          if (!/^\d{4}-\d{2}-\d{2}/.test(name)) continue
+          const dayMs = Date.parse(name.slice(0, 10) + 'T00:00:00Z')
+          if (!Number.isFinite(dayMs) || dayMs >= cutoff) continue
+          fs.rmSync(path.join(this.root, name), { recursive: true, force: true })
+        }
+        const dbgRoot = path.join(this.root, 'debug')
+        if (fs.existsSync(dbgRoot)) {
+          for (const name of fs.readdirSync(dbgRoot)) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(name)) continue
+            const dayMs = Date.parse(name + 'T00:00:00Z')
+            if (!Number.isFinite(dayMs) || dayMs >= cutoff) continue
+            fs.rmSync(path.join(dbgRoot, name), { recursive: true, force: true })
+          }
+        }
       }
     } catch {}
   }

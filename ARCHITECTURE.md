@@ -35,7 +35,23 @@ L6  配置层 Settings
 4. 对话粘性可配置；额度 5h/7d 卡 95%
 5. 多 VM 是终态；单机是当前最小单元
 
-## 三、UI 信息架构
+## 三、数据层（参考 sub2api，SQLite 落地）
+
+```
+SQLite (node:sqlite, WAL, data/kin.db)
+  ├─ 迁移: lib/db/migrations/*.sql + schema_migrations(SHA-256 校验)
+  ├─ 仓库: lib/db/repos/*  (settings / api-keys / accounts / sticky /
+  │        proxies / vms / request-logs / backup)
+  ├─ 凭证镜像: vms/*.json 写穿入 vms 表(可 KIN_DB_SECRET 加密)
+  │            启动对账 + fs.watch 兜底; 文件缺失可反向重建
+  ├─ 日志: request_logs + request_log_debug (过滤/分页/聚合)
+  ├─ 旧数据: 首启一次性导入 data/*.json + vms/*.json (幂等)
+  └─ 备份: BackupService — VACUUM INTO + tar.gz(db+vms+config)
+           默认 24h 自动、保留 7 份; 恢复带 pre_restore 兜底
+瞬态不入库: inflight 并发、RPM 桶、面板 session (对应 sub2api Redis)
+```
+
+## 四、UI 信息架构
 
 | 导航 | 对应层次 | 内容 |
 |------|----------|------|

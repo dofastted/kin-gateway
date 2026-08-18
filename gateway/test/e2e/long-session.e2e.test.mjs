@@ -144,7 +144,7 @@ test('different x-session-id does not inherit --resume', async () => {
   }
 })
 
-test('sticky map is valid JSON after a long sequential session', async () => {
+test('sticky bindings persist in sqlite after a long sequential session', async () => {
   const gw = await startGateway({ mockText: 'n' })
   try {
     const h = { 'x-session-id': 'conv-long-n' }
@@ -158,10 +158,17 @@ test('sticky map is valid JSON after a long sequential session', async () => {
       if (i === 0) assert.equal(hasResume(tr), false)
       else assert.equal(hasResume(tr), true)
     }
-    const raw = fs.readFileSync(path.join(gw.project, 'data', 'sticky-map.json'), 'utf8')
-    const map = JSON.parse(raw)
-    assert.equal(map.sessions['conv-long-n'].session_id, 'sess-mock-1')
-    assert.ok(map.sessions['conv-long-n'].hits >= 6)
+    // sticky bindings now live in the SQLite store (data/kin.db)
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(path.join(gw.project, 'data', 'kin.db'), { readOnly: true })
+    try {
+      const row = db.prepare('SELECT * FROM sticky_sessions WHERE key = ?').get('conv-long-n')
+      assert.ok(row, 'sticky binding row should exist in DB')
+      assert.equal(row.session_id, 'sess-mock-1')
+      assert.ok(row.hits >= 6)
+    } finally {
+      db.close()
+    }
   } finally {
     await gw.stop()
   }

@@ -1115,7 +1115,7 @@ async function refresh() {
   try {
     const safe = (p) => api(p).catch((e) => ({ __error: e.message || String(e) }))
     const logMode = state.logMode || 'normal'
-    const [dash, usage, keys, models, routing, proxies, logs] = await Promise.all([
+    const [dash, usage, keys, models, routing, proxies, logs, backups] = await Promise.all([
       safe('/api/panel/dashboard'),
       safe('/api/panel/usage'),
       safe('/api/panel/api-keys'),
@@ -1123,6 +1123,7 @@ async function refresh() {
       safe('/api/panel/routing'),
       safe('/api/panel/proxies'),
       safe('/api/panel/request-logs?mode=' + encodeURIComponent(logMode) + '&limit=50'),
+      safe('/api/panel/backups'),
     ])
     state.dashboard = dash?.__error ? { error: dash.__error } : (dash.data || dash)
     state.usage = usage?.__error ? { error: usage.__error } : (usage.data || usage)
@@ -1144,6 +1145,7 @@ async function refresh() {
     state.models = m || { items: [], source: 'error', note: models?.__error || 'empty' }
     state.routing = routing?.__error ? { error: routing.__error } : (routing.data || routing)
     state.proxies = proxies?.__error ? { error: proxies.__error } : (proxies.data || proxies)
+    state.backups = backups?.__error ? { error: backups.__error } : (backups.data || backups)
     if (!state.selectedVm && state.dashboard.vms?.[0]) state.selectedVm = state.dashboard.vms[0].id
     const h = state.dashboard.health
     const pill = document.getElementById('healthPill')
@@ -2522,11 +2524,140 @@ function renderSettings() {
         </div>
       </div>
     </div>
+    ${renderBackupCard()}
     <details class="import-box">
       <summary>会话 ${sessionCount}</summary>
       <div class="body"><pre class="json">${esc(JSON.stringify(sessions, null, 2))}</pre></div>
     </details>
   </section>`
+}
+
+/* ── backups (本地自动备份 + 手动备份/下载/恢复) ─────────────── */
+function renderBackupCard() {
+  const b = state.backups || {}
+  if (b.error) return `<div class="workbench" style="margin-top:14px"><div class="wb-head"><div class="nm">备份</div></div><div class="wb-body">${emptyBox('加载失败: ' + esc(b.error))}</div></div>`
+  const cfg = b.config || {}
+  const items = b.items || []
+  const kindLabel = { manual: '手动', scheduled: '自动', pre_restore: '恢复前', imported: '导入' }
+  const rows = items.map(it => `
+    <tr>
+      <td title="${esc(it.id)}">${esc((it.created_at || '').replace('T', ' ').slice(0, 19))}</td>
+      <td><span class="chip ${it.kind === 'pre_restore' ? '' : 'ok'}" style="font-size:11px">${esc(kindLabel[it.kind] || it.kind || '—')}</span></td>
+      <td>${it.status === 'ok' ? `<span class="chip ok" style="font-size:11px">成功</span>` : `<span class="chip err" style="font-size:11px" title="${esc(it.error || '')}">失败</span>`}</td>
+      <td>${it.size_bytes != null ? fmtBytes(it.size_bytes) : '—'}</td>
+      <td>${it.includes ? `db${it.includes.vms ? ' + vms×' + it.includes.vms : ''}${it.includes.config ? ' + cfg×' + it.includes.config : ''}` : '—'}</td>
+      <td class="actions" style="white-space:nowrap">
+        ${it.status === 'ok' && it.file_exists ? `
+          <button class="btn btn-outline btn-sm" onclick="downloadBackup('${esc(it.id)}')">下载</button>
+          <button class="btn btn-outline btn-sm" onclick="restoreBackupRec('${esc(it.id)}')">恢复</button>` : ''}
+        <button class="btn btn-outline btn-sm" onclick="deleteBackupRec('${esc(it.id)}')">删除</button>
+      </td>
+    </tr>`).join('')
+  return `
+  <div class="workbench" style="margin-top:14px">
+    <div class="wb-head">
+      <div class="nm">备份 <span style="color:var(--faint);font-weight:500;font-size:12px">SQLite + 凭证 + 配置</span></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" ${state._backupBusy ? 'disabled' : ''} onclick="createBackupNow()">${state._backupBusy ? '备份中…' : '立即备份'}</button>
+        <button class="btn btn-outline btn-sm" onclick="saveBackupConfig()">保存设置</button>
+      </div>
+    </div>
+    <div class="wb-body">
+      <div class="set-list">
+        <div class="set-row"><span>自动备份</span>
+          <label class="chip-check"><input id="bk_enabled" type="checkbox" ${cfg.enabled !== false ? 'checked' : ''}/> 启用</label>
+        </div>
+        <div class="set-row"><span>间隔</span>
+          <select id="bk_interval" class="input">
+            ${[[6,'6 小时'],[12,'12 小时'],[24,'24 小时'],[72,'3 天'],[168,'7 天']].map(([v,l]) => `<option value="${v}" ${(Number(cfg.interval_hours ?? 24)===v)?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
+        <div class="set-row"><span>保留数</span>
+          <select id="bk_retention" class="input">
+            ${[3,5,7,14,30].map(v => `<option value="${v}" ${(Number(cfg.retention ?? 7)===v)?'selected':''}>${v} 份</option>`).join('')}
+          </select>
+        </div>
+        <div class="set-row"><span>下次自动</span>
+          <span style="color:var(--faint);font-size:12px">${b.next_auto_at ? esc(b.next_auto_at.replace('T', ' ').slice(0, 16)) : '已停用'}</span>
+        </div>
+      </div>
+      ${!items.length ? emptyBox('暂无备份，点击「立即备份」或等待自动备份') : `
+      <div class="table-wrap" style="margin-top:10px">
+        <table class="table" aria-label="备份列表">
+          <thead><tr><th>时间</th><th>类型</th><th>状态</th><th>大小</th><th>内容</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`}
+      <div class="hint" style="margin-top:8px">备份包含数据库（含凭证镜像）、vms/*.json 与 config/*.json。恢复会先自动创建「恢复前」快照。</div>
+    </div>
+  </div>`
+}
+
+async function refreshBackups() {
+  try { state.backups = await api('/api/panel/backups') } catch (e) { state.backups = { error: String(e.message || e) } }
+}
+
+async function createBackupNow() {
+  state._backupBusy = true
+  paint()
+  try {
+    await api('/api/panel/backups', { method: 'POST' })
+    toast('备份完成')
+  } catch (e) { toast('备份失败: ' + e.message, 'err') }
+  state._backupBusy = false
+  await refreshBackups()
+  paint()
+}
+
+async function saveBackupConfig() {
+  try {
+    await api('/api/panel/backups/config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        enabled: !!document.getElementById('bk_enabled')?.checked,
+        interval_hours: Number(document.getElementById('bk_interval')?.value || 24),
+        retention: Number(document.getElementById('bk_retention')?.value || 7),
+      }),
+    })
+    toast('备份设置已保存')
+    await refreshBackups()
+    paint()
+  } catch (e) { toast(e.message, 'err') }
+}
+
+async function downloadBackup(id) {
+  try {
+    const url = (apiBase() || '') + '/api/panel/backups/' + id + '/download'
+    const res = await fetch(url, { credentials: 'include', headers: headers() })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const name = (res.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1] || (id + '.tar.gz')
+    const blob = await res.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = name
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+  } catch (e) { toast('下载失败: ' + e.message, 'err') }
+}
+
+async function deleteBackupRec(id) {
+  if (!confirm('删除该备份？文件将从磁盘移除。')) return
+  try {
+    await api('/api/panel/backups/' + id, { method: 'DELETE' })
+    toast('已删除')
+  } catch (e) { toast(e.message, 'err') }
+  await refreshBackups()
+  paint()
+}
+
+async function restoreBackupRec(id) {
+  if (!confirm('确认恢复该备份？\n\n当前数据库、vms 与 config 将被备份内容替换（会先自动创建「恢复前」快照）。恢复期间协议请求会短暂返回 503。')) return
+  try {
+    toast('正在恢复…')
+    await api('/api/panel/backups/' + id + '/restore', { method: 'POST', body: JSON.stringify({ confirm: true }) })
+    toast('恢复完成')
+    await refresh()
+  } catch (e) { toast('恢复失败: ' + e.message, 'err') }
 }
 
 
@@ -2971,6 +3102,8 @@ async function doDeleteVm() {
 }
 
 /* ── router ──────────────────────────────────────────────── */
+/* alias used by inline handlers (keys/logs/backups views) */
+function paint() { render() }
 function render() {
   const views = { overview: renderOverview, cluster: renderCluster, vm: renderVm, import: renderImport, keys: renderKeys, logs: renderLogs, usage: renderUsage, protocol: renderProtocol, proxies: renderProxies, settings: renderSettings }
   const fn = views[state.view] || renderOverview
