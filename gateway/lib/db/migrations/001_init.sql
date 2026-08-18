@@ -71,16 +71,15 @@ CREATE TABLE IF NOT EXISTS proxies (
   port INTEGER,
   username TEXT,
   password TEXT,
-  url TEXT,
-  status TEXT DEFAULT 'active',
+  raw TEXT,
+  status TEXT DEFAULT 'unknown',
+  enabled INTEGER DEFAULT 1,
   bound_vm_id TEXT,
-  failures INTEGER DEFAULT 0,
-  last_probe_at TEXT,
-  last_probe_ok INTEGER,
+  consecutive_failures INTEGER DEFAULT 0,
   latency_ms INTEGER,
-  disabled_reason TEXT,
-  created_at TEXT,
-  updated_at TEXT
+  last_probe_at TEXT,
+  last_error TEXT,
+  created_at TEXT
 );
 
 -- VM records + OAuth credential mirror (write-through from vms/*.json)
