@@ -2,9 +2,9 @@
  * Probe OAuth / usage FROM the VM official Claude Code.
  * Gateway never calls api.anthropic.com (no spoofed UA, no Bearer hop).
  */
-import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { readCliOauth } from './oauth-refresh.mjs'
+import { spawnClaudeProcess } from './cli-launcher.mjs'
 
 export const AUTH_STATUS_TIMEOUT_MS = 20_000
 export const HOP_PROBE_TIMEOUT_MS = 60_000
@@ -125,11 +125,11 @@ export function runClaudeAuthStatus({ homeDir, timeoutMs = AUTH_STATUS_TIMEOUT_M
       resolve({ ok: false, source: 'claude_auth_status', error: 'no_home_dir' })
       return
     }
-    const child = spawn('sudo', ['-u', 'kincli', '-E', '--', 'claude', 'auth', 'status', '--json'], {
+    const child = spawnClaudeProcess(['auth', 'status', '--json'], {
       env: kincliEnv(homeDir),
       cwd: homeDir,
       stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    }, { style: 'runner' })
     let stdout = ''
     let stderr = ''
     let killed = false

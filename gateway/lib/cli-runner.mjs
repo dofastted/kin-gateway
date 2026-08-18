@@ -9,6 +9,7 @@ import os from 'node:os'
 import { shouldKeepCliOauth } from './oauth-refresh.mjs'
 import { prepareForVmClaude } from './prepare-cli.mjs'
 import { consumeCliNdjson } from './cli-probe.mjs'
+import { spawnClaudeProcess, shouldPrivdrop } from './cli-launcher.mjs'
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true })
@@ -168,9 +169,11 @@ export function writeCliHome({ homeDir, accessToken, refreshToken, expiresAt, ti
       seeded_at: new Date().toISOString(),
     }, null, 2),
   )
-  try {
-    spawn('chown', ['-R', 'kincli:kincli', homeDir], { stdio: 'ignore' })
-  } catch {}
+  if (shouldPrivdrop()) {
+    try {
+      spawn('chown', ['-R', 'kincli:kincli', homeDir], { stdio: 'ignore' })
+    } catch {}
+  }
 }
 
 export function seedCliCredentials(opts) {
@@ -220,6 +223,10 @@ function buildEnv({ workHome, accessToken, proxyUrl, timezone, locale, seedPolic
       else env[k] = String(v)
     }
   }
+  // Simulation-only: let mock-claude see scenario / trace path. Never used in prod.
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith('KIN_MOCK_') && v != null) env[k] = v
+  }
   delete env.ANTHROPIC_API_KEY
   delete env.ANTHROPIC_BASE_URL
   // Official CLI refreshes via CLAUDE_CONFIG_DIR credentials.json.
@@ -233,11 +240,11 @@ function buildEnv({ workHome, accessToken, proxyUrl, timezone, locale, seedPolic
 
 function spawnClaude({ args, env, cwd, timeoutMs, onStdoutLine }) {
   return new Promise((resolve) => {
-    const child = spawn('sudo', ['-u', 'kincli', '-E', '--', 'claude', ...args], {
+    const child = spawnClaudeProcess(args, {
       env,
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    }, { style: 'runner' })
     let stdout = ''
     let stderr = ''
     let buf = ''
@@ -247,9 +254,11 @@ function spawnClaude({ args, env, cwd, timeoutMs, onStdoutLine }) {
       try {
         child.kill('SIGKILL')
       } catch {}
-      try {
-        spawn('pkill', ['-9', '-u', 'kincli', '-f', 'claude -p'], { stdio: 'ignore' })
-      } catch {}
+      if (shouldPrivdrop()) {
+        try {
+          spawn('pkill', ['-9', '-u', 'kincli', '-f', 'claude -p'], { stdio: 'ignore' })
+        } catch {}
+      }
     }, timeoutMs)
 
     child.stdout.on('data', (d) => {
