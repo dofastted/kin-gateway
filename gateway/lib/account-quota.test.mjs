@@ -89,3 +89,23 @@ test('concurrency inflight gate stays in memory', () => {
   q.release('a7')
   assert.equal(q.canAccept('a7').ok, true)
 })
+
+test('ingestOAuthUsage stores 5h/7d and isolated fable limit', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  q.ingestOAuthUsage('acc-fable', {
+    ok: true,
+    five_hour: { utilization: 0.2, resets_at: '2026-08-18T20:00:00Z', status: 'allowed' },
+    seven_day: { utilization: 0.4, resets_at: '2026-08-24T00:00:00Z', status: 'allowed' },
+    seven_day_sonnet: { utilization: 0.1, resets_at: '2026-08-24T00:00:00Z', status: 'allowed' },
+    extra_usage: { is_enabled: false, status: 'rejected' },
+    fable: { ok: false, limited: true, banned: false, status: 429, model: 'claude-fable-5', reset_at: '2026-08-25T00:00:00Z' },
+    probed_at: '2026-08-18T12:00:00Z',
+  })
+  const acc = q.repo.get('acc-fable')
+  assert.equal(acc.unified['5h'].utilization, 0.2)
+  assert.equal(acc.unified['7d'].utilization, 0.4)
+  assert.equal(acc.unified.fable.limited, true)
+  assert.equal(acc.unified.seven_day_sonnet.utilization, 0.1)
+  const gate = q.canAccept('acc-fable')
+  assert.equal(gate.ok, true, 'fable weekly limit must not block the whole account')
+})

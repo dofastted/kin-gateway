@@ -51,9 +51,9 @@ test('consumeCliNdjson harvests rate_limit_event + result usage', () => {
   assert.equal(win.seven_day.rate_limit_type, 'seven_day')
 })
 
-test('usage-probe module no longer spoofs Anthropic HTTP', async () => {
+test('usage-probe delegates to VM UID; host module has no Anthropic URL', async () => {
   const src = await import('node:fs').then((fs) => fs.readFileSync(new URL('./usage-probe.mjs', import.meta.url), 'utf8'))
   assert.equal(src.includes('api.anthropic.com'), false)
   assert.equal(src.includes('claude-cli/'), false)
-  assert.equal(src.includes('oauth/usage'), false)
+  assert.match(src, /probeVmUsage/)
 })

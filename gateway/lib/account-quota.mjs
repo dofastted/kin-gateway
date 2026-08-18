@@ -15,7 +15,7 @@ export class AccountQuota {
     this.db = resolveStoreDb({ db, dataDir })
     this.repo = new AccountsRepo(this.db)
     this.config = config?.quota || { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true }
-    this.concurrency = config?.concurrency || { default_max_per_account: 2 }
+    this.concurrency = config?.concurrency || { default_max_per_account: 20 }
     this.inflight = new Map() // accountId → count
     // seed accounts
     for (const a of accounts || []) this.ensure(a)
@@ -39,7 +39,7 @@ export class AccountQuota {
         account_id: id,
         vm_id: account.vm_id || null,
         email: account.email || null,
-        max_concurrency: account.max_concurrency || this.concurrency.default_max_per_account || 2,
+        max_concurrency: account.max_concurrency ?? this.defaultMax(),
         requests: 0,
         tokens_in: 0,
         tokens_out: 0,
@@ -107,6 +107,55 @@ export class AccountQuota {
   }
 
   /**
+   * CRS oauth/usage snapshot from the VM UID probe.
+   * Fable weekly limit is stored separately and does not unschedulable the account.
+   */
+  ingestOAuthUsage(accountId, probe = {}) {
+    const acc = this.ensure({ account_id: accountId })
+    const w5 = probe.five_hour || {}
+    const w7 = probe.seven_day || {}
+    if (w5.utilization != null) {
+      acc.unified['5h'].utilization = Number(w5.utilization) || 0
+      acc.unified['5h'].reset = w5.resets_at || acc.unified['5h'].reset
+      acc.unified['5h'].status = w5.status || acc.unified['5h'].status
+    }
+    if (w7.utilization != null) {
+      acc.unified['7d'].utilization = Number(w7.utilization) || 0
+      acc.unified['7d'].reset = w7.resets_at || acc.unified['7d'].reset
+      acc.unified['7d'].status = w7.status || acc.unified['7d'].status
+    }
+    if (probe.seven_day_sonnet) {
+      acc.unified.seven_day_sonnet = {
+        utilization: probe.seven_day_sonnet.utilization ?? null,
+        reset: probe.seven_day_sonnet.resets_at || null,
+        status: probe.seven_day_sonnet.status || null,
+      }
+    }
+    if (probe.extra_usage) acc.unified.overage_status = probe.extra_usage.status || acc.unified.overage_status
+    acc.unified.extra_usage = probe.extra_usage || acc.unified.extra_usage || null
+    if (probe.fable) {
+      acc.unified.fable = {
+        limited: !!probe.fable.limited,
+        banned: !!probe.fable.banned,
+        ok: !!probe.fable.ok,
+        status: probe.fable.status || 0,
+        reset: probe.fable.reset_at || null,
+        model: probe.fable.model || 'claude-fable-5',
+        error: probe.fable.error || null,
+        probed_at: probe.probed_at || new Date().toISOString(),
+      }
+    }
+    acc.unified.source = 'vm-oauth-usage'
+    acc.unified.updated_at = new Date().toISOString()
+    acc.last_probe = {
+      at: probe.probed_at || new Date().toISOString(),
+      ok: !!probe.ok,
+      source: probe.source || 'vm-oauth-usage',
+    }
+    return this.repo.save(acc)
+  }
+
+  /**
    * Official Claude Code stream-json `rate_limit_event` (not spoofed HTTP headers).
    * CLI does not emit utilization %; we store status + reset and keep prior utilization.
    */
@@ -164,11 +213,12 @@ export class AccountQuota {
     const ratio = Number(this.config.safety_ratio ?? 0.95)
     const inflight = this.inflight.get(accountId) || 0
 
-    if (inflight >= (acc.max_concurrency || 2)) {
+    const limit = this.limitFor(acc)
+    if (limit > 0 && inflight >= limit) {
       return {
         ok: false,
         reason: 'concurrency_limit',
-        detail: { inflight, max: acc.max_concurrency },
+        detail: { inflight, max: limit, source: 'gateway' },
       }
     }
 
@@ -272,6 +322,50 @@ export class AccountQuota {
   reloadConfig(config) {
     if (config?.quota) this.config = config.quota
     if (config?.concurrency) this.concurrency = config.concurrency
+  }
+
+  defaultMax() {
+    const n = Number(this.concurrency?.default_max_per_account ?? this.concurrency?.default_key_concurrency ?? 20)
+    return Number.isFinite(n) && n >= 0 ? n : 20
+  }
+
+  /** 0 = unlimited. Missing/invalid falls back to routing default. */
+  limitFor(acc) {
+    const n = Number(acc?.max_concurrency)
+    if (Number.isFinite(n) && n >= 0) return n
+    return this.defaultMax()
+  }
+
+  setMaxConcurrency(accountId, n) {
+    const acc = this.ensure({ account_id: accountId })
+    if (!acc) return null
+    acc.max_concurrency = Math.max(0, Math.min(256, Number(n) || 0))
+    return this.repo.save(acc)
+  }
+
+  setMaxConcurrencyForVm(vmId, n) {
+    const v = Math.max(0, Math.min(256, Number(n) || 0))
+    const out = []
+    for (const a of this.repo.list()) {
+      if (a.vm_id === vmId || a.account_id === vmId) {
+        a.max_concurrency = v
+        out.push(this.repo.save(a))
+      }
+    }
+    if (!out.length) out.push(this.setMaxConcurrency(vmId, v))
+    return out
+  }
+
+  applyDefaultConcurrency(n, { skipIds } = {}) {
+    const v = Math.max(0, Math.min(256, Number(n) || 0))
+    const skip = new Set(skipIds || [])
+    const out = []
+    for (const a of this.repo.list()) {
+      if (skip.has(a.account_id) || skip.has(a.vm_id)) continue
+      a.max_concurrency = v
+      out.push(this.repo.save(a))
+    }
+    return out
   }
 }
 
