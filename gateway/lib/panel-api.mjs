@@ -7,6 +7,7 @@
  */
 
 import os from 'node:os'
+import path from 'node:path'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm } from './vm-registry.mjs'
 import { probeAccount } from './usage-probe.mjs'
 import { fetchOfficialModels } from './models.mjs'
@@ -97,12 +98,7 @@ export function buildVmDetail({ cfg, accountQuota, id }) {
     account: acc
       ? {
           account_id: acc.account_id,
-          utilization_5h: Number(acc.unified?.['5h']?.utilization || 0),
-          utilization_7d: Number(acc.unified?.['7d']?.utilization || 0),
-          reset_5h: acc.unified?.['5h']?.reset || null,
-          reset_7d: acc.unified?.['7d']?.reset || null,
-          status_5h: acc.unified?.['5h']?.status || null,
-          status_7d: acc.unified?.['7d']?.status || null,
+          ...quotaFromAccount(acc),
           inflight: acc.inflight,
           max_concurrency: acc.max_concurrency,
           requests: acc.requests,
@@ -127,8 +123,7 @@ export async function buildProbeOne({ cfg, accountQuota, id }) {
       }),
     )
   }
-  const token = vm.claude?.access_token
-  if (!token) {
+  if (!vm.claude?.access_token) {
     return fail(
       makeError({
         type: ErrorType.INVALID_REQUEST,
@@ -138,31 +133,36 @@ export async function buildProbeOne({ cfg, accountQuota, id }) {
       }),
     )
   }
-  const result = await probeAccount(token)
-  if (result.ok && result.data) {
-    const accountId = vm.claude?.account_uuid || vm.id
-    accountQuota.ensure({
-      account_id: accountId,
-      vm_id: vm.id,
-      email: vm.claude?.email,
-      max_concurrency: vm.policy?.maxConcurrency,
-    })
-    accountQuota.ingestHeaders(accountId, {
-      'anthropic-ratelimit-unified-5h-utilization': result.data.five_hour?.utilization,
-      'anthropic-ratelimit-unified-5h-reset': result.data.five_hour?.resets_at,
-      'anthropic-ratelimit-unified-7d-utilization': result.data.seven_day?.utilization,
-      'anthropic-ratelimit-unified-7d-reset': result.data.seven_day?.resets_at,
-    })
+  const exec = {
+    vmId: vm.id,
+    homeDir: path.join(cfg.paths.project, 'vms', vm.id, 'cli-home'),
+    oauth: vm.claude,
+    vm,
+  }
+  const result = await probeAccount({ exec, vm, includeFable: true })
+  const accountId = vm.claude?.account_uuid || vm.id
+  accountQuota.ensure({
+    account_id: accountId,
+    vm_id: vm.id,
+    email: vm.claude?.email,
+    max_concurrency: vm.policy?.maxConcurrency,
+  })
+  if (result.five_hour || result.seven_day || result.fable) {
+    accountQuota.ingestOAuthUsage(accountId, result)
   }
   return ok({
     vm_id: id,
     account_uuid: vm.claude?.account_uuid || null,
     source: result.source,
-    five_hour: result.data?.five_hour || null,
-    seven_day: result.data?.seven_day || null,
-    extra_usage: result.data?.extra_usage || null,
+    via: result.via || null,
+    five_hour: result.five_hour || null,
+    seven_day: result.seven_day || null,
+    seven_day_sonnet: result.seven_day_sonnet || null,
+    extra_usage: result.extra_usage || null,
+    fable: result.fable || null,
     probed_at: result.probed_at,
     ok: result.ok,
+    error: result.error || result.usage_error || null,
   })
 }
 
@@ -186,12 +186,7 @@ export function buildUsage({ accountQuota, cfg }) {
     account_id: a.account_id,
     vm_id: a.vm_id,
     email: a.email,
-    utilization_5h: Number(a.unified?.['5h']?.utilization || 0),
-    utilization_7d: Number(a.unified?.['7d']?.utilization || 0),
-    reset_5h: a.unified?.['5h']?.reset || null,
-    reset_7d: a.unified?.['7d']?.reset || null,
-    status_5h: a.unified?.['5h']?.status || null,
-    status_7d: a.unified?.['7d']?.status || null,
+    ...quotaFromAccount(a),
     inflight: a.inflight,
     max_concurrency: a.max_concurrency,
     requests: a.requests,
@@ -249,6 +244,7 @@ export function buildRouting({ routingConfig, stickyRouter }) {
     sticky: routingConfig?.sticky || {},
     quota: routingConfig?.quota || {},
     concurrency: routingConfig?.concurrency || {},
+    logging: routingConfig?.logging || {},
     sessions: stickyRouter.stats(),
   })
 }
@@ -279,10 +275,66 @@ function hostStats() {
   }
 }
 
+
+function quotaFromAccount(acc) {
+  const u = acc?.unified || {}
+  const w5 = u['5h'] || {}
+  const w7 = u['7d'] || {}
+  const sonnet = u.seven_day_sonnet || {}
+  const fable = u.fable || null
+  const extra = u.extra_usage || null
+  return {
+    utilization_5h: w5.utilization != null ? Number(w5.utilization) : null,
+    utilization_7d: w7.utilization != null ? Number(w7.utilization) : null,
+    utilization_7d_sonnet: sonnet.utilization != null ? Number(sonnet.utilization) : null,
+    reset_5h: w5.reset || null,
+    reset_7d: w7.reset || null,
+    reset_7d_sonnet: sonnet.reset || null,
+    status_5h: w5.status || null,
+    status_7d: w7.status || null,
+    status_7d_sonnet: sonnet.status || null,
+    extra_usage: extra,
+    fable: fable,
+    last_probe: acc?.last_probe || null,
+    probe_source: u.source || acc?.last_probe?.source || null,
+  }
+}
+
+
+function credStatusFromQuota(hasToken, q = {}, expiresAt = null) {
+  if (!hasToken) return { key: 'none', text: '无凭证', tone: 'none' }
+  const fb = q.fable || {}
+  if (fb.banned) return { key: 'bad', text: '不可用', tone: 'bad' }
+  if (expiresAt) {
+    const ms = Date.parse(expiresAt)
+    if (Number.isFinite(ms) && ms <= Date.now()) return { key: 'bad', text: '不可用', tone: 'bad' }
+  }
+  const utilPct = (u) => {
+    if (u == null) return 0
+    const n = Number(u)
+    return n > 1.5 ? n : n * 100
+  }
+  const limited = (st, pct) => {
+    const s = String(st || '').toLowerCase()
+    return s === 'rejected' || s === 'rate_limited' || pct >= 100
+  }
+  const warn = (st, pct) => {
+    const s = String(st || '').toLowerCase()
+    return s === 'allowed_warning' || s === 'warning' || pct >= 85
+  }
+  const p5 = utilPct(q.utilization_5h)
+  const p7 = utilPct(q.utilization_7d)
+  if (limited(q.status_5h, p5) || warn(q.status_5h, p5)) return { key: 'warn', text: '5h 限制', tone: 'warn' }
+  if (limited(q.status_7d, p7) || warn(q.status_7d, p7)) return { key: 'warn', text: '7d 限制', tone: 'warn' }
+  if (fb.limited) return { key: 'warn', text: 'Fable 限制', tone: 'warn' }
+  return { key: 'ok', text: '可用', tone: 'ok' }
+}
+
 function enrichVm(v, accountQuota, active) {
   const acc = findAccount(accountQuota, v)
-  const u5 = acc ? Number(acc.unified?.['5h']?.utilization || 0) : null
-  const u7 = acc ? Number(acc.unified?.['7d']?.utilization || 0) : null
+  const q = quotaFromAccount(acc)
+  const u5 = q.utilization_5h
+  const u7 = q.utilization_7d
   const safety = Number(accountQuota?.config?.safety_ratio || 0.95)
   return {
     id: v.id,
@@ -290,6 +342,7 @@ function enrichVm(v, accountQuota, active) {
     status: v.status,
     active: v.id === active,
     kernel: v.kernel || null,
+    note: v.note || null,
     region: v.region || null,
     timezone: v.timezone || null,
     locale: v.locale || null,
@@ -303,22 +356,35 @@ function enrichVm(v, accountQuota, active) {
     has_session_key: !!v.has_session_key,
     proxy: v.proxy || null,
     proxy_id: v.proxy_id || v.proxy?.id || null,
+    proxy_cli_enabled: !!v.proxy_cli_enabled,
     seed_policy: v.seed_policy || null,
     max_concurrency: v.max_concurrency,
     weight: v.weight ?? 1,
     claude_code_version: v.claude_code_version,
     utilization_5h: u5,
     utilization_7d: u7,
-    reset_5h: acc?.unified?.['5h']?.reset || null,
-    reset_7d: acc?.unified?.['7d']?.reset || null,
-    status_5h: acc?.unified?.['5h']?.status || null,
-    status_7d: acc?.unified?.['7d']?.status || null,
+    utilization_7d_sonnet: q.utilization_7d_sonnet,
+    reset_5h: q.reset_5h,
+    reset_7d: q.reset_7d,
+    reset_7d_sonnet: q.reset_7d_sonnet,
+    status_5h: q.status_5h,
+    status_7d: q.status_7d,
+    status_7d_sonnet: q.status_7d_sonnet,
+    extra_usage: q.extra_usage,
+    fable: q.fable,
+    last_probe: q.last_probe,
+    probe_source: q.probe_source,
+    cred_status: credStatusFromQuota(v.has_token, q, v.expires_at),
     inflight: acc?.inflight ?? 0,
     requests: acc?.requests ?? v.stats?.requests ?? 0,
     tokens_in: acc?.tokens_in ?? 0,
     tokens_out: acc?.tokens_out ?? 0,
     near_limit: u5 != null && (u5 >= safety || (u7 != null && u7 >= safety)),
     fingerprint: v.fingerprint || null,
+    runtime: v.runtime || null,
+    ip: v.ip || v.runtime?.ip || null,
+    pid: v.pid || v.runtime?.pid || null,
+    container: v.container || v.runtime?.container || null,
     schedulable: v.schedulable !== false,
     created_at: v.created_at || null,
   }
