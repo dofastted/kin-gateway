@@ -1,8 +1,11 @@
 /**
  * Multi-VM registry — load all vms/*.json (except active.json)
+ * Writes go through atomicWriteJson so the DB credential mirror
+ * (lib/vm-db-sync.mjs) sees every change.
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { atomicWriteJson } from './vm-file.mjs'
 
 export function listVms(projectRoot) {
   const dir = path.join(projectRoot, 'vms')
@@ -68,7 +71,7 @@ export function getActiveVmId(projectRoot) {
 
 export function setActiveVm(projectRoot, id) {
   const file = path.join(projectRoot, 'vms', 'active.json')
-  fs.writeFileSync(file, JSON.stringify({ active_vm: id, updated_at: new Date().toISOString() }, null, 2))
+  atomicWriteJson(file, { active_vm: id, updated_at: new Date().toISOString() })
 }
 
 
@@ -83,7 +86,7 @@ export function setVmSchedulable(projectRoot, id, schedulable, reason = null) {
     // mark soft status for UI
     vm.status = vm.status === 'running' ? 'paused' : vm.status
   }
-  fs.writeFileSync(file, JSON.stringify(vm, null, 2))
+  atomicWriteJson(file, vm)
   return summarizeVm(vm)
 }
 
@@ -100,6 +103,6 @@ export function bindVmProxy(projectRoot, id, proxyInfo) {
         url: proxyInfo.url || null,
       }
     : null
-  fs.writeFileSync(file, JSON.stringify(vm, null, 2))
+  atomicWriteJson(file, vm)
   return summarizeVm(vm)
 }

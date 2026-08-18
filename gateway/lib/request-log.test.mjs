@@ -84,3 +84,79 @@ test('off mode writes nothing', () => {
   assert.equal(store.finish(ctx, { status: 200 }), null)
   assert.equal(store.listNormal({ limit: 5 }).length, 0)
 })
+
+function logOne(store, extra = {}) {
+  const ctx = store.start({ method: 'POST', headers: {}, socket: {} }, { pathName: extra.path || '/v1/messages' })
+  return store.finish(ctx, { status: 200, ...extra })
+}
+
+test('summaries persist in sqlite across store re-open', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-rlog-'))
+  const s1 = new RequestLogStore({ dataDir: dir, mode: 'normal' })
+  logOne(s1, { model: 'claude-haiku-4-5', api_key_id: 'key_p' })
+
+  const s2 = new RequestLogStore({ dataDir: dir, mode: 'normal' })
+  const listed = s2.listNormal({ limit: 10 })
+  assert.equal(listed.length, 1)
+  assert.equal(listed[0].api_key_id, 'key_p')
+  assert.equal(s2.snapshot().total_rows, 1)
+})
+
+test('queryNormal filters + pagination + total', () => {
+  const store = tmpStore('normal')
+  logOne(store, { api_key_id: 'key_a', model: 'm1', input_tokens: 10, output_tokens: 5 })
+  logOne(store, { api_key_id: 'key_a', model: 'm2', status: 500, error_code: 'upstream_error' })
+  logOne(store, { api_key_id: 'key_b', model: 'm1', vm_id: 'vm-9' })
+
+  assert.equal(store.queryNormal({ api_key_id: 'key_a' }).total, 2)
+  assert.equal(store.queryNormal({ vm_id: 'vm-9' }).total, 1)
+  assert.equal(store.queryNormal({ model: 'm1' }).total, 2)
+  assert.equal(store.queryNormal({ status: 'error' }).total, 1)
+  assert.equal(store.queryNormal({ status: 'ok' }).total, 2)
+  assert.equal(store.queryNormal({ q: 'upstream' }).total, 1)
+  const page = store.queryNormal({ limit: 2, offset: 2 })
+  assert.equal(page.total, 3)
+  assert.equal(page.items.length, 1)
+})
+
+test('aggregate buckets by day with token sums', () => {
+  const store = tmpStore('normal')
+  logOne(store, { input_tokens: 10, output_tokens: 5 })
+  logOne(store, { input_tokens: 20, output_tokens: 15, status: 500, error_code: 'x' })
+  const rows = store.aggregate({ bucket: 'day' })
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].requests, 2)
+  assert.equal(rows[0].errors, 1)
+  assert.equal(rows[0].input_tokens, 30)
+  assert.equal(rows[0].output_tokens, 20)
+  const totals = store.totals()
+  assert.equal(totals.requests, 2)
+  assert.equal(totals.input_tokens, 30)
+})
+
+test('cleanup removes rows older than retainDays', () => {
+  const store = tmpStore('normal')
+  // one fresh row
+  logOne(store, {})
+  // one stale row injected directly
+  store.repo.insertSummary({
+    id: 'log_old', request_id: 'rid-old',
+    ts: new Date(Date.now() - 30 * 86400_000).toISOString(),
+  })
+  store.repo.insertDebug('rid-old', new Date(Date.now() - 30 * 86400_000).toISOString(), { old: true })
+  assert.equal(store.repo.count(), 2)
+  store.cleanup()
+  assert.equal(store.repo.count(), 1)
+  assert.equal(store.getDebug('rid-old'), null)
+})
+
+test('jsonl mirror writes legacy format when enabled', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-rlog-'))
+  const store = new RequestLogStore({ dataDir: dir, mode: 'normal', jsonlMirror: true })
+  logOne(store, { model: 'mm' })
+  const day = new Date().toISOString().slice(0, 10)
+  const file = path.join(dir, 'request-logs', `${day}.jsonl`)
+  assert.ok(fs.existsSync(file))
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8').trim())
+  assert.equal(rec.model, 'mm')
+})

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { hashKey } from './security.mjs'
+import { atomicWriteJson } from './vm-file.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -123,6 +124,6 @@ export function saveVmPatch(vmPath, patch) {
     vm.claude_code_version = patch.claude_code_version
     vm.claude_code_updated_at = new Date().toISOString()
   }
-  fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2), { mode: 0o600 })
+  atomicWriteJson(vmPath, vm, { mode: 0o600 })
   return vm
 }
