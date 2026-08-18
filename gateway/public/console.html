@@ -589,6 +589,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
         <div class="nav-item" data-view="cluster"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>集群</div>
         <div class="nav-item" data-view="vm"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>虚拟机</div>
         <div class="nav-item" data-view="import"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>凭证</div>
+        <div class="nav-item" data-view="keys"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>密钥</div>
         <div class="nav-item" data-view="usage"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V8"/></svg>用量</div>
         <div class="nav-item" data-view="proxies"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="12" r="2.4"/><circle cx="18" cy="7" r="2.4"/><circle cx="18" cy="17" r="2.4"/><path d="M8.2 11.2 15.6 8.1M8.2 12.8l7.4 3.1"/></svg>代理池</div>
         <div class="nav-item" data-view="protocol"><svg class="ni" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10H5a2 2 0 0 0-2 2v7h18v-7a2 2 0 0 0-2-2h-3"/><rect x="8" y="3" width="8" height="9" rx="1.5"/></svg>协议</div>
@@ -630,6 +631,7 @@ const titles = {
   cluster: ['集群', ''],
   vm: ['虚拟机', ''],
   import: ['凭证', '统一维护 sessionKey / OAuth'],
+  keys: ['密钥', '生成与限制并发 / 额度 / RPM'],
   usage: ['用量', ''],
   protocol: ['协议', ''],
   proxies: ['代理池', ''],
@@ -1047,15 +1049,17 @@ async function refresh() {
   if (btn) { btn.disabled = true; btn.classList.add('busy') }
   try {
     const safe = (p) => api(p).catch((e) => ({ __error: e.message || String(e) }))
-    const [dash, usage, models, routing, proxies] = await Promise.all([
+    const [dash, usage, keys, models, routing, proxies] = await Promise.all([
       safe('/api/panel/dashboard'),
       safe('/api/panel/usage'),
+      safe('/api/panel/api-keys'),
       safe('/api/panel/models?refresh=1'),
       safe('/api/panel/routing'),
       safe('/api/panel/proxies'),
     ])
     state.dashboard = dash?.__error ? { error: dash.__error } : (dash.data || dash)
     state.usage = usage?.__error ? { error: usage.__error } : (usage.data || usage)
+    state.keys = keys?.__error ? { error: keys.__error } : (keys.data || keys)
     let m = models?.__error ? null : (models.data || models)
     if (m && Array.isArray(m.data) && !m.items) {
       m = {
@@ -2033,6 +2037,139 @@ function renderProtocol() {
 
 
 /* ── settings ────────────────────────────────────────────── */
+
+async function refreshKeys() {
+  try {
+    const r = await api('/api/panel/api-keys')
+    state.keys = r
+  } catch (e) {
+    state.keys = { error: String(e.message || e) }
+  }
+}
+
+function renderKeys() {
+  const k = state.keys || {}
+  if (k.error) return emptyBox('加载失败: ' + esc(k.error))
+  const items = (k.keys || []).slice()
+  const created = state._lastCreatedKey
+  return `
+  <section class="section">
+    <div class="workbench">
+      <div class="wb-head">
+        <div class="nm">API 密钥</div>
+        <div class="row" style="gap:8px">
+          <button class="btn btn-sm" onclick="refreshKeys().then(paint)">刷新</button>
+        </div>
+      </div>
+      <div class="wb-body">
+        ${created ? `<div class="alert" style="margin-bottom:12px">新密钥（仅显示一次）：<code id="newKeyVal">${esc(created)}</code>
+          <button class="btn btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('newKeyVal').textContent)">复制</button>
+        </div>` : ''}
+        <div class="set-list" style="margin-bottom:16px">
+          <div class="set-row"><span>名称</span><input id="k_name" class="input" placeholder="例如 client-a" value="default"/></div>
+          <div class="set-row"><span>并发</span>
+            <select id="k_conc" class="input">
+              ${[0,1,2,3,4,5,8,16].map(v => `<option value="${v}" ${v===2?'selected':''}>${v===0?'不限制':v}</option>`).join('')}
+            </select>
+          </div>
+          <div class="set-row"><span>额度(次)</span>
+            <select id="k_quota" class="input">
+              ${[0,100,500,1000,5000,10000,50000].map(v => `<option value="${v}">${v===0?'不限制':v}</option>`).join('')}
+            </select>
+          </div>
+          <div class="set-row"><span>RPM</span>
+            <select id="k_rpm" class="input">
+              ${[0,10,30,60,120,300].map(v => `<option value="${v}">${v===0?'不限制':v+'/分'}</option>`).join('')}
+            </select>
+          </div>
+          <div class="set-row"><span>有效期</span>
+            <select id="k_exp" class="input">
+              <option value="">永不过期</option>
+              <option value="7">7 天</option>
+              <option value="30">30 天</option>
+              <option value="90">90 天</option>
+              <option value="365">1 年</option>
+            </select>
+          </div>
+          <div class="set-row"><span></span>
+            <button class="btn btn-primary btn-sm" onclick="createApiKey()">生成密钥</button>
+          </div>
+        </div>
+        ${!items.length ? emptyBox('暂无密钥，生成后客户端可使用 Authorization: Bearer sk-kin-…') : `
+        <div class="table-wrap"><table class="table">
+          <thead><tr>
+            <th>名称</th><th>密钥</th><th>状态</th><th>并发</th><th>额度</th><th>RPM</th><th>用量</th><th>过期</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${items.map(it => {
+              const quota = it.quota_requests > 0 ? `${it.quota_used||0}/${it.quota_requests}` : `${it.quota_used||0}/∞`
+              return `<tr>
+                <td>${esc(it.name)}</td>
+                <td><code>${esc(it.key)}</code></td>
+                <td>${it.status === 'active' ? '<span class="chip ok">启用</span>' : '<span class="chip">停用</span>'}</td>
+                <td>${it.inflight||0}/${it.max_concurrency||0}</td>
+                <td>${quota}</td>
+                <td>${it.rpm||0}</td>
+                <td>${it.requests||0} 次</td>
+                <td>${it.expires_at ? esc(String(it.expires_at).slice(0,10)) : '—'}</td>
+                <td class="row" style="gap:4px">
+                  <button class="btn btn-sm" onclick="toggleApiKey('${esc(it.id)}','${it.status==='active'?'disabled':'active'}')">${it.status==='active'?'停用':'启用'}</button>
+                  <button class="btn btn-sm" onclick="resetApiKeyQuota('${esc(it.id)}')">清额度</button>
+                  <button class="btn btn-sm" onclick="deleteApiKey('${esc(it.id)}')">删除</button>
+                </td>
+              </tr>`
+            }).join('')}
+          </tbody>
+        </table></div>`}
+      </div>
+    </div>
+  </section>`
+}
+
+async function createApiKey() {
+  const name = document.getElementById('k_name')?.value || 'default'
+  const max_concurrency = Number(document.getElementById('k_conc')?.value || 2)
+  const quota_requests = Number(document.getElementById('k_quota')?.value || 0)
+  const rpm = Number(document.getElementById('k_rpm')?.value || 0)
+  const days = document.getElementById('k_exp')?.value
+  const body = { name, max_concurrency, quota_requests, rpm }
+  if (days) body.expires_in_days = Number(days)
+  try {
+    const r = await api('/api/panel/api-keys', { method: 'POST', body: JSON.stringify(body) })
+    state._lastCreatedKey = r.item?.key || null
+    toast('已生成密钥')
+    await refreshKeys()
+    paint()
+  } catch (e) {
+    toast(String(e.message || e), true)
+  }
+}
+
+async function toggleApiKey(id, status) {
+  try {
+    await api('/api/panel/api-keys/' + id, { method: 'PATCH', body: JSON.stringify({ status }) })
+    await refreshKeys(); paint()
+  } catch (e) { toast(String(e.message || e), true) }
+}
+
+async function resetApiKeyQuota(id) {
+  try {
+    await api('/api/panel/api-keys/' + id + '/reset-quota', { method: 'POST', body: '{}' })
+    toast('额度已清零')
+    await refreshKeys(); paint()
+  } catch (e) { toast(String(e.message || e), true) }
+}
+
+async function deleteApiKey(id) {
+  if (!confirm('确认删除该密钥？')) return
+  try {
+    await api('/api/panel/api-keys/' + id, { method: 'DELETE' })
+    if (state._lastCreatedKey) state._lastCreatedKey = null
+    await refreshKeys(); paint()
+  } catch (e) { toast(String(e.message || e), true) }
+}
+
+
 function renderSettings() {
   const r = state.routing || {}
   if (r.error) return emptyBox('加载失败: ' + r.error)
@@ -2540,7 +2677,7 @@ async function doDeleteVm() {
 
 /* ── router ──────────────────────────────────────────────── */
 function render() {
-  const views = { overview: renderOverview, cluster: renderCluster, vm: renderVm, import: renderImport, usage: renderUsage, protocol: renderProtocol, proxies: renderProxies, settings: renderSettings }
+  const views = { overview: renderOverview, cluster: renderCluster, vm: renderVm, import: renderImport, keys: renderKeys, usage: renderUsage, protocol: renderProtocol, proxies: renderProxies, settings: renderSettings }
   const fn = views[state.view] || renderOverview
   const main = document.getElementById('main')
   if (!key()) {

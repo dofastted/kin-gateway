@@ -34,6 +34,7 @@ import { prepareForVmClaude } from './lib/prepare-cli.mjs'
 import { validateOfficialModel, fetchOfficialModels, harvestCliModelCatalog } from './lib/models.mjs'
 import { StickyRouter } from './lib/sticky-router.mjs'
 import { AccountQuota } from './lib/account-quota.mjs'
+import { ApiKeyStore, publicKeyView } from './lib/api-keys.mjs'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm-registry.mjs'
 import { runClaudeAuthStatus } from './lib/cli-probe.mjs'
 import {
@@ -96,6 +97,8 @@ const accountQuota = new AccountQuota({
     max_concurrency: v.max_concurrency || 2,
   })),
 })
+
+const apiKeyStore = new ApiKeyStore({ dataDir: cfg.paths.data })
 
 const proxyPool = new ProxyPool({
   dataDir,
@@ -210,13 +213,45 @@ function requireAuth(req, res) {
     req.panelUser = session.user
     return true
   }
-  // API key
-  if (!timingSafeEqualStr(token, cfg.api_key)) {
+  // Master env API key — unlimited admin
+  if (timingSafeEqualStr(token, cfg.api_key)) {
+    if (!allowRate(token)) {
+      const e = makeError({
+        type: ErrorType.RATE_LIMIT,
+        code: ErrorCode.GATEWAY_RATE_LIMIT,
+        message: 'Gateway rate limit exceeded. Retry later.',
+        status: 429,
+      })
+      json(res, e.status, e.body)
+      return false
+    }
+    req.apiKeyKind = 'master'
+    return true
+  }
+
+  // Managed multi-keys (sub2api-style)
+  const managed = apiKeyStore.authenticate(token)
+  if (!managed.ok) {
     const e = makeError({
       type: ErrorType.AUTH,
       code: ErrorCode.INVALID_API_KEY,
       message: 'Invalid credentials',
       status: 401,
+    })
+    json(res, e.status, e.body)
+    return false
+  }
+  const gate = apiKeyStore.canAccept(managed.record)
+  if (!gate.ok) {
+    const type = gate.status === 429
+      ? (gate.code.includes('quota') ? ErrorType.QUOTA : ErrorType.RATE_LIMIT)
+      : ErrorType.PERMISSION
+    const e = makeError({
+      type,
+      code: gate.code,
+      message: gate.message,
+      status: gate.status,
+      details: gate.detail || undefined,
     })
     json(res, e.status, e.body)
     return false
@@ -231,6 +266,8 @@ function requireAuth(req, res) {
     json(res, e.status, e.body)
     return false
   }
+  req.apiKeyKind = 'managed'
+  req.apiKeyRecord = managed.record
   return true
 }
 
@@ -376,6 +413,31 @@ async function handleProtocol(req, res, protocol, pathName) {
     return json(res, e.status, e.body)
   }
   accountQuota.acquire(accountId)
+
+  // Per-API-key concurrency / rpm acquire (managed keys only)
+  const managedKey = req.apiKeyRecord || null
+  if (managedKey) {
+    const kg = apiKeyStore.acquire(managedKey)
+    if (!kg.ok) {
+      accountQuota.release(accountId)
+      stats.errors++
+      const type = kg.status === 429
+        ? (String(kg.code || '').includes('quota') ? ErrorType.QUOTA : ErrorType.RATE_LIMIT)
+        : ErrorType.PERMISSION
+      return json(res, kg.status, makeError({
+        type,
+        code: kg.code,
+        message: kg.message,
+        status: kg.status,
+        details: kg.detail || undefined,
+      }).body)
+    }
+  }
+  const releaseSlots = () => {
+    try { accountQuota.release(accountId) } catch {}
+    if (managedKey) try { apiKeyStore.release(managedKey) } catch {}
+  }
+
   if (stickyKey) stickyRouter.bind(stickyKey, { accountId, vmId })
 
   harvestExecHome(exec)
@@ -383,7 +445,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   // Never auto-convert sessionKey or refresh OAuth on the hop.
   // Credentials are harvest-only; dead tokens require explicit admin re-import.
   if (!exec.oauth.access_token) {
-    accountQuota.release(accountId)
+    releaseSlots()
     stats.errors++
     return json(res, 401, makeError({
       type: ErrorType.AUTH,
@@ -450,7 +512,10 @@ async function handleProtocol(req, res, protocol, pathName) {
       stats.stream++
       const releaseStream = () => {
         try { harvestExecHome(exec) } catch {}
-        try { accountQuota.release(accountId) } catch {}
+        releaseSlots()
+        if (managedKey) {
+          try { apiKeyStore.recordUsage(managedKey) } catch {}
+        }
       }
       writeSSEHeaders(res)
       let result
@@ -532,7 +597,8 @@ async function handleProtocol(req, res, protocol, pathName) {
       }
     } finally {
       try { harvestExecHome(exec) } catch {}
-      accountQuota.release(accountId)
+      releaseSlots()
+      if (managedKey) try { apiKeyStore.recordUsage(managedKey) } catch {}
     }
     capture({
       protocol,
@@ -628,7 +694,8 @@ async function handleProtocol(req, res, protocol, pathName) {
     stats.stream++
     const releaseStream = () => {
       try { harvestExecHome(exec) } catch {}
-      try { accountQuota.release(accountId) } catch {}
+      releaseSlots()
+      if (managedKey) try { apiKeyStore.recordUsage(managedKey) } catch {}
     }
     if (protocol === 'anthropic.messages') {
       // Official Anthropic SSE requires both event: and data: (RikkaHub uses event.event)
@@ -702,7 +769,8 @@ async function handleProtocol(req, res, protocol, pathName) {
     ingestCliHopQuota(accountId, upstream)
   } finally {
     try { harvestExecHome(exec) } catch {}
-    accountQuota.release(accountId)
+    releaseSlots()
+    if (managedKey) try { apiKeyStore.recordUsage(managedKey) } catch {}
   }
 
   capture({
@@ -932,6 +1000,75 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/panel/me') {
         return json(res, 200, { ok: true, user: req.panelUser || 'api-key' })
       }
+
+      // ---- API Keys (sub2api-inspired) ----
+      // Only panel session or master key may manage keys.
+      if (p.startsWith('/api/panel/api-keys')) {
+        const isMaster = req.apiKeyKind === 'master' || !!req.panelUser
+        if (!isMaster) {
+          return json(res, 403, makeError({
+            type: ErrorType.PERMISSION,
+            code: 'forbidden',
+            message: 'Only admin/panel may manage API keys',
+            status: 403,
+          }).body)
+        }
+      }
+      if (req.method === 'GET' && p === '/api/panel/api-keys') {
+        return json(res, 200, { ok: true, ...apiKeyStore.snapshot() })
+      }
+      if (req.method === 'POST' && p === '/api/panel/api-keys') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        try {
+          const rec = apiKeyStore.create({
+            name: body?.name,
+            key: body?.key || body?.custom_key || undefined,
+            max_concurrency: body?.max_concurrency,
+            quota_requests: body?.quota_requests ?? body?.quota,
+            rpm: body?.rpm ?? body?.rate_limit_rpm,
+            expires_at: body?.expires_at || (body?.expires_in_days
+              ? new Date(Date.now() + Number(body.expires_in_days) * 86400_000).toISOString()
+              : null),
+          })
+          return json(res, 201, {
+            ok: true,
+            item: publicKeyView(rec, { reveal: true }),
+            note: 'key is shown only once; store it securely',
+          })
+        } catch (e) {
+          const status = e.code === 'key_exists' ? 409 : 400
+          return json(res, status, {
+            ok: false,
+            error: { message: String(e.message || e), code: e.code || 'create_failed' },
+          })
+        }
+      }
+      if (req.method === 'PATCH' && /^\/api\/panel\/api-keys\/[^/]+$/.test(p)) {
+        const id = p.split('/').pop()
+        const body = await readBody(req, 8192).catch(() => ({}))
+        try {
+          const rec = apiKeyStore.update(id, body || {})
+          if (!rec) {
+            return json(res, 404, { ok: false, error: { message: 'api key not found' } })
+          }
+          return json(res, 200, { ok: true, item: publicKeyView(rec, { reveal: false }) })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: { message: String(e.message || e), code: e.code } })
+        }
+      }
+      if (req.method === 'POST' && /^\/api\/panel\/api-keys\/[^/]+\/reset-quota$/.test(p)) {
+        const id = p.split('/')[4]
+        const rec = apiKeyStore.update(id, { reset_quota: true })
+        if (!rec) return json(res, 404, { ok: false, error: { message: 'api key not found' } })
+        return json(res, 200, { ok: true, item: publicKeyView(rec, { reveal: false }) })
+      }
+      if (req.method === 'DELETE' && /^\/api\/panel\/api-keys\/[^/]+$/.test(p)) {
+        const id = p.split('/').pop()
+        const ok = apiKeyStore.remove(id)
+        if (!ok) return json(res, 404, { ok: false, error: { message: 'api key not found' } })
+        return json(res, 200, { ok: true, deleted: id })
+      }
+
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
         return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats }))
