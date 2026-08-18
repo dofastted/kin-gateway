@@ -1066,22 +1066,19 @@ const server = http.createServer(async (req, res) => {
     // ========== Simplified Panel API (shadcn-ready) ==========
     if (p.startsWith('/api/panel')) {
       if (!requireAuth(req, res)) return
-      if (req.method === 'GET' && p === '/api/panel/me') {
-        return json(res, 200, { ok: true, user: req.panelUser || 'api-key' })
+      // Managed client keys may only call protocol endpoints — never panel/admin.
+      // Only panel session or master KIN_API_KEY may administer.
+      const isPanelAdmin = !!req.panelUser || req.apiKeyKind === 'master'
+      if (!isPanelAdmin) {
+        return json(res, 403, makeError({
+          type: ErrorType.PERMISSION,
+          code: 'forbidden',
+          message: 'Panel requires admin login or master API key',
+          status: 403,
+        }).body)
       }
-
-      // ---- API Keys (sub2api-inspired) ----
-      // Only panel session or master key may manage keys.
-      if (p.startsWith('/api/panel/api-keys')) {
-        const isMaster = req.apiKeyKind === 'master' || !!req.panelUser
-        if (!isMaster) {
-          return json(res, 403, makeError({
-            type: ErrorType.PERMISSION,
-            code: 'forbidden',
-            message: 'Only admin/panel may manage API keys',
-            status: 403,
-          }).body)
-        }
+      if (req.method === 'GET' && p === '/api/panel/me') {
+        return json(res, 200, { ok: true, user: req.panelUser || 'master' })
       }
       if (req.method === 'GET' && p === '/api/panel/api-keys') {
         return json(res, 200, { ok: true, ...apiKeyStore.snapshot() })

@@ -98,3 +98,32 @@ test('master key still works; delete key invalidates', async () => {
     await gw.stop()
   }
 })
+
+
+test('managed key cannot access panel admin APIs', async () => {
+  const gw = await startGateway()
+  try {
+    const created = await api(gw, 'POST', '/api/panel/api-keys', {
+      body: { name: 'client-only', max_concurrency: 2 },
+    })
+    assert.equal(created.status, 201, created.text)
+    const key = created.json.item.key
+
+    const dash = await api(gw, 'GET', '/api/panel/dashboard', {
+      headers: { authorization: `Bearer ${key}` },
+    })
+    assert.equal(dash.status, 403, dash.text)
+
+    const logs = await api(gw, 'GET', '/api/panel/request-logs?mode=debug', {
+      headers: { authorization: `Bearer ${key}` },
+    })
+    assert.equal(logs.status, 403, logs.text)
+
+    const keys = await api(gw, 'GET', '/api/panel/api-keys', {
+      headers: { authorization: `Bearer ${key}` },
+    })
+    assert.equal(keys.status, 403, keys.text)
+  } finally {
+    await gw.stop()
+  }
+})
