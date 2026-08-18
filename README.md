@@ -119,6 +119,52 @@
 
 ---
 
+## 数据库与备份
+
+数据层参考 **sub2api**（Repository 模式、版本化 SQL 迁移 + SHA-256 校验、settings 表、UsageLog 表、BackupService），落地为 **SQLite**（Node 22 内置 `node:sqlite`，零第三方依赖）。单进程网关无需 sub2api 的 PostgreSQL + Redis。
+
+### 入库数据
+
+| 表 | 内容 |
+|----|------|
+| `api_keys` | 管理端 API 密钥（额度/RPM/并发/用量计数） |
+| `accounts` + `account_allocations` | 账号 5h/7d 用量、分配流水（每账号保留 50 条） |
+| `sticky_sessions` | 粘性会话绑定 |
+| `proxies` | SOCKS5 代理池（config 在 `settings`） |
+| `vms` | **VM 记录 + OAuth 凭证镜像**（见下） |
+| `request_logs` / `request_log_debug` | 请求日志摘要 + debug 全量（脱敏） |
+| `settings` | active_vm、备份调度、导入标记等 |
+| `backup_records` | 备份台账 |
+
+- 数据库文件：`data/kin.db`（WAL，0600）；`KIN_DB_PATH` 可覆盖。
+- **旧 JSON 自动迁移**：首次启动把 `data/*.json`、`request-logs/*`、`vms/*.json` 一次性导入 DB（`settings.legacy_import_done` 幂等标记），原文件保留不删。
+
+### 凭证入库（写穿镜像）
+
+`vms/*.json` 仍是运行时单写者形态（`persistOauthToVm` / CLI seed 依赖文件），但每次写文件都同步 upsert `vms` 表（完整 `vm_json` + 凭证列）：
+
+- 主路径：`atomicWriteJson` 写钩子（oauth-refresh / vm-registry / 面板全部写入点）；
+- 兜底：启动 mtime 对账 + `fs.watch(vms/)`；文件缺失时可从 DB 反向重建；
+- 可选加密：设 `KIN_DB_SECRET` 后凭证列与 `vm_json` 以 AES-256-GCM 加密落库。
+
+### 本地自动备份（默认开启）
+
+- 产物：`data/backups/kin-backup-<时间戳>.tar.gz`（manifest + `db/kin.db`(VACUUM INTO) + `vms/` + `config/`，0600）。
+- 调度：默认 `{enabled: true, interval_hours: 24, retention: 7}`；每 10 分钟检查 + 启动补跑；超量自动清理。
+- 恢复：sha256 校验 → 自动 `pre_restore` 快照 → 换库 → 还原/重建 vm、config 文件 → 各 Store 重绑；恢复期间协议请求返回 503。
+- 面板：设置页「备份」卡片（立即备份 / 下载 / 恢复 / 调度配置）；API 见 [PANEL_API.md](gateway/PANEL_API.md)。
+- 不做 S3/远端上传；异地保存请通过面板下载 tar.gz。
+
+### 相关环境变量
+
+| 变量 | 说明 |
+|------|------|
+| `KIN_DB_PATH` | 数据库文件路径（默认 `<data>/kin.db`） |
+| `KIN_DB_SECRET` | 设置后凭证列/vm_json 加密落库（AES-256-GCM） |
+| `KIN_REQUEST_LOG_JSONL=1` | 请求日志额外镜像写旧 JSONL（外部采集用，默认关） |
+| `KIN_BACKUP_DISABLED=1` | 关闭自动备份 |
+| `KIN_BACKUP_INTERVAL_HOURS` / `KIN_BACKUP_RETENTION` | 覆盖备份间隔/保留数 |
+
 ## 本地与部署
 
 生产进程：

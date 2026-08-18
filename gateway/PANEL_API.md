@@ -30,6 +30,33 @@ Auth: `Authorization: Bearer <KIN_API_KEY>`
 | GET | `/api/panel/routing` | 粘性/额度配置 | Form |
 | PUT | `/api/panel/routing` | 更新配置 | Form submit |
 
+## Request Logs（SQLite 持久化）
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/panel/request-logs` | 摘要列表；参数：`limit, offset, api_key_id, vm_id, account_id, model, protocol, status(数字/ok/error), since, until, q`；返回 `items + total` |
+| GET | `/api/panel/request-logs?mode=debug` | debug 全量记录（脱敏） |
+| GET | `/api/panel/request-logs/stats` | 聚合统计；参数：`bucket=day|hour, since, until`；返回 `totals + buckets[]`（requests/errors/tokens/avg_duration_ms） |
+| GET | `/api/panel/request-logs/:request_id` | 单条 debug 详情 |
+
+## Backups（本地备份）
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/panel/backups` | 备份列表 + schedule 配置 + `next_auto_at` |
+| POST | `/api/panel/backups` | 立即备份（manual），201 返回记录 |
+| GET | `/api/panel/backups/config` | 读取 `{enabled, interval_hours, retention}` |
+| PUT | `/api/panel/backups/config` | 更新调度配置（默认 24h / 保留 7 份 / 开启） |
+| GET | `/api/panel/backups/:id/download` | 下载 tar.gz（`application/gzip`，头带 `x-kin-backup-sha256`） |
+| POST | `/api/panel/backups/:id/restore` | 恢复；body 必须 `{"confirm": true}`；恢复期间协议请求返回 503 `restore_in_progress` |
+| DELETE | `/api/panel/backups/:id` | 删除记录 + 磁盘文件 |
+
+备份记录 row:
+```
+id, created_at, kind(manual|scheduled|pre_restore), status(ok|failed),
+file_name, size_bytes, sha256, db_bytes, includes{db,vms,config}, note, file_exists
+```
+
 ## data 字段约定（列表行）
 
 VM row:
