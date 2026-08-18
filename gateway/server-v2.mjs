@@ -58,6 +58,7 @@ import { withVmLock, atomicWriteJson } from './lib/vm-file.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
 import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm-db-sync.mjs'
+import { BackupService } from './lib/backup-service.mjs'
 import { resolveForwardMode, applyForwardReplace, modeSpec } from './lib/forward-mode.mjs'
 import { callClientWorkspaceCli, streamClientWorkspaceCli } from './lib/client-cli-hop.mjs'
 
@@ -127,6 +128,21 @@ const proxyPool = new ProxyPool({
   },
 })
 proxyPool.startScheduler()
+
+// --- Local backup service (auto schedule default ON; no S3 by design) ---
+const backupService = new BackupService({
+  dataDir,
+  projectRoot: cfg.paths.project,
+  configDir: path.join(cfg.paths.root, 'config'),
+})
+backupService.onRestored((db) => {
+  // re-bind every store to the freshly restored connection
+  for (const store of [apiKeyStore, accountQuota, stickyRouter, proxyPool, requestLog]) {
+    try { store.rebind(db) } catch {}
+  }
+  try { reloadActiveVm(cfg) } catch {}
+})
+backupService.startScheduler()
 
 
 const stats = {
@@ -965,6 +981,16 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`)
     const p = url.pathname
 
+    // While a backup restore is swapping the DB, fail protocol traffic fast.
+    if (backupService.isRestoring && (p.startsWith('/v1/') || p === '/messages' || p === '/chat/completions' || p === '/responses')) {
+      return json(res, 503, makeError({
+        type: ErrorType.OVERLOADED,
+        code: 'restore_in_progress',
+        message: 'Gateway is restoring from backup; retry shortly',
+        status: 503,
+      }).body)
+    }
+
     if (p === '/admin/routing' && req.method === 'GET') {
       if (!requireAuth(req, res)) return
       return json(res, 200, { routing: routingConfig, sticky: stickyRouter.stats() })
@@ -1209,6 +1235,72 @@ const server = http.createServer(async (req, res) => {
         const rec = requestLog.getDebug(id)
         if (!rec) return json(res, 404, { ok: false, error: { message: 'debug log not found' } })
         return json(res, 200, { ok: true, item: rec })
+      }
+
+      // ---- Backups (local auto/manual, download, restore) ----
+      if (req.method === 'GET' && p === '/api/panel/backups') {
+        return json(res, 200, {
+          ok: true,
+          items: backupService.list(),
+          config: backupService.getSchedule(),
+          next_auto_at: backupService.nextAutoAt(),
+          restoring: backupService.isRestoring,
+        })
+      }
+      if (req.method === 'POST' && p === '/api/panel/backups') {
+        try {
+          const rec = backupService.createBackup({ kind: 'manual' })
+          return json(res, 201, { ok: true, item: rec })
+        } catch (e) {
+          const status = e.code === 'backup_in_progress' ? 409 : 500
+          return json(res, status, { ok: false, error: { message: String(e.message || e), code: e.code || 'backup_failed' } })
+        }
+      }
+      if (req.method === 'GET' && p === '/api/panel/backups/config') {
+        return json(res, 200, { ok: true, config: backupService.getSchedule(), next_auto_at: backupService.nextAutoAt() })
+      }
+      if (req.method === 'PUT' && p === '/api/panel/backups/config') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        try {
+          const config = backupService.updateSchedule(body || {})
+          return json(res, 200, { ok: true, config, next_auto_at: backupService.nextAutoAt() })
+        } catch (e) {
+          return json(res, 400, { ok: false, error: { message: String(e.message || e), code: e.code } })
+        }
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/backups\/[^/]+\/download$/.test(p)) {
+        const id = p.split('/')[4]
+        const rec = backupService.get(id)
+        if (!rec || !rec.file_path || !fs.existsSync(rec.file_path)) {
+          return json(res, 404, { ok: false, error: { message: 'backup file not found' } })
+        }
+        res.writeHead(200, {
+          'content-type': 'application/gzip',
+          'content-length': fs.statSync(rec.file_path).size,
+          'content-disposition': `attachment; filename="${rec.file_name}"`,
+          'x-kin-backup-sha256': rec.sha256 || '',
+        })
+        fs.createReadStream(rec.file_path).pipe(res)
+        return
+      }
+      if (req.method === 'POST' && /^\/api\/panel\/backups\/[^/]+\/restore$/.test(p)) {
+        const id = p.split('/')[4]
+        const body = await readBody(req, 4096).catch(() => ({}))
+        if (body?.confirm !== true) {
+          return json(res, 400, { ok: false, error: { message: 'restore requires {"confirm": true}', code: 'confirm_required' } })
+        }
+        try {
+          const out = backupService.restoreBackup(id)
+          return json(res, 200, { ok: true, ...out })
+        } catch (e) {
+          const map = { backup_not_found: 404, backup_file_missing: 404, restore_in_progress: 409, backup_corrupt: 422, backup_not_ok: 422 }
+          return json(res, map[e.code] || 500, { ok: false, error: { message: String(e.message || e), code: e.code || 'restore_failed' } })
+        }
+      }
+      if (req.method === 'DELETE' && /^\/api\/panel\/backups\/[^/]+$/.test(p)) {
+        const id = p.split('/').pop()
+        if (!backupService.remove(id)) return json(res, 404, { ok: false, error: { message: 'backup not found' } })
+        return json(res, 200, { ok: true, deleted: id })
       }
 
 
@@ -1965,6 +2057,7 @@ function shutdown(signal) {
   if (_shuttingDown) return
   _shuttingDown = true
   console.log(`[shutdown] ${signal} — closing`)
+  try { backupService.stopScheduler() } catch {}
   try { proxyPool.stopScheduler() } catch {}
   try { stopVmWatch() } catch {}
   try { oauthGuard.stopLoop() } catch {}
