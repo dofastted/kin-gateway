@@ -1151,7 +1151,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true, deleted: id })
       }
 
-      // ---- Request logs (normal summary + debug full) ----
+      // ---- Request logs (normal summary + debug full; DB-backed filters/pagination) ----
       if (req.method === 'GET' && p === '/api/panel/request-logs') {
         const u = new URL(req.url, 'http://x')
         const mode = (u.searchParams.get('mode') || 'normal').toLowerCase()
@@ -1164,11 +1164,44 @@ const server = http.createServer(async (req, res) => {
             items: requestLog.listDebug({ limit }),
           })
         }
+        const filters = {
+          limit,
+          offset: Number(u.searchParams.get('offset') || 0),
+          api_key_id: u.searchParams.get('api_key_id') || null,
+          vm_id: u.searchParams.get('vm_id') || null,
+          account_id: u.searchParams.get('account_id') || null,
+          model: u.searchParams.get('model') || null,
+          protocol: u.searchParams.get('protocol') || null,
+          status: u.searchParams.get('status') || null,
+          since: u.searchParams.get('since') || null,
+          until: u.searchParams.get('until') || null,
+          q: u.searchParams.get('q') || null,
+        }
+        const { items, total } = requestLog.queryNormal(filters)
         return json(res, 200, {
           ok: true,
           mode: 'normal',
           config: requestLog.snapshot(),
-          items: requestLog.listNormal({ limit }),
+          items,
+          total,
+          limit: filters.limit,
+          offset: filters.offset,
+        })
+      }
+      // ---- Aggregated usage stats from request_logs (charts) ----
+      if (req.method === 'GET' && p === '/api/panel/request-logs/stats') {
+        const u = new URL(req.url, 'http://x')
+        const bucket = (u.searchParams.get('bucket') || 'day').toLowerCase() === 'hour' ? 'hour' : 'day'
+        const since = u.searchParams.get('since')
+          || new Date(Date.now() - 7 * 86400_000).toISOString()
+        const until = u.searchParams.get('until') || null
+        return json(res, 200, {
+          ok: true,
+          bucket,
+          since,
+          until,
+          totals: requestLog.totals(),
+          buckets: requestLog.aggregate({ since, until, bucket }),
         })
       }
       if (req.method === 'GET' && /^\/api\/panel\/request-logs\/[^/]+$/.test(p)) {
@@ -1181,7 +1214,7 @@ const server = http.createServer(async (req, res) => {
 
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
-        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats }))
+        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog }))
       }
       // GET /api/panel/vms
       if (req.method === 'GET' && p === '/api/panel/vms') {
