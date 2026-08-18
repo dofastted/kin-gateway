@@ -554,6 +554,69 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
   .sidebar-nav{flex-wrap:nowrap;overflow-x:auto}
   .nav-item{flex:0 0 auto}
 }
+
+/* ── keys + logs pages ─────────────────────────────────── */
+.meter{height:6px;border-radius:99px;background:oklch(1 0 0/8%);overflow:hidden;min-width:72px}
+.meter>i{display:block;height:100%;border-radius:99px;background:var(--ok);transition:width var(--motion-fast) var(--ease)}
+.meter.warn>i{background:var(--warn)}
+.meter.bad>i{background:var(--bad)}
+.chip{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:99px;font-size:11px;font-weight:500;border:1px solid var(--line-2);background:oklch(1 0 0/4%);color:var(--muted);white-space:nowrap}
+.chip.ok{color:var(--ok);border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.1)}
+.chip.warn{color:var(--warn);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.1)}
+.chip.bad{color:var(--bad);border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.1)}
+.chip .dot{width:6px;height:6px;border-radius:99px;background:currentColor}
+.key-reveal{
+  display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+  padding:12px 14px;margin-bottom:14px;
+  border:1px solid rgba(34,197,94,.35);background:rgba(34,197,94,.08);
+  border-radius:var(--r-md);
+}
+.key-reveal code{
+  flex:1;min-width:180px;font-family:var(--mono);font-size:12px;
+  word-break:break-all;padding:8px 10px;border-radius:var(--r-sm);
+  background:oklch(0 0 0/35%);border:1px solid var(--line);
+}
+.key-reveal .hint{width:100%;font-size:11.5px;color:var(--faint)}
+.create-grid{
+  display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) auto;
+  gap:10px 12px;align-items:end;
+}
+.create-grid .field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.create-grid .field label{font-size:11.5px;color:var(--faint)}
+.create-grid .field .input{width:100%;max-width:none}
+.create-grid .go{align-self:end}
+.row-actions{display:flex;flex-wrap:wrap;gap:4px}
+.row-actions .btn{min-height:32px}
+.log-detail{
+  margin-top:14px;border:1px solid var(--line);border-radius:var(--r-md);
+  background:var(--panel-2);overflow:hidden;
+}
+.log-detail .hd{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:10px 14px;border-bottom:1px solid var(--line);
+}
+.log-detail .hd .nm{font-size:12.5px;font-weight:550}
+.log-detail pre{
+  margin:0;padding:12px 14px;max-height:420px;overflow:auto;
+  font-family:var(--mono);font-size:11px;line-height:1.55;color:var(--muted);
+  white-space:pre-wrap;word-break:break-word;
+}
+.status-pill{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:42px;height:22px;padding:0 8px;border-radius:6px;
+  font-family:var(--mono);font-size:11.5px;font-weight:550;
+  border:1px solid var(--line-2);color:var(--muted);
+}
+.status-pill.s2{color:var(--ok);border-color:rgba(34,197,94,.35);background:rgba(34,197,94,.1)}
+.status-pill.s4{color:var(--warn);border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.1)}
+.status-pill.s5{color:var(--bad);border-color:rgba(239,68,68,.35);background:rgba(239,68,68,.1)}
+@media(max-width:960px){
+  .create-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .create-grid .go{grid-column:1 / -1}
+}
+@media(max-width:560px){
+  .create-grid{grid-template-columns:1fr}
+}
   </style>
 </head>
 <body class="login-only">
@@ -1051,17 +1114,20 @@ async function refresh() {
   if (btn) { btn.disabled = true; btn.classList.add('busy') }
   try {
     const safe = (p) => api(p).catch((e) => ({ __error: e.message || String(e) }))
-    const [dash, usage, keys, models, routing, proxies] = await Promise.all([
+    const logMode = state.logMode || 'normal'
+    const [dash, usage, keys, models, routing, proxies, logs] = await Promise.all([
       safe('/api/panel/dashboard'),
       safe('/api/panel/usage'),
       safe('/api/panel/api-keys'),
       safe('/api/panel/models?refresh=1'),
       safe('/api/panel/routing'),
       safe('/api/panel/proxies'),
+      safe('/api/panel/request-logs?mode=' + encodeURIComponent(logMode) + '&limit=50'),
     ])
     state.dashboard = dash?.__error ? { error: dash.__error } : (dash.data || dash)
     state.usage = usage?.__error ? { error: usage.__error } : (usage.data || usage)
     state.keys = keys?.__error ? { error: keys.__error } : (keys.data || keys)
+    state.logs = logs?.__error ? { error: logs.__error } : (logs.data || logs)
     let m = models?.__error ? null : (models.data || models)
     if (m && Array.isArray(m.data) && !m.items) {
       m = {
@@ -2040,6 +2106,7 @@ function renderProtocol() {
 
 /* ── settings ────────────────────────────────────────────── */
 
+
 async function refreshKeys() {
   try {
     const r = await api('/api/panel/api-keys')
@@ -2049,107 +2116,201 @@ async function refreshKeys() {
   }
 }
 
+function keyQuotaPct(it) {
+  const q = Number(it.quota_requests || 0)
+  if (!q) return 0
+  return Math.min(100, Math.round((Number(it.quota_used || 0) / q) * 100))
+}
+
+function meterBar(pctVal) {
+  const p = Math.max(0, Math.min(100, Number(pctVal) || 0))
+  const cls = p >= 95 ? 'bad' : p >= 80 ? 'warn' : ''
+  return `<div class="meter ${cls}" title="${p}%"><i style="width:${p}%"></i></div>`
+}
+
 function renderKeys() {
   const k = state.keys || {}
   if (k.error) return emptyBox('加载失败: ' + esc(k.error))
   const items = (k.keys || []).slice()
+  const filter = state.keysFilter || 'all'
+  const filtered = items.filter(it => {
+    if (filter === 'active') return it.status === 'active'
+    if (filter === 'disabled') return it.status !== 'active'
+    return true
+  })
+  const active = items.filter(it => it.status === 'active').length
+  const near = items.filter(it => {
+    const q = Number(it.quota_requests || 0)
+    return q > 0 && (Number(it.quota_used || 0) / q) >= 0.8
+  }).length
   const created = state._lastCreatedKey
+  const creating = !!state._keyCreating
+
   return `
   <section class="section">
-    <div class="workbench">
-      <div class="wb-head">
-        <div class="nm">API 密钥</div>
-        <div class="row" style="gap:8px">
-          <button class="btn btn-sm" onclick="refreshKeys().then(paint)">刷新</button>
+    <div class="stat-hero">
+      ${statTile('密钥', items.length, `${active} 启用`)}
+      ${statTile('启用', active, `${items.length - active} 停用`)}
+      ${statTile('近额', near, near ? '≥80% 已用' : '额度充足')}
+      ${statTile('请求', fmtNum(items.reduce((s, it) => s + (it.requests || 0), 0)), '累计')}
+    </div>
+
+    ${created ? `
+    <div class="key-reveal" role="status" aria-live="polite">
+      <div class="chip ok"><span class="dot"></span>新密钥（仅显示一次）</div>
+      <code id="newKeyVal">${esc(created)}</code>
+      <button class="btn btn-primary btn-sm" type="button" onclick="copyCreatedKey()" aria-label="复制新密钥">复制</button>
+      <button class="btn btn-outline btn-sm" type="button" onclick="state._lastCreatedKey=null;paint()">关闭</button>
+      <div class="hint">请立即保存。列表中只显示脱敏片段，无法再次查看完整密钥。</div>
+    </div>` : ''}
+
+    <div class="card card-pad-lg" style="margin-bottom:14px">
+      <div class="section-title" style="margin-bottom:12px">生成密钥</div>
+      <div class="create-grid">
+        <div class="field">
+          <label for="k_name">名称</label>
+          <input id="k_name" class="input" placeholder="例如 client-a" value="${esc(state._keyForm?.name || 'default')}" autocomplete="off" />
         </div>
-      </div>
-      <div class="wb-body">
-        ${created ? `<div class="alert" style="margin-bottom:12px">新密钥（仅显示一次）：<code id="newKeyVal">${esc(created)}</code>
-          <button class="btn btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('newKeyVal').textContent)">复制</button>
-        </div>` : ''}
-        <div class="set-list" style="margin-bottom:16px">
-          <div class="set-row"><span>名称</span><input id="k_name" class="input" placeholder="例如 client-a" value="default"/></div>
-          <div class="set-row"><span>并发</span>
-            <select id="k_conc" class="input">
-              ${[0,1,2,3,4,5,8,16].map(v => `<option value="${v}" ${v===2?'selected':''}>${v===0?'不限制':v}</option>`).join('')}
-            </select>
-          </div>
-          <div class="set-row"><span>额度(次)</span>
-            <select id="k_quota" class="input">
-              ${[0,100,500,1000,5000,10000,50000].map(v => `<option value="${v}">${v===0?'不限制':v}</option>`).join('')}
-            </select>
-          </div>
-          <div class="set-row"><span>RPM</span>
-            <select id="k_rpm" class="input">
-              ${[0,10,30,60,120,300].map(v => `<option value="${v}">${v===0?'不限制':v+'/分'}</option>`).join('')}
-            </select>
-          </div>
-          <div class="set-row"><span>有效期</span>
-            <select id="k_exp" class="input">
-              <option value="">永不过期</option>
-              <option value="7">7 天</option>
-              <option value="30">30 天</option>
-              <option value="90">90 天</option>
-              <option value="365">1 年</option>
-            </select>
-          </div>
-          <div class="set-row"><span></span>
-            <button class="btn btn-primary btn-sm" onclick="createApiKey()">生成密钥</button>
-          </div>
+        <div class="field">
+          <label for="k_conc">并发上限</label>
+          <select id="k_conc" class="input" aria-label="并发上限">
+            ${[0,1,2,3,4,5,8,16].map(v => `<option value="${v}" ${v===Number(state._keyForm?.max_concurrency ?? 2)?'selected':''}>${v===0?'不限制':v}</option>`).join('')}
+          </select>
         </div>
-        ${!items.length ? emptyBox('暂无密钥，生成后客户端可使用 Authorization: Bearer sk-kin-…') : `
-        <div class="table-wrap"><table class="table">
-          <thead><tr>
-            <th>名称</th><th>密钥</th><th>状态</th><th>并发</th><th>额度</th><th>RPM</th><th>用量</th><th>过期</th><th></th>
-          </tr></thead>
-          <tbody>
-            ${items.map(it => {
-              const quota = it.quota_requests > 0 ? `${it.quota_used||0}/${it.quota_requests}` : `${it.quota_used||0}/∞`
-              return `<tr>
-                <td>${esc(it.name)}</td>
-                <td><code>${esc(it.key)}</code></td>
-                <td>${it.status === 'active' ? '<span class="chip ok">启用</span>' : '<span class="chip">停用</span>'}</td>
-                <td>${it.inflight||0}/${it.max_concurrency||0}</td>
-                <td>${quota}</td>
-                <td>${it.rpm||0}</td>
-                <td>${it.requests||0} 次</td>
-                <td>${it.expires_at ? esc(String(it.expires_at).slice(0,10)) : '—'}</td>
-                <td class="row" style="gap:4px">
-                  <button class="btn btn-sm" onclick="toggleApiKey('${esc(it.id)}','${it.status==='active'?'disabled':'active'}')">${it.status==='active'?'停用':'启用'}</button>
-                  <button class="btn btn-sm" onclick="resetApiKeyQuota('${esc(it.id)}')">清额度</button>
-                  <button class="btn btn-sm" onclick="deleteApiKey('${esc(it.id)}')">删除</button>
-                </td>
-              </tr>`
-            }).join('')}
-          </tbody>
-        </table></div>`}
+        <div class="field">
+          <label for="k_quota">额度（次）</label>
+          <select id="k_quota" class="input" aria-label="额度次数">
+            ${[0,100,500,1000,5000,10000,50000].map(v => `<option value="${v}" ${v===Number(state._keyForm?.quota_requests ?? 0)?'selected':''}>${v===0?'不限制':v}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label for="k_rpm">RPM</label>
+          <select id="k_rpm" class="input" aria-label="每分钟请求数">
+            ${[0,10,30,60,120,300].map(v => `<option value="${v}" ${v===Number(state._keyForm?.rpm ?? 0)?'selected':''}>${v===0?'不限制':v+'/分'}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label for="k_exp">有效期</label>
+          <select id="k_exp" class="input" aria-label="有效期">
+            ${[['','永不过期'],['7','7 天'],['30','30 天'],['90','90 天'],['365','1 年']].map(([v,l]) => `<option value="${v}" ${String(state._keyForm?.expires_in_days ?? '')===v?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
+        <div class="go">
+          <button class="btn btn-primary" type="button" ${creating?'disabled':''} onclick="createApiKey()" aria-label="生成 API 密钥">
+            ${creating ? '生成中…' : '生成密钥'}
+          </button>
+        </div>
       </div>
     </div>
+
+    <div class="head">
+      <div>
+        <div class="section-title">${filtered.length}<span style="color:var(--faint);font-weight:500"> / ${items.length}</span></div>
+        <div class="sub">客户端使用 <code style="font-size:11px">Authorization: Bearer sk-kin-…</code></div>
+      </div>
+      <div class="actions">
+        <div class="seg" role="tablist" aria-label="密钥状态筛选">
+          <button type="button" class="${filter==='all'?'on':''}" role="tab" aria-selected="${filter==='all'}" onclick="state.keysFilter='all';paint()">全部</button>
+          <button type="button" class="${filter==='active'?'on':''}" role="tab" aria-selected="${filter==='active'}" onclick="state.keysFilter='active';paint()">启用</button>
+          <button type="button" class="${filter==='disabled'?'on':''}" role="tab" aria-selected="${filter==='disabled'}" onclick="state.keysFilter='disabled';paint()">停用</button>
+        </div>
+        <button class="btn btn-outline btn-sm" type="button" onclick="refreshKeys().then(paint)">刷新</button>
+      </div>
+    </div>
+
+    ${!filtered.length ? emptyBox(items.length ? '当前筛选下没有密钥' : '暂无密钥，生成后即可分发给客户端') : `
+    <div class="card table-wrap" style="padding:8px 10px 4px">
+      <table class="table" aria-label="API 密钥列表">
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>密钥</th>
+            <th>状态</th>
+            <th>并发</th>
+            <th>额度</th>
+            <th>RPM</th>
+            <th>用量</th>
+            <th>过期</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(it => {
+            const q = Number(it.quota_requests || 0)
+            const used = Number(it.quota_used || 0)
+            const qp = keyQuotaPct(it)
+            const on = it.status === 'active'
+            return `<tr>
+              <td>
+                <div style="font-weight:550">${esc(it.name)}</div>
+                <div class="mono" style="font-size:10.5px;color:var(--faint)">${esc(it.id)}</div>
+              </td>
+              <td><code class="mono" style="font-size:11.5px">${esc(it.key)}</code></td>
+              <td>${on ? '<span class="chip ok"><span class="dot"></span>启用</span>' : '<span class="chip">停用</span>'}</td>
+              <td class="mono">${it.inflight||0}<span style="color:var(--faint)">/</span>${it.max_concurrency||0}</td>
+              <td style="min-width:110px">
+                <div class="mono" style="font-size:11.5px;margin-bottom:4px">${q ? `${used}/${q}` : `${used}/∞`}</div>
+                ${q ? meterBar(qp) : '<span style="color:var(--faint);font-size:11px">不限制</span>'}
+              </td>
+              <td class="mono">${it.rpm || '∞'}</td>
+              <td class="mono">${fmtNum(it.requests||0)}</td>
+              <td>${it.expires_at ? esc(String(it.expires_at).slice(0,10)) : '<span style="color:var(--faint)">—</span>'}</td>
+              <td>
+                <div class="row-actions">
+                  <button class="btn btn-outline btn-sm" type="button" onclick="toggleApiKey('${esc(it.id)}','${on?'disabled':'active'}')" aria-label="${on?'停用':'启用'} ${esc(it.name)}">${on?'停用':'启用'}</button>
+                  <button class="btn btn-outline btn-sm" type="button" onclick="resetApiKeyQuota('${esc(it.id)}')" aria-label="清零额度">清额度</button>
+                  <button class="btn btn-outline btn-sm" type="button" onclick="deleteApiKey('${esc(it.id)}')" aria-label="删除密钥">删除</button>
+                </div>
+              </td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`}
   </section>`
 }
 
+async function copyCreatedKey() {
+  const el = document.getElementById('newKeyVal')
+  const text = el?.textContent || state._lastCreatedKey || ''
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    toast('已复制密钥')
+  } catch {
+    toast('复制失败，请手动选中', true)
+  }
+}
+
 async function createApiKey() {
-  const name = document.getElementById('k_name')?.value || 'default'
+  if (state._keyCreating) return
+  const name = document.getElementById('k_name')?.value?.trim() || 'default'
   const max_concurrency = Number(document.getElementById('k_conc')?.value || 2)
   const quota_requests = Number(document.getElementById('k_quota')?.value || 0)
   const rpm = Number(document.getElementById('k_rpm')?.value || 0)
   const days = document.getElementById('k_exp')?.value
+  state._keyForm = { name, max_concurrency, quota_requests, rpm, expires_in_days: days || '' }
   const body = { name, max_concurrency, quota_requests, rpm }
   if (days) body.expires_in_days = Number(days)
+  state._keyCreating = true
+  paint()
   try {
     const r = await api('/api/panel/api-keys', { method: 'POST', body: JSON.stringify(body) })
     state._lastCreatedKey = r.item?.key || null
     toast('已生成密钥')
     await refreshKeys()
-    paint()
   } catch (e) {
     toast(String(e.message || e), true)
+  } finally {
+    state._keyCreating = false
+    paint()
   }
 }
 
 async function toggleApiKey(id, status) {
   try {
     await api('/api/panel/api-keys/' + id, { method: 'PATCH', body: JSON.stringify({ status }) })
+    toast(status === 'active' ? '已启用' : '已停用')
     await refreshKeys(); paint()
   } catch (e) { toast(String(e.message || e), true) }
 }
@@ -2163,79 +2324,139 @@ async function resetApiKeyQuota(id) {
 }
 
 async function deleteApiKey(id) {
-  if (!confirm('确认删除该密钥？')) return
+  if (!confirm('确认删除该密钥？删除后立即失效。')) return
   try {
     await api('/api/panel/api-keys/' + id, { method: 'DELETE' })
     if (state._lastCreatedKey) state._lastCreatedKey = null
+    toast('已删除')
     await refreshKeys(); paint()
   } catch (e) { toast(String(e.message || e), true) }
 }
 
-
-
 async function refreshLogs() {
   const mode = state.logMode || 'normal'
+  state._logsLoading = true
   try {
-    const r = await api('/api/panel/request-logs?mode=' + mode + '&limit=50')
+    const r = await api('/api/panel/request-logs?mode=' + encodeURIComponent(mode) + '&limit=50')
     state.logs = r
   } catch (e) {
     state.logs = { error: String(e.message || e) }
+  } finally {
+    state._logsLoading = false
   }
+}
+
+function statusPill(code) {
+  const s = Number(code)
+  if (!Number.isFinite(s) || s <= 0) return `<span class="status-pill">—</span>`
+  const cls = s >= 500 ? 's5' : s >= 400 ? 's4' : 's2'
+  return `<span class="status-pill ${cls}">${s}</span>`
 }
 
 function renderLogs() {
   const L = state.logs || {}
   if (L.error) return emptyBox('加载失败: ' + esc(L.error))
   const mode = state.logMode || L.mode || 'normal'
-  const items = L.items || []
+  const items = (L.items || []).slice()
   const cfg = L.config || {}
+  const errs = items.filter(it => Number(it.status) >= 400).length
+  const avg = items.length
+    ? Math.round(items.reduce((s, it) => s + (Number(it.duration_ms) || 0), 0) / items.length)
+    : 0
+  const loading = !!state._logsLoading
+
   return `
   <section class="section">
-    <div class="workbench">
-      <div class="wb-head">
-        <div class="nm">请求日志</div>
-        <div class="row" style="gap:8px">
-          <select id="logMode" class="input" onchange="state.logMode=this.value; refreshLogs().then(paint)">
-            <option value="normal" ${mode==='normal'?'selected':''}>普通</option>
-            <option value="debug" ${mode==='debug'?'selected':''}>Debug 全量</option>
-          </select>
-          <button class="btn btn-sm" onclick="refreshLogs().then(paint)">刷新</button>
-        </div>
+    <div class="stat-hero">
+      ${statTile('记录', items.length, mode === 'debug' ? 'Debug 全量' : '普通摘要')}
+      ${statTile('错误', errs, errs ? '≥400' : '全部正常')}
+      ${statTile('均耗时', avg + '<small>ms</small>', '本页样本')}
+      ${statTile('模式', cfg.mode || 'normal', `保留 ${cfg.retain_days ?? 7} 天`)}
+    </div>
+
+    <div class="head">
+      <div>
+        <div class="section-title">请求日志</div>
+        <div class="sub">单请求可加 <code style="font-size:11px">X-Kin-Debug: 1</code> 强制全量</div>
       </div>
-      <div class="wb-body">
-        <div class="s" style="margin-bottom:10px">服务默认模式：<code>${esc(cfg.mode||'normal')}</code> · 单请求可用 <code>X-Kin-Debug: 1</code> 或 <code>X-Kin-Log: debug</code></div>
-        ${!items.length ? emptyBox('暂无日志') : `
-        <div class="table-wrap"><table class="table">
-          <thead><tr>
-            <th>时间</th><th>协议</th><th>模型</th><th>状态</th><th>耗时</th><th>Token</th><th>Key</th><th>VM</th><th></th>
-          </tr></thead>
-          <tbody>
-            ${items.map(it => {
-              const tok = (it.input_tokens!=null || it.output_tokens!=null)
-                ? `${it.input_tokens??'—'}→${it.output_tokens??'—'}` : '—'
-              return `<tr>
-                <td class="mono">${esc(String(it.ts||'').slice(11,19))}</td>
-                <td>${esc(it.protocol||it.path||'')}</td>
-                <td class="mono">${esc(it.model||'—')}</td>
-                <td>${it.status>=400?'<span class="chip">'+it.status+'</span>':'<span class="chip ok">'+it.status+'</span>'}</td>
-                <td>${it.duration_ms??'—'}ms</td>
-                <td>${tok}</td>
-                <td>${esc(it.api_key_id||it.api_key_kind||'—')}</td>
-                <td class="mono">${esc(it.vm_id||'—')}</td>
-                <td>${mode==='debug' ? `<button class="btn btn-sm" onclick="showDebugLog('${esc(it.request_id)}')">详情</button>` : `<span class="mono">${esc(String(it.request_id||'').slice(0,8))}</span>`}</td>
-              </tr>`
-            }).join('')}
-          </tbody>
-        </table></div>`}
-        ${state._debugDetail ? `<pre class="mono" style="margin-top:12px;max-height:360px;overflow:auto;font-size:11px">${esc(JSON.stringify(state._debugDetail, null, 2))}</pre>` : ''}
+      <div class="actions">
+        <div class="seg" role="tablist" aria-label="日志模式">
+          <button type="button" class="${mode==='normal'?'on':''}" role="tab" aria-selected="${mode==='normal'}"
+            onclick="state.logMode='normal';state._debugDetail=null;refreshLogs().then(paint)">普通</button>
+          <button type="button" class="${mode==='debug'?'on':''}" role="tab" aria-selected="${mode==='debug'}"
+            onclick="state.logMode='debug';refreshLogs().then(paint)">Debug</button>
+        </div>
+        <button class="btn btn-outline btn-sm" type="button" ${loading?'disabled':''} onclick="refreshLogs().then(paint)">
+          ${loading ? '加载中…' : '刷新'}
+        </button>
       </div>
     </div>
+
+    ${!items.length ? emptyBox(loading ? '加载中…' : '暂无日志。发起一次 /v1/messages 后刷新') : `
+    <div class="card table-wrap" style="padding:8px 10px 4px">
+      <table class="table" aria-label="请求日志列表">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>协议</th>
+            <th>模型</th>
+            <th>状态</th>
+            <th class="right">耗时</th>
+            <th>Token</th>
+            <th>Key</th>
+            <th>VM</th>
+            <th>${mode==='debug'?'详情':'Request ID'}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(it => {
+            const tok = (it.input_tokens!=null || it.output_tokens!=null)
+              ? `<span class="mono">${it.input_tokens??'—'}</span><span style="color:var(--faint)">→</span><span class="mono">${it.output_tokens??'—'}</span>`
+              : '<span style="color:var(--faint)">—</span>'
+            const err = it.error_code ? `<div style="font-size:10.5px;color:var(--bad);margin-top:2px">${esc(it.error_code)}</div>` : ''
+            return `<tr>
+              <td>
+                <div class="mono" style="font-size:12px">${esc(String(it.ts||'').slice(11,19))}</div>
+                <div style="font-size:10.5px;color:var(--faint)">${esc(String(it.ts||'').slice(0,10))}</div>
+              </td>
+              <td>
+                <div>${esc((it.protocol||'').replace(/^.*\./,''))||esc(it.path||'')}</div>
+                <div style="font-size:10.5px;color:var(--faint)">${it.stream?'stream':'sync'}${it.has_tools?' · tools':''}</div>
+              </td>
+              <td class="mono" style="font-size:11.5px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.model||'—')}</td>
+              <td>${statusPill(it.status)}${err}</td>
+              <td class="right mono">${it.duration_ms??'—'}<small style="color:var(--faint)">ms</small></td>
+              <td>${tok}</td>
+              <td>
+                <div style="font-size:11.5px">${esc(it.api_key_kind||'—')}</div>
+                <div class="mono" style="font-size:10.5px;color:var(--faint)">${esc(it.api_key_id||'')}</div>
+              </td>
+              <td class="mono" style="font-size:11px">${esc(it.vm_id||'—')}</td>
+              <td>
+                ${mode==='debug'
+                  ? `<button class="btn btn-outline btn-sm" type="button" onclick="showDebugLog('${esc(it.request_id)}')" aria-label="查看详情">详情</button>`
+                  : `<span class="mono" style="font-size:10.5px;color:var(--faint)" title="${esc(it.request_id||'')}">${esc(String(it.request_id||'').slice(0,8))}</span>`}
+              </td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`}
+
+    ${state._debugDetail ? `
+    <div class="log-detail" role="region" aria-label="Debug 日志详情">
+      <div class="hd">
+        <div class="nm">Debug · <span class="mono">${esc(state._debugDetail.request_id||'')}</span></div>
+        <button class="btn btn-outline btn-sm" type="button" onclick="state._debugDetail=null;paint()">关闭</button>
+      </div>
+      <pre>${esc(JSON.stringify(state._debugDetail, null, 2))}</pre>
+    </div>` : ''}
   </section>`
 }
 
 async function showDebugLog(requestId) {
   try {
-    const r = await api('/api/panel/request-logs/' + requestId)
+    const r = await api('/api/panel/request-logs/' + encodeURIComponent(requestId))
     state._debugDetail = r.item || r
     paint()
   } catch (e) {
@@ -2804,6 +3025,14 @@ function applyRoute() {
   if (pd) pd.textContent = pair[1]
   if (known === 'vm' && id) {
     openVm(id)
+    return
+  }
+  if (known === 'logs' && !state.logs) {
+    refreshLogs().then(() => render())
+    return
+  }
+  if (known === 'keys' && !state.keys) {
+    refreshKeys().then(() => render())
     return
   }
   render()
