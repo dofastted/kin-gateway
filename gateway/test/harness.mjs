@@ -198,7 +198,11 @@ export function listMockClaudePids() {
     if (!/^\d+$/.test(pid)) continue
     let cmd = ''
     try { cmd = fs.readFileSync(path.join('/proc', pid, 'cmdline'), 'utf8') } catch { continue }
-    if (cmd.includes('mock-claude')) out.push({ pid, cmd: cmd.replace(/\0/g, ' ') })
+    // Catalog harvest uses `mock-claude --version` and can race with asserts;
+    // only count hop processes (stream-json / long-lived) as orphans.
+    if (!cmd.includes('mock-claude')) continue
+    if (cmd.includes('--version')) continue
+    out.push({ pid, cmd: cmd.replace(/\0/g, ' ') })
   }
   return out
 }

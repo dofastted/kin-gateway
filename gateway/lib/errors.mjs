@@ -47,6 +47,11 @@ export const ErrorCode = {
   QUOTA_5H_SAFETY: 'quota_5h_safety',
   QUOTA_7D_SAFETY: 'quota_7d_safety',
   CONCURRENCY_LIMIT: 'concurrency_limit',
+  API_KEY_DISABLED: 'api_key_disabled',
+  API_KEY_EXPIRED: 'api_key_expired',
+  API_KEY_QUOTA_EXHAUSTED: 'api_key_quota_exhausted',
+  API_KEY_RATE_LIMIT: 'api_key_rate_limit',
+  API_KEY_CONCURRENCY_LIMIT: 'api_key_concurrency_limit',
   // upstream
   UPSTREAM_AUTH: 'upstream_auth_error',
   UPSTREAM_RATE_LIMIT: 'upstream_rate_limit',
