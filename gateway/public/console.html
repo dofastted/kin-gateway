@@ -2538,7 +2538,7 @@ function renderBackupCard() {
   if (b.error) return `<div class="workbench" style="margin-top:14px"><div class="wb-head"><div class="nm">备份</div></div><div class="wb-body">${emptyBox('加载失败: ' + esc(b.error))}</div></div>`
   const cfg = b.config || {}
   const items = b.items || []
-  const kindLabel = { manual: '手动', scheduled: '自动', pre_restore: '恢复前' }
+  const kindLabel = { manual: '手动', scheduled: '自动', pre_restore: '恢复前', imported: '导入' }
   const rows = items.map(it => `
     <tr>
       <td title="${esc(it.id)}">${esc((it.created_at || '').replace('T', ' ').slice(0, 19))}</td>
@@ -3102,6 +3102,8 @@ async function doDeleteVm() {
 }
 
 /* ── router ──────────────────────────────────────────────── */
+/* alias used by inline handlers (keys/logs/backups views) */
+function paint() { render() }
 function render() {
   const views = { overview: renderOverview, cluster: renderCluster, vm: renderVm, import: renderImport, keys: renderKeys, logs: renderLogs, usage: renderUsage, protocol: renderProtocol, proxies: renderProxies, settings: renderSettings }
   const fn = views[state.view] || renderOverview

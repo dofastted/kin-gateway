@@ -84,6 +84,11 @@ test('manual backup → download → mutate → restore rolls back', async () =>
 
     // old db kept on disk as a safety net
     assert.ok(fs.existsSync(path.join(gw.project, 'data', 'kin.db.pre-restore')))
+
+    // ledger after restore still shows the pre_restore snapshot (undo path)
+    const after = await api(gw, 'GET', '/api/panel/backups')
+    assert.ok(after.json.items.some((x) => x.id === restored.json.pre_restore && x.kind === 'pre_restore'),
+      'pre_restore record visible in panel after restore')
   } finally {
     await gw.stop()
   }

@@ -101,12 +101,16 @@ test('restoreBackup rolls data back and creates pre_restore record', () => {
   assert.equal(keys.getById(lost.id), null, 'post-backup key rolled back')
   assert.equal(new SettingsRepo(getDb()).get('marker'), null)
 
-  // pre_restore record exists in the restored DB? — it was created in the OLD db,
-  // so check the ledger: restored DB has the manual record only; the old db file kept on disk
+  // old db file kept on disk as safety net
   assert.ok(fs.existsSync(path.join(dataDir, 'kin.db.pre-restore')))
   // pre_restore archive file kept on disk for manual recovery
   const preFiles = fs.readdirSync(path.join(dataDir, 'backups'))
   assert.ok(preFiles.length >= 2, 'manual + pre_restore archives on disk')
+  // ledger re-registered after restore: pre_restore (and restored manual) visible
+  const ledger = svc.list()
+  assert.ok(ledger.some((r) => r.id === out.pre_restore && r.kind === 'pre_restore'), 'pre_restore record re-registered in restored DB')
+  assert.ok(ledger.some((r) => r.id === rec.id), 'restored manual record present')
+  assert.ok(ledger.every((r) => r.file_exists), 'all ledger rows point at real files')
 })
 
 test('restore rebuilds vm files from DB mirror for db-only path', () => {

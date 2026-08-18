@@ -369,7 +369,12 @@ export class BackupService {
         try { reconcileVms(this.projectRoot) } catch {}
       }
 
-      // 6. re-bind stores to the fresh connection
+      // 6. the ledger itself rolled back with the DB — re-register the
+      //    pre_restore snapshot (and any other on-disk archives) so the
+      //    user can still see/undo from the panel.
+      try { this._registerOrphanArchives([pre, rec]) } catch {}
+
+      // 7. re-bind stores to the fresh connection
       if (this._rebindStores) {
         try { this._rebindStores(db) } catch {}
       }
@@ -378,6 +383,44 @@ export class BackupService {
     } finally {
       this.isRestoring = false
       if (tmp) { try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {} }
+    }
+  }
+
+  /**
+   * Insert ledger rows for archive files that exist on disk but have no
+   * record in the (freshly restored) DB. `known` records are inserted
+   * verbatim; remaining orphans get kind='imported'.
+   */
+  _registerOrphanArchives(known = []) {
+    const repo = this._repo()
+    const existing = new Set(repo.list({ limit: 500 }).map((r) => r.file_name))
+    for (const rec of known) {
+      if (rec?.file_name && !existing.has(rec.file_name) && rec.file_path && fs.existsSync(rec.file_path)) {
+        try { repo.insert(rec); existing.add(rec.file_name) } catch {}
+      }
+    }
+    if (!fs.existsSync(this.backupDir)) return
+    for (const f of fs.readdirSync(this.backupDir)) {
+      if (!/^kin-backup-.*\.(tar\.gz|db\.gz)$/.test(f) || existing.has(f)) continue
+      const fp = path.join(this.backupDir, f)
+      try {
+        const st = fs.statSync(fp)
+        repo.insert({
+          id: 'bak_' + crypto.randomBytes(6).toString('hex'),
+          created_at: st.mtime.toISOString(),
+          kind: 'imported',
+          status: 'ok',
+          file_path: fp,
+          file_name: f,
+          size_bytes: st.size,
+          sha256: sha256File(fp),
+          db_bytes: null,
+          includes: null,
+          error: null,
+          note: 're-registered from disk after restore',
+        })
+        existing.add(f)
+      } catch {}
     }
   }
 
