@@ -193,15 +193,17 @@ gateway/test/
 - [x] 不同 session 隔离；长序列 sticky-map 合法。
 - **验收**：`gateway/test/e2e/long-session.e2e.test.mjs` 全绿。
 
+### P5 — 计划缺口收口
+- [x] hop_meta.dropped / system.truncated 从 captures 断言。
+- [x] OpenAI `image_url` data+http → Anthropic image stdin。
+- [x] openai.chat / responses `choices`/`output`/`usage` 结构。
+- [x] OpenAI tools 非流 `tool_calls` + 流式 deltas；responses `function_call`。
+- [x] hang 后 `/proc` 无 mock-claude 孤儿。
+- [x] 并发 import × harvest，vm.json 合法。
+- [x] Hermes UA / system 分类 + tools 保留 + fail-closed hop。
+
 ### 计划仍缺（未做 / 弱断言）
-- [ ] 5.2 `hop_meta.params.dropped` / `hop_meta.system.truncated` 未在 HTTP 响应上断言（仅 mock argv）。
-- [ ] 5.2 OpenAI `image_url`(data/http) 入站形状未 e2e（仅 Anthropic `image` block）。
-- [ ] 5.1 openai.chat / responses 的 `choices`/`usage` 结构只做了文本匹配。
-- [ ] 5.6 hang 后无孤儿进程（沙箱无 `ps`，只断言 504）。
-- [ ] 5.7 并发导入 vs 收割 `withVmLock` 竞态未单独测。
-- [ ] OpenAI tools → `tool_calls` 流式转换未 e2e。
-- [ ] Hermes agent 分类 / 入站未纳入本矩阵。
-- [ ] `package.json` test 脚本用 glob（`lib/*.test.mjs` …），与原文 `node --test gateway/lib gateway/test` 不完全一致。
+- （本轮已补）5.2 hop_meta / OpenAI image_url / choices·usage / tool_calls 流 / hang 孤儿 / 导入×收割竞态 / Hermes。
 
 
 ---

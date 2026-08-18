@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startGateway, api } from '../harness.mjs'
+import { startGateway, api, listMockClaudePids } from '../harness.mjs'
 import { callAnthropicMessages, streamAnthropicMessages } from '../../lib/anthropic-messages.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
@@ -39,13 +39,16 @@ test('unknown model is rejected without hop', async () => {
   }
 })
 
-test('hang scenario times out with 504', async () => {
+test('hang scenario times out with 504 and leaves no mock-claude process', async () => {
   const gw = await startGateway({ scenario: 'hang', timeoutMs: 800 })
   try {
     const r = await api(gw, 'POST', '/v1/messages', {
       body: { model: MODEL, max_tokens: 8, messages: [{ role: 'user', content: 'x' }] },
     })
     assert.equal(r.status, 504, r.text)
+    await new Promise((ok) => setTimeout(ok, 250))
+    const leftover = listMockClaudePids()
+    assert.equal(leftover.length, 0, leftover.map((p) => p.cmd).join('\n'))
   } finally {
     await gw.stop()
   }

@@ -167,6 +167,42 @@ export function takeTrace(gw) {
   return t
 }
 
+export function listCaptures(gw) {
+  const dir = path.join(gw.project, 'captures')
+  if (!fs.existsSync(dir)) return []
+  const walk = (d) => {
+    const out = []
+    for (const name of fs.readdirSync(d)) {
+      const p = path.join(d, name)
+      const st = fs.statSync(p)
+      if (st.isDirectory()) out.push(...walk(p))
+      else if (name.endsWith('.json')) {
+        try { out.push(JSON.parse(fs.readFileSync(p, 'utf8'))) } catch {}
+      }
+    }
+    return out
+  }
+  return walk(dir)
+}
+
+export function latestHopMeta(gw) {
+  const caps = listCaptures(gw).filter((c) => c.hop_meta)
+  return caps.length ? caps[caps.length - 1].hop_meta : null
+}
+
+export function listMockClaudePids() {
+  const out = []
+  let names
+  try { names = fs.readdirSync('/proc') } catch { return out }
+  for (const pid of names) {
+    if (!/^\d+$/.test(pid)) continue
+    let cmd = ''
+    try { cmd = fs.readFileSync(path.join('/proc', pid, 'cmdline'), 'utf8') } catch { continue }
+    if (cmd.includes('mock-claude')) out.push({ pid, cmd: cmd.replace(/\0/g, ' ') })
+  }
+  return out
+}
+
 export function requireNoFetch() {
   // unused helper kept for tests that want a local assert hook
   return createRequire(import.meta.url)
