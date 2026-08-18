@@ -31,11 +31,11 @@ export function resolveDbPath({ dataDir, dbPath } = {}) {
 }
 
 /**
- * Open (or return the already-open) database, apply PRAGMAs + migrations.
+ * Standalone (non-singleton) open: PRAGMAs + migrations applied.
+ * Used by unit tests and by stores constructed without a global db.
  * @returns {DatabaseSync}
  */
-export function openDatabase({ dataDir, dbPath, migrationsDir } = {}) {
-  if (_db) return _db
+export function createDatabase({ dataDir, dbPath, migrationsDir } = {}) {
   const file = resolveDbPath({ dataDir, dbPath })
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
@@ -45,9 +45,28 @@ export function openDatabase({ dataDir, dbPath, migrationsDir } = {}) {
   db.exec('PRAGMA busy_timeout = 5000')
   db.exec('PRAGMA foreign_keys = ON')
   applyMigrations(db, { migrationsDir })
-  _db = db
-  _dbPath = file
+  return db
+}
+
+/**
+ * Open (or return the already-open) singleton database.
+ * @returns {DatabaseSync}
+ */
+export function openDatabase({ dataDir, dbPath, migrationsDir } = {}) {
+  if (_db) return _db
+  _db = createDatabase({ dataDir, dbPath, migrationsDir })
+  _dbPath = resolveDbPath({ dataDir, dbPath })
   return _db
+}
+
+/**
+ * Resolve the db a store should use: explicit db → global singleton →
+ * standalone connection rooted at dataDir (test isolation path).
+ */
+export function resolveStoreDb({ db, dataDir } = {}) {
+  if (db) return db
+  if (_db) return _db
+  return createDatabase({ dataDir })
 }
 
 /** Current db instance (throws when not opened). */
