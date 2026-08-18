@@ -75,6 +75,7 @@ test('fail-closed hop argv: permission-mode default, no bypass, builtins denied'
   const gw = await startGateway({ scenario: 'text' })
   try {
     await api(gw, 'POST', '/v1/messages', {
+      headers: { 'x-kin-forward': 'cli' },
       body: { model: MODEL, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] },
     })
     const tr = readTrace(gw)
@@ -96,6 +97,7 @@ test('thinking budget forwarded as MAX_THINKING_TOKENS; max_tokens dropped', asy
   const gw = await startGateway({ scenario: 'thinking' })
   try {
     const r = await api(gw, 'POST', '/v1/messages', {
+      headers: { 'x-kin-forward': 'cli' },
       body: {
         model: MODEL,
         max_tokens: 99,
@@ -116,6 +118,7 @@ test('multi-turn: mock stdin contains prior transcript + trailing user', async (
   const gw = await startGateway({ scenario: 'text' })
   try {
     await api(gw, 'POST', '/v1/messages', {
+      headers: { 'x-kin-forward': 'cli' },
       body: {
         model: MODEL,
         max_tokens: 16,
@@ -138,6 +141,7 @@ test('image block reaches mock stdin as Anthropic image', async () => {
   const gw = await startGateway({ scenario: 'text' })
   try {
     await api(gw, 'POST', '/v1/messages', {
+      headers: { 'x-kin-forward': 'cli' },
       body: {
         model: MODEL,
         max_tokens: 16,
@@ -162,6 +166,7 @@ test('long system is truncated on argv', async () => {
   try {
     const sys = 'S'.repeat(30000)
     await api(gw, 'POST', '/v1/messages', {
+      headers: { 'x-kin-forward': 'cli' },
       body: {
         model: MODEL,
         max_tokens: 8,

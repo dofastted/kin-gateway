@@ -21,7 +21,7 @@ function hasResume(tr, sessionId = 'sess-mock-1') {
 test('same x-session-id: turn1 no resume, later hops --resume and drop history', async () => {
   const gw = await startGateway({ mockText: 'ack' })
   try {
-    const h = { 'x-session-id': SID }
+    const h = { 'x-session-id': SID, 'x-kin-forward': 'cli' }
 
     const t1 = await api(gw, 'POST', '/v1/messages', {
       headers: h,
@@ -59,7 +59,7 @@ test('same x-session-id: turn1 no resume, later hops --resume and drop history',
 test('one sticky session, three protocols + stream, resume holds', async () => {
   const gw = await startGateway({ mockText: 'ack' })
   try {
-    const h = { 'x-session-id': 'conv-multi-proto-1' }
+    const h = { 'x-session-id': 'conv-multi-proto-1', 'x-kin-forward': 'cli' }
 
     const a = await api(gw, 'POST', '/v1/messages', {
       headers: h,
@@ -90,7 +90,7 @@ test('one sticky session, three protocols + stream, resume holds', async () => {
 
     const res = await fetch(gw.baseUrl + '/v1/messages', {
       method: 'POST',
-      headers: {
+      headers: { 'x-kin-forward': 'cli',
         authorization: `Bearer ${gw.apiKey}`,
         'content-type': 'application/json',
         'x-session-id': 'conv-multi-proto-1',
@@ -127,12 +127,12 @@ test('different x-session-id does not inherit --resume', async () => {
   const gw = await startGateway({ mockText: 'ack' })
   try {
     await api(gw, 'POST', '/v1/messages', {
-      headers: { 'x-session-id': 'conv-A' },
+      headers: { 'x-kin-forward': 'cli', 'x-session-id': 'conv-A' },
       body: { model: MODEL, max_tokens: 8, messages: [{ role: 'user', content: 'only-A' }] },
     })
     takeTrace(gw)
     await api(gw, 'POST', '/v1/messages', {
-      headers: { 'x-session-id': 'conv-B' },
+      headers: { 'x-kin-forward': 'cli', 'x-session-id': 'conv-B' },
       body: { model: MODEL, max_tokens: 8, messages: [{ role: 'user', content: 'only-B' }] },
     })
     const trB = takeTrace(gw)
@@ -147,7 +147,7 @@ test('different x-session-id does not inherit --resume', async () => {
 test('sticky bindings persist in sqlite after a long sequential session', async () => {
   const gw = await startGateway({ mockText: 'n' })
   try {
-    const h = { 'x-session-id': 'conv-long-n' }
+    const h = { 'x-session-id': 'conv-long-n', 'x-kin-forward': 'cli' }
     for (let i = 0; i < 6; i++) {
       const r = await api(gw, 'POST', '/v1/messages', {
         headers: h,

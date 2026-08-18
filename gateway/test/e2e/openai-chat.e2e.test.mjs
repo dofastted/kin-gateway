@@ -65,9 +65,11 @@ test('OpenAI image_url data + http become Anthropic image in mock stdin', async 
     })
     assert.equal(r.status, 200, r.text)
     const tr = takeTrace(gw)
-    assert.match(tr.stdin, /"type":"image"/)
-    assert.match(tr.stdin, /base64/)
-    assert.match(tr.stdin, /https:\/\/example.com\/cat.png/)
+    assert.equal(tr.via, 'crs-relay')
+    const blob = JSON.stringify(tr.body)
+    assert.match(blob, /"type":"image"/)
+    assert.match(blob, /base64/)
+    assert.match(blob, /https:\/\/example.com\/cat.png/)
   } finally {
     await gw.stop()
   }
