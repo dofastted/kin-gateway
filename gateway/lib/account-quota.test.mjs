@@ -1,0 +1,91 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { AccountQuota } from './account-quota.mjs'
+
+function tmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'kin-quota-'))
+}
+
+test('ensure seeds account and is idempotent', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {}, accounts: [{ account_id: 'a1', vm_id: 'vm-1', email: 'a@x' }] })
+  const acc = q.ensure({ account_id: 'a1' })
+  assert.equal(acc.vm_id, 'vm-1')
+  assert.equal(acc.email, 'a@x')
+  assert.equal(acc.requests, 0)
+  assert.equal(acc.unified['5h'].status, 'active')
+})
+
+test('ingestHeaders updates unified windows + counters + allocations', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  q.ingestHeaders('a2', {
+    'anthropic-ratelimit-unified-5h-utilization': '0.42',
+    'anthropic-ratelimit-unified-7d-utilization': '0.10',
+    'anthropic-ratelimit-unified-5h-reset': '2026-08-18T12:00:00Z',
+  }, { input_tokens: 100, output_tokens: 20 })
+  const snap = q.snapshot()
+  const acc = snap.accounts.find((a) => a.account_id === 'a2')
+  assert.equal(acc.unified['5h'].utilization, 0.42)
+  assert.equal(acc.unified['7d'].utilization, 0.1)
+  assert.equal(acc.requests, 1)
+  assert.equal(acc.tokens_in, 100)
+  assert.equal(acc.tokens_out, 20)
+  assert.equal(acc.recent_allocations.length, 1)
+  assert.equal(acc.recent_allocations[0].util_5h, 0.42)
+})
+
+test('canAccept blocks at safety ratio and records last_blocked', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  q.ingestHeaders('a3', { 'anthropic-ratelimit-unified-5h-utilization': '0.96' })
+  const gate = q.canAccept('a3')
+  assert.equal(gate.ok, false)
+  assert.equal(gate.reason, 'quota_5h_safety')
+  const acc = q.snapshot().accounts.find((a) => a.account_id === 'a3')
+  assert.equal(acc.last_blocked.window, '5h')
+})
+
+test('cli rate_limit_event blocks via status', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  q.ingestCliRateLimit('a4', { rateLimitType: 'five_hour', status: 'rejected', resetsAt: 1893456000 })
+  const gate = q.canAccept('a4')
+  assert.equal(gate.ok, false)
+  assert.equal(gate.reason, 'quota_5h_cli')
+})
+
+test('state persists across re-open (same dataDir)', () => {
+  const dir = tmpDir()
+  const q1 = new AccountQuota({ dataDir: dir, config: {} })
+  q1.ingestHeaders('a5', { 'anthropic-ratelimit-unified-7d-utilization': '0.5' }, { input_tokens: 7, output_tokens: 3 })
+
+  const q2 = new AccountQuota({ dataDir: dir, config: {} })
+  const acc = q2.snapshot().accounts.find((a) => a.account_id === 'a5')
+  assert.ok(acc)
+  assert.equal(acc.unified['7d'].utilization, 0.5)
+  assert.equal(acc.tokens_in, 7)
+  assert.equal(acc.requests, 1)
+  assert.equal(acc.recent_allocations.length, 1)
+})
+
+test('allocations trimmed to 50 per account', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  for (let i = 0; i < 60; i++) {
+    q.ingestHeaders('a6', { 'anthropic-ratelimit-unified-5h-utilization': String(i / 100) })
+  }
+  assert.equal(q.repo.allocationCount('a6'), 50)
+  const recent = q.repo.recentAllocations('a6', 5)
+  assert.equal(recent.length, 5)
+  assert.equal(recent[4].util_5h, 0.59)
+})
+
+test('concurrency inflight gate stays in memory', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { concurrency: { default_max_per_account: 1 } } })
+  q.ensure({ account_id: 'a7' })
+  q.acquire('a7')
+  const gate = q.canAccept('a7')
+  assert.equal(gate.ok, false)
+  assert.equal(gate.reason, 'concurrency_limit')
+  q.release('a7')
+  assert.equal(q.canAccept('a7').ok, true)
+})

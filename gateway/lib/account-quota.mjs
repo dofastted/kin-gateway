@@ -1,42 +1,35 @@
 /**
- * Per-account Claude usage quota tracker.
+ * Per-account Claude usage quota tracker (SQLite-backed).
  * Uses anthropic-ratelimit-unified-* headers (OAuth beta) for 5h / 7d utilization.
  * Soft-blocks at safety_ratio (default 0.95) before hard rate limit.
+ *
+ * Persistent state → `accounts` + `account_allocations` tables.
+ * Transient state (inflight counters) stays in memory.
  */
 
-import fs from 'node:fs'
-import path from 'node:path'
+import { resolveStoreDb } from './db/database.mjs'
+import { AccountsRepo } from './db/repos/accounts-repo.mjs'
 
 export class AccountQuota {
-  constructor({ dataDir, config, accounts }) {
-    this.dataDir = dataDir
+  constructor({ dataDir, db, config, accounts }) {
+    this.db = resolveStoreDb({ db, dataDir })
+    this.repo = new AccountsRepo(this.db)
     this.config = config?.quota || { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true }
     this.concurrency = config?.concurrency || { default_max_per_account: 2 }
-    this.file = path.join(dataDir, 'account-stats.json')
-    this.state = this._load()
     this.inflight = new Map() // accountId → count
     // seed accounts
     for (const a of accounts || []) this.ensure(a)
   }
 
-  _load() {
-    try {
-      return JSON.parse(fs.readFileSync(this.file, 'utf8'))
-    } catch {
-      return { accounts: {} }
-    }
-  }
-
-  _save() {
-    fs.mkdirSync(this.dataDir, { recursive: true })
-    fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2))
-  }
+  /** Kept for API compat + post-restore hook (no in-memory cache to refresh). */
+  reload() {}
 
   ensure(account) {
     const id = account.account_id || account.account_uuid || account.id
     if (!id) return
-    if (!this.state.accounts[id]) {
-      this.state.accounts[id] = {
+    let acc = this.repo.get(id)
+    if (!acc) {
+      acc = this.repo.insert({
         account_id: id,
         vm_id: account.vm_id || null,
         email: account.email || null,
@@ -51,15 +44,14 @@ export class AccountQuota {
           overage_status: null,
           updated_at: null,
         },
-        allocations: [],
         last_blocked: null,
         last_error: null,
-      }
-      this._save()
-    } else if (account.vm_id) {
-      this.state.accounts[id].vm_id = account.vm_id
+      })
+    } else if (account.vm_id && acc.vm_id !== account.vm_id) {
+      acc.vm_id = account.vm_id
+      acc = this.repo.save(acc)
     }
-    return this.state.accounts[id]
+    return acc
   }
 
   /**
@@ -96,8 +88,7 @@ export class AccountQuota {
     }
     acc.requests += 1
 
-    // allocation log (ring buffer max 50)
-    acc.allocations.push({
+    this.repo.addAllocation(accountId, {
       at: new Date().toISOString(),
       util_5h: acc.unified['5h'].utilization,
       util_7d: acc.unified['7d'].utilization,
@@ -105,10 +96,8 @@ export class AccountQuota {
       tokens_in: usageBody?.input_tokens ?? null,
       tokens_out: usageBody?.output_tokens ?? null,
     })
-    if (acc.allocations.length > 50) acc.allocations = acc.allocations.slice(-50)
 
-    this._save()
-    return acc
+    return this.repo.save(acc)
   }
 
   /**
@@ -145,7 +134,7 @@ export class AccountQuota {
     }
     if (shouldCount) acc.requests += 1
 
-    acc.allocations.push({
+    this.repo.addAllocation(accountId, {
       at: new Date().toISOString(),
       source: 'claude_cli',
       util_5h: acc.unified['5h'].utilization,
@@ -156,10 +145,8 @@ export class AccountQuota {
       tokens_in: usageBody?.input_tokens ?? null,
       tokens_out: usageBody?.output_tokens ?? null,
     })
-    if (acc.allocations.length > 50) acc.allocations = acc.allocations.slice(-50)
 
-    this._save()
-    return acc
+    return this.repo.save(acc)
   }
 
   /**
@@ -186,7 +173,7 @@ export class AccountQuota {
 
     if (this.config.block_on_5h && (s5 === 'rejected' || s5 === 'rate_limited')) {
       acc.last_blocked = { at: new Date().toISOString(), window: '5h', status: s5, source: 'claude_cli' }
-      this._save()
+      this.repo.save(acc)
       return {
         ok: false,
         reason: 'quota_5h_cli',
@@ -200,7 +187,7 @@ export class AccountQuota {
 
     if (this.config.block_on_7d && (s7 === 'rejected' || s7 === 'rate_limited')) {
       acc.last_blocked = { at: new Date().toISOString(), window: '7d', status: s7, source: 'claude_cli' }
-      this._save()
+      this.repo.save(acc)
       return {
         ok: false,
         reason: 'quota_7d_cli',
@@ -214,7 +201,7 @@ export class AccountQuota {
 
     if (this.config.block_on_5h && u5 >= ratio) {
       acc.last_blocked = { at: new Date().toISOString(), window: '5h', utilization: u5 }
-      this._save()
+      this.repo.save(acc)
       return {
         ok: false,
         reason: 'quota_5h_safety',
@@ -229,7 +216,7 @@ export class AccountQuota {
 
     if (this.config.block_on_7d && u7 >= ratio) {
       acc.last_blocked = { at: new Date().toISOString(), window: '7d', utilization: u7 }
-      this._save()
+      this.repo.save(acc)
       return {
         ok: false,
         reason: 'quota_7d_safety',
@@ -260,7 +247,7 @@ export class AccountQuota {
   snapshot() {
     return {
       safety_ratio: this.config.safety_ratio,
-      accounts: Object.values(this.state.accounts).map((a) => ({
+      accounts: this.repo.list().map((a) => ({
         account_id: a.account_id,
         vm_id: a.vm_id,
         email: a.email,
@@ -271,7 +258,7 @@ export class AccountQuota {
         tokens_out: a.tokens_out,
         unified: a.unified,
         last_blocked: a.last_blocked,
-        recent_allocations: (a.allocations || []).slice(-5),
+        recent_allocations: this.repo.recentAllocations(a.account_id, 5),
       })),
     }
   }
