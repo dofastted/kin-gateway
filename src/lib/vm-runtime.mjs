@@ -1,22 +1,19 @@
 /**
  * Real VM runtime: one Docker container per kin VM.
  * Mixed guest OS: Ubuntu 24.04 / Debian 12 / Arch / Fedora 41.
- * Default network is host-mode.
- * SOCKS-bound VMs use a dedicated netns: transparent TCP redirect → SOCKS5.
- * Guest has no HTTP_PROXY/ALL_PROXY — egress is wrapped outside the VM.
+ * Go relay worker runs inside each container and explicitly dials the
+ * slot-bound SOCKS5. A missing/unhealthy proxy fails closed.
  */
 import { execFileSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 export const RUNTIME = 'docker'
-const NODE_ROOT = process.env.KIN_NODE_ROOT || '/usr/local/lib/nodejs'
-const LIB_ROOT = process.env.KIN_LIB_ROOT || path.dirname(fileURLToPath(import.meta.url))
-const UID = String(process.env.KIN_VM_UID || 999)
+const WORKER_BIN = process.env.KIN_WORKER_BIN || '/opt/kin-gateway/bin/kin-worker'
 const GID = String(process.env.KIN_VM_GID || 987)
 const MEM = process.env.KIN_VM_MEMORY || '768m'
-const NET = process.env.KIN_VM_NETWORK || 'host'
+const NET = process.env.KIN_VM_NETWORK || 'bridge'
 const PUBLIC_IP = process.env.PUBLIC_HOST || '166.88.96.199'
 
 export const OS_CATALOG = {
@@ -133,14 +130,12 @@ export function socksUidFor(vm) {
 }
 
 export function ensureOuterSocks(vm) {
-  if (!vmWantsOuterSocks(vm)) return { ok: true, skipped: true }
-  const r = sh(['/opt/kin-gateway/hypervisor/socks-egress.sh', 'setup', vm.id], { timeout: 20_000 })
-  if (!r.ok) return { ok: false, error: r.stderr || r.stdout || 'outer socks setup failed' }
-  return { ok: true, uid: socksUidFor(vm) }
+  if (!vmWantsOuterSocks(vm)) return { ok: false, error: 'slot SOCKS5 proxy is required' }
+  return { ok: true, uid: socksUidFor(vm), transport: 'go-explicit-socks5' }
 }
 
 function runtimeUser(vm) {
-  return vmWantsOuterSocks(vm) ? `${socksUidFor(vm)}:${GID}` : `${UID}:${GID}`
+  return `${socksUidFor(vm)}:${GID}`
 }
 
 function runtimeUidNum(vm) {
@@ -162,11 +157,73 @@ function runtimePatch(vm, info, extra = {}) {
     hostname: info?.hostname || displayName(vm.id),
     os: meta.pretty,
     memory: MEM,
-    claude_code_version: vm.claude_code_version || CLAUDE_VER,
-    egress: vmWantsOuterSocks(vm) ? 'outer-socks5' : 'host',
+    user: runtimeUser(vm),
+    worker: 'go',
+    worker_socket: extra.worker_socket || vm.runtime?.worker_socket || null,
+    worker_run_dir: extra.worker_run_dir || vm.runtime?.worker_run_dir || null,
+    worker_token_file: extra.worker_token_file || vm.runtime?.worker_token_file || null,
+    egress: 'explicit-socks5',
     ...extra,
   }
   return vm
+}
+
+function workerPaths(projectRoot, vmId) {
+  const slotRoot = path.join(projectRoot, 'vms', vmId)
+  const runDir = path.join(slotRoot, 'run')
+  return {
+    slotRoot,
+    runDir,
+    socket: path.join(runDir, 'worker.sock'),
+    token: path.join(runDir, 'internal.token'),
+    config: path.join(runDir, 'worker.json'),
+  }
+}
+
+function workerProxyUrl(vm) {
+  if (!vmWantsOuterSocks(vm)) return null
+  if (vm.proxy?.url) return String(vm.proxy.url).replace(/^socks5:\/\//i, 'socks5h://')
+  if (!vm.proxy?.host || !vm.proxy?.port) return null
+  const auth = vm.proxy.username
+    ? `${encodeURIComponent(vm.proxy.username)}:${encodeURIComponent(vm.proxy.password || '')}@`
+    : ''
+  return `socks5h://${auth}${vm.proxy.host}:${vm.proxy.port}`
+}
+
+function writeWorkerFiles(vm, projectRoot) {
+  const paths = workerPaths(projectRoot, vm.id)
+  const uid = runtimeUidNum(vm)
+  const gid = Number(GID)
+  fs.mkdirSync(paths.runDir, { recursive: true, mode: 0o700 })
+  let token = ''
+  try { token = fs.readFileSync(paths.token, 'utf8').trim() } catch {}
+  if (!token) token = crypto.randomBytes(32).toString('hex')
+  fs.writeFileSync(paths.token, token + '\n', { mode: 0o600 })
+  const proxyUrl = workerProxyUrl(vm)
+  if (!proxyUrl) throw new Error('slot SOCKS5 proxy is required')
+  const workerConfig = {
+    vm_id: vm.id,
+    socket_path: '/run/kin/worker.sock',
+    credential_path: '/home/kincli/.claude/credentials.json',
+    proxy_url: proxyUrl,
+    proxy_required: true,
+    internal_token: token,
+    delivery_mode: 'realtime',
+    refresh_skew_seconds: 300,
+    request_timeout_seconds: 180,
+    first_byte_timeout_seconds: 30,
+    idle_timeout_seconds: 60,
+    max_request_bytes: 8 * 1024 * 1024,
+    max_response_bytes: 64 * 1024 * 1024,
+    max_event_bytes: 8 * 1024 * 1024,
+  }
+  fs.writeFileSync(paths.config, JSON.stringify(workerConfig, null, 2) + '\n', { mode: 0o600 })
+  try {
+    fs.chownSync(paths.runDir, uid, gid)
+    fs.chownSync(paths.token, uid, gid)
+    fs.chownSync(paths.config, uid, gid)
+  } catch {}
+  return paths
 }
 
 export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
@@ -179,31 +236,47 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
   const image = imageForKernel(kernel)
   const home = path.join(projectRoot, 'vms', vm.id, 'cli-home')
   fs.mkdirSync(home, { recursive: true })
-  if (vmWantsOuterSocks(vm)) {
-    const ns = ensureOuterSocks(vm)
-    if (!ns.ok) return { ok: false, error: ns.error }
+  const proxy = ensureOuterSocks(vm)
+  if (!proxy.ok) return proxy
+  if (!fs.existsSync(WORKER_BIN)) {
+    return { ok: false, error: `Go worker binary not found: ${WORKER_BIN}` }
+  }
+  let worker
+  try {
+    worker = writeWorkerFiles(vm, projectRoot)
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) }
   }
   try { fs.chownSync(home, runtimeUidNum(vm), Number(GID)) } catch {}
 
   let existing = inspectContainer(name)
   const wrongNet = existing && existing.networkMode !== NET
   const wrongImg = existing && existing.image !== image
-  if (existing && (recreate || wrongNet || wrongImg)) {
+  const wrongWorker = existing && !fs.existsSync(worker.socket)
+  if (existing && (recreate || wrongNet || wrongImg || wrongWorker)) {
     sh(['docker', 'rm', '-f', name])
     existing = null
   }
   if (existing?.running) {
-    runtimePatch(vm, existing)
+    runtimePatch(vm, existing, {
+      worker_socket: worker.socket,
+      worker_run_dir: worker.runDir,
+      worker_token_file: worker.token,
+    })
     return { ok: true, action: 'already-running', runtime: vm.runtime }
   }
   if (existing) {
     const r = sh(['docker', 'start', name])
     if (!r.ok) return { ok: false, error: r.stderr || 'docker start failed' }
-    runtimePatch(vm, inspectContainer(name))
+    runtimePatch(vm, inspectContainer(name), {
+      worker_socket: worker.socket,
+      worker_run_dir: worker.runDir,
+      worker_token_file: worker.token,
+    })
     return { ok: true, action: 'started', runtime: vm.runtime }
   }
 
-  const nodePath = `${NODE_ROOT}/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+  try { fs.rmSync(worker.socket, { force: true }) } catch {}
   const args = [
     'docker', 'run', '-d',
     '--name', name,
@@ -214,17 +287,18 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
     '--memory-swap', MEM,
     '--pids-limit', '256',
     '--user', runtimeUser(vm),
+    '--read-only',
+    '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m',
+    '--security-opt', 'no-new-privileges',
+    '--cap-drop', 'ALL',
     '--label', 'kin.vm=1',
     '--label', `kin.vm.id=${vm.id}`,
     '--label', `kin.vm.name=${host}`,
     '--label', `kin.vm.os=${kernel}`,
     '-v', `${home}:/home/kincli`,
-    '-v', `${NODE_ROOT}:${NODE_ROOT}:ro`,
-    '-v', `${LIB_ROOT}:/opt/kin/lib:ro`,
+    '-v', `${worker.runDir}:/run/kin`,
+    '-v', `${WORKER_BIN}:/usr/local/bin/kin-worker:ro`,
     '-e', 'HOME=/home/kincli',
-    '-e', 'CLAUDE_HOME=/home/kincli',
-    '-e', 'CLAUDE_CONFIG_DIR=/home/kincli/.claude',
-    '-e', `PATH=${nodePath}`,
     '-e', `TZ=${vm.timezone}`,
     '-e', `LANG=${vm.locale}`,
     '-e', `LC_ALL=${vm.locale}`,
@@ -235,11 +309,17 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
     '--dns-opt', 'use-vc',
     '-w', '/home/kincli',
     image,
-    'sleep', 'infinity',
+    '/usr/local/bin/kin-worker',
+    '--config', '/run/kin/worker.json',
   ]
   const r = sh(args, { timeout: 90_000 })
   if (!r.ok) return { ok: false, error: r.stderr || r.stdout || 'docker run failed' }
-  runtimePatch(vm, inspectContainer(name), { container_id: r.stdout })
+  runtimePatch(vm, inspectContainer(name), {
+    container_id: r.stdout,
+    worker_socket: worker.socket,
+    worker_run_dir: worker.runDir,
+    worker_token_file: worker.token,
+  })
   return { ok: true, action: 'created', runtime: vm.runtime }
 }
 

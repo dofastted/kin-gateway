@@ -14,6 +14,7 @@ hypervisor/*.env
 **/.env
 **/.env.*
 *.bak*
+bin/
 
 # keep example
 !src/config/gateway-v2.example.json

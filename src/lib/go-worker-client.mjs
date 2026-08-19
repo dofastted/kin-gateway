@@ -1,0 +1,336 @@
+import http from 'node:http'
+import fs from 'node:fs'
+import path from 'node:path'
+import { resolveCrsHeaders } from './crs-headers.mjs'
+import { isCrsMock, writeCrsTrace, mockCrsPayload, emitMockSse } from './crs-mock.mjs'
+
+const MAX_BODY = 64 * 1024 * 1024
+
+export function workerPaths(exec = {}) {
+  const slotRoot = exec.homeDir ? path.dirname(exec.homeDir) : null
+  const runDir = exec.vm?.runtime?.worker_run_dir
+    || (slotRoot ? path.join(slotRoot, 'run') : null)
+  return {
+    runDir,
+    socketPath: exec.vm?.runtime?.worker_socket
+      || (runDir ? path.join(runDir, 'worker.sock') : null),
+    tokenPath: exec.vm?.runtime?.worker_token_file
+      || (runDir ? path.join(runDir, 'internal.token') : null),
+  }
+}
+
+function readInternalToken(exec) {
+  const { tokenPath } = workerPaths(exec)
+  if (!tokenPath) return ''
+  try {
+    return fs.readFileSync(tokenPath, 'utf8').trim()
+  } catch {
+    return ''
+  }
+}
+
+function workerRequest(exec, {
+  method = 'GET',
+  requestPath,
+  body = null,
+  signal,
+  timeoutMs = 180000,
+  headers = {},
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const { socketPath } = workerPaths(exec)
+    if (!socketPath) {
+      reject(Object.assign(new Error('slot worker socket is not configured'), { code: 'worker_socket_missing' }))
+      return
+    }
+    const payload = body == null
+      ? null
+      : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))
+    const internalToken = readInternalToken(exec)
+    const requestHeaders = { ...headers }
+    if (payload) {
+      requestHeaders['content-type'] = 'application/json'
+      requestHeaders['content-length'] = String(payload.length)
+    }
+    if (internalToken) requestHeaders['x-kin-internal-token'] = internalToken
+    const req = http.request({
+      socketPath,
+      path: requestPath,
+      method,
+      headers: requestHeaders,
+      signal,
+    }, (res) => {
+      resolve(res)
+    })
+    const timer = setTimeout(() => {
+      req.destroy(Object.assign(new Error(`slot worker timeout after ${timeoutMs}ms`), { code: 'worker_timeout' }))
+    }, timeoutMs)
+    timer.unref?.()
+    req.once('close', () => clearTimeout(timer))
+    req.once('error', reject)
+    if (payload) req.write(payload)
+    req.end()
+  })
+}
+
+async function readAll(stream, limit = MAX_BODY) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of stream) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += value.length
+    if (size > limit) {
+      stream.destroy?.()
+      throw Object.assign(new Error(`worker response exceeds ${limit} bytes`), { code: 'worker_response_too_large' })
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks)
+}
+
+function parseJson(buffer) {
+  try {
+    return JSON.parse(String(buffer || ''))
+  } catch {
+    return {
+      type: 'error',
+      error: { type: 'worker_error', code: 'worker_invalid_json', message: String(buffer || '').slice(0, 400) },
+    }
+  }
+}
+
+function publicHeaders(headers = {}) {
+  const result = {}
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (value == null) continue
+    const lower = String(key).toLowerCase()
+    if (lower === 'set-cookie' || lower === 'authorization' || lower === 'x-api-key') continue
+    result[lower] = Array.isArray(value) ? value.join(',') : String(value)
+  }
+  return result
+}
+
+function workerEnvelope({ body, reqHeaders, exec, identity, stream, deliveryMode }) {
+  return {
+    body,
+    headers: resolveCrsHeaders(reqHeaders, exec?.homeDir, identity),
+    stream: !!stream,
+    delivery_mode: deliveryMode || 'realtime',
+  }
+}
+
+export async function callGoWorker({
+  exec,
+  body,
+  reqHeaders = {},
+  timeoutMs,
+  identity = null,
+  signal,
+} = {}) {
+  if (isCrsMock()) {
+    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
+    writeCrsTrace({ body, headers, stream: false })
+    const mock = mockCrsPayload()
+    return { ...mock, via: 'go-worker-mock', terminalState: mock.ok ? 'verified' : 'error' }
+  }
+  try {
+    const response = await workerRequest(exec, {
+      method: 'POST',
+      requestPath: '/internal/v1/messages',
+      body: workerEnvelope({ body, reqHeaders, exec, identity, stream: false }),
+      signal,
+      timeoutMs,
+    })
+    const data = await readAll(response)
+    const parsed = parseJson(data)
+    const headers = publicHeaders(response.headers)
+    return {
+      ok: response.statusCode >= 200 && response.statusCode < 300 && parsed?.type !== 'error',
+      status: response.statusCode || 0,
+      via: 'go-worker',
+      body: parsed,
+      headers,
+      terminalState: headers['x-kin-terminal-state'] || null,
+      transportError: false,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      via: 'go-worker',
+      body: { type: 'error', error: { type: 'worker_error', code: error.code || 'worker_transport_error', message: String(error.message || error).slice(0, 300) } },
+      headers: {},
+      terminalState: 'transport_error',
+      transportError: true,
+    }
+  }
+}
+
+export async function streamGoWorker({
+  exec,
+  body,
+  reqHeaders = {},
+  timeoutMs,
+  identity = null,
+  signal,
+  deliveryMode = 'realtime',
+  onEvent,
+  onCommit,
+} = {}) {
+  if (isCrsMock()) {
+    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
+    writeCrsTrace({ body, headers, stream: true })
+    const payload = mockCrsPayload()
+    await emitMockSse(async (line) => {
+      if (line.startsWith('data:') && typeof onCommit === 'function') onCommit()
+      if (onEvent) await onEvent(line)
+    }, payload)
+    return {
+      ...payload,
+      via: 'go-worker-mock-stream',
+      terminalState: payload.ok ? 'verified' : 'error',
+      committed: !!payload.ok,
+    }
+  }
+  let committed = false
+  try {
+    const response = await workerRequest(exec, {
+      method: 'POST',
+      requestPath: '/internal/v1/messages',
+      body: workerEnvelope({ body, reqHeaders, exec, identity, stream: true, deliveryMode }),
+      signal,
+      timeoutMs,
+    })
+    const headers = publicHeaders(response.headers)
+    if ((response.statusCode || 0) < 200 || (response.statusCode || 0) >= 300) {
+      const data = await readAll(response, 1024 * 1024)
+      return {
+        ok: false,
+        status: response.statusCode || 0,
+        via: 'go-worker-stream',
+        body: parseJson(data),
+        headers,
+        committed: false,
+        terminalState: headers['x-kin-terminal-state'] || 'error',
+        transportError: false,
+      }
+    }
+    let buffer = ''
+    let lastError = null
+    let sawTerminal = false
+    for await (const chunk of response) {
+      buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
+      let newline
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '')
+        buffer = buffer.slice(newline + 1)
+        if (line.startsWith('data:')) {
+          try {
+            const event = JSON.parse(line.slice(5).trim())
+            if (event?.type === 'message_stop') sawTerminal = true
+            if (event?.type === 'error') lastError = event
+          } catch {}
+          if (!committed) {
+            committed = true
+            if (typeof onCommit === 'function') onCommit()
+          }
+        }
+        if (onEvent) await onEvent(line)
+      }
+    }
+    if (buffer && onEvent) await onEvent(buffer)
+    const trailers = publicHeaders(response.trailers)
+    const terminalState = trailers['x-kin-terminal-state']
+      || headers['x-kin-terminal-state']
+      || (sawTerminal ? 'verified' : 'incomplete')
+    return {
+      ok: response.statusCode === 200 && !lastError && terminalState === 'verified',
+      status: response.statusCode || 0,
+      via: 'go-worker-stream',
+      body: lastError || { type: 'message', role: 'assistant', content: [] },
+      headers: { ...headers, ...trailers },
+      committed,
+      terminalState,
+      transportError: false,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      via: 'go-worker-stream',
+      body: { type: 'error', error: { type: 'worker_error', code: error.code || 'worker_transport_error', message: String(error.message || error).slice(0, 300) } },
+      headers: {},
+      committed,
+      terminalState: committed ? 'incomplete' : 'transport_error',
+      transportError: true,
+    }
+  }
+}
+
+export async function workerHealth(exec, { timeoutMs = 3000, signal } = {}) {
+  try {
+    const response = await workerRequest(exec, {
+      requestPath: '/internal/health',
+      timeoutMs,
+      signal,
+    })
+    const body = parseJson(await readAll(response, 1024 * 1024))
+    return { ok: response.statusCode === 200 && body?.ok === true, status: response.statusCode || 0, ...body }
+  } catch (error) {
+    return { ok: false, status: 0, error: String(error.message || error).slice(0, 300), code: error.code || 'worker_unavailable' }
+  }
+}
+
+export async function ensureWorkerCredential(exec, { force = false, timeoutMs = 60000, signal } = {}) {
+  try {
+    const response = await workerRequest(exec, {
+      method: 'POST',
+      requestPath: `/internal/credential/ensure${force ? '?force=1' : ''}`,
+      timeoutMs,
+      signal,
+    })
+    const body = parseJson(await readAll(response, 1024 * 1024))
+    return { status: response.statusCode || 0, ...body }
+  } catch (error) {
+    return { ok: false, status: 0, error: { code: error.code || 'worker_unavailable', message: String(error.message || error).slice(0, 300) } }
+  }
+}
+
+export async function importWorkerCredential(exec, credential, { timeoutMs = 60000, signal } = {}) {
+  try {
+    const response = await workerRequest(exec, {
+      method: 'POST',
+      requestPath: '/internal/credential/import',
+      body: credential,
+      timeoutMs,
+      signal,
+    })
+    const body = parseJson(await readAll(response, 1024 * 1024))
+    return { status: response.statusCode || 0, ...body }
+  } catch (error) {
+    return { ok: false, status: 0, error: { code: error.code || 'worker_unavailable', message: String(error.message || error).slice(0, 300) } }
+  }
+}
+
+export async function callWorkerGet(exec, requestPath, { timeoutMs = 30000, signal } = {}) {
+  try {
+    const response = await workerRequest(exec, { requestPath, timeoutMs, signal })
+    const data = await readAll(response)
+    return {
+      ok: response.statusCode >= 200 && response.statusCode < 300,
+      status: response.statusCode || 0,
+      body: parseJson(data),
+      headers: publicHeaders(response.headers),
+      via: 'go-worker',
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      body: { error: { code: error.code || 'worker_unavailable', message: String(error.message || error).slice(0, 300) } },
+      headers: {},
+      via: 'go-worker',
+      transportError: true,
+    }
+  }
+}

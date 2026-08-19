@@ -7,7 +7,11 @@
   "main": "src/server.mjs",
   "scripts": {
     "start": "node src/server.mjs",
-    "test": "node --test test/unit/*.test.mjs test/e2e/*.e2e.test.mjs"
+    "test": "npm run test:node",
+    "test:node": "node --test test/unit/*.test.mjs test/e2e/*.e2e.test.mjs",
+    "test:go": "cd worker && go test ./...",
+    "test:all": "npm run test:node && npm run test:go",
+    "build:worker": "mkdir -p bin && cd worker && CGO_ENABLED=0 go build -trimpath -o ../bin/kin-worker ./cmd/kin-worker"
   },
   "dependencies": {
     "node-fetch": "^2.7.0",
