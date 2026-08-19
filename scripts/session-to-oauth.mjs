@@ -319,7 +319,11 @@ async function sessionKeyToOAuthNode(sessionKey, { scope = 'full', proxyUrl = nu
  * Full conversion: sessionKey → OAuth credential object.
  * Prefers curl_cffi Chrome TLS (claude.ai is CF-gated). node-fetch is fallback.
  */
-export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
+export async function sessionKeyToOAuth(sessionKey, {
+  scope = 'full',
+  proxyUrl = null,
+  allowDirectFallback = true,
+} = {}) {
   const sk = String(sessionKey || '').trim()
   if (!sk.startsWith('sk-ant-sid')) {
     throw new Error(`expected sk-ant-sid* sessionKey, got: ${redact(sk)}`)
@@ -341,7 +345,7 @@ export async function sessionKeyToOAuth(sessionKey, { scope = 'full', proxyUrl =
   const proxies = []
   const px = normalizeSocks(proxyUrl)
   if (px) proxies.push(px)
-  proxies.push(null) // VPS chrome TLS can reach claude.ai without SOCKS
+  if (!px || allowDirectFallback) proxies.push(null)
   let lastErr
   for (const p of proxies) {
     try {

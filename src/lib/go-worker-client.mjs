@@ -119,6 +119,15 @@ function workerEnvelope({ body, reqHeaders, exec, identity, stream, deliveryMode
   }
 }
 
+function mockScenario(exec) {
+  try {
+    const configured = JSON.parse(process.env.KIN_MOCK_ACCOUNT_SCENARIOS || '{}')
+    return configured?.[exec?.vmId] || null
+  } catch {
+    return null
+  }
+}
+
 export async function callGoWorker({
   exec,
   body,
@@ -130,7 +139,7 @@ export async function callGoWorker({
   if (isCrsMock()) {
     const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
     writeCrsTrace({ body, headers, stream: false })
-    const mock = mockCrsPayload()
+    const mock = mockCrsPayload({ scenario: mockScenario(exec) })
     return { ...mock, via: 'go-worker-mock', terminalState: mock.ok ? 'verified' : 'error' }
   }
   try {
@@ -180,7 +189,15 @@ export async function streamGoWorker({
   if (isCrsMock()) {
     const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
     writeCrsTrace({ body, headers, stream: true })
-    const payload = mockCrsPayload()
+    const payload = mockCrsPayload({ scenario: mockScenario(exec) })
+    if (!payload.ok) {
+      return {
+        ...payload,
+        via: 'go-worker-mock-stream',
+        terminalState: 'rejected',
+        committed: false,
+      }
+    }
     await emitMockSse(async (line) => {
       if (line.startsWith('data:') && typeof onCommit === 'function') onCommit()
       if (onEvent) await onEvent(line)
@@ -268,6 +285,26 @@ export async function streamGoWorker({
 }
 
 export async function workerHealth(exec, { timeoutMs = 3000, signal } = {}) {
+  if (isCrsMock()) {
+    const hasCredential = !!(
+      exec?.vm?.claude?.access_token ||
+      exec?.vm?.claude?.refresh_token ||
+      exec?.vm?.claude?.session_key
+    )
+    return {
+      ok: hasCredential,
+      status: hasCredential ? 'ready' : 'degraded',
+      vm_id: exec?.vmId || null,
+      proxy_configured: true,
+      credential: {
+        has_access: !!exec?.vm?.claude?.access_token,
+        has_refresh: !!exec?.vm?.claude?.refresh_token,
+        generation: 1,
+        needs_refresh: !exec?.vm?.claude?.access_token,
+      },
+      source: 'go-worker-mock',
+    }
+  }
   try {
     const response = await workerRequest(exec, {
       requestPath: '/internal/health',
@@ -282,6 +319,18 @@ export async function workerHealth(exec, { timeoutMs = 3000, signal } = {}) {
 }
 
 export async function ensureWorkerCredential(exec, { force = false, timeoutMs = 60000, signal } = {}) {
+  if (isCrsMock()) {
+    return {
+      ok: true,
+      status: 200,
+      refreshed: !!force,
+      credential: {
+        has_access: !!exec?.vm?.claude?.access_token,
+        has_refresh: !!exec?.vm?.claude?.refresh_token,
+        generation: exec?.vm?.claude?._token_version || 1,
+      },
+    }
+  }
   try {
     const response = await workerRequest(exec, {
       method: 'POST',
@@ -297,6 +346,18 @@ export async function ensureWorkerCredential(exec, { force = false, timeoutMs = 
 }
 
 export async function importWorkerCredential(exec, credential, { timeoutMs = 60000, signal } = {}) {
+  if (isCrsMock()) {
+    return {
+      ok: true,
+      status: 200,
+      credential: {
+        has_access: !!credential?.access_token,
+        has_refresh: !!credential?.refresh_token,
+        expires_at: credential?.expires_at || null,
+        generation: Date.now(),
+      },
+    }
+  }
   try {
     const response = await workerRequest(exec, {
       method: 'POST',

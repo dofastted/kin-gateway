@@ -32,7 +32,7 @@ function poolError(code, message, details = {}) {
     body: {
       type: 'error',
       error: {
-        type: 'overloaded_error',
+        type: 'api_error',
         code,
         message,
         details,

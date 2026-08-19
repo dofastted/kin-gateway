@@ -1,12 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startGateway, api, readTrace, listCaptures } from '../harness.mjs'
+import { startGateway, api, readTrace } from '../harness.mjs'
 import { CRS_OFFICIAL_SYSTEM } from '../../src/lib/crs-persona.mjs'
 import { uuidFromSeed } from '../../src/lib/forward-mode.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 
-test('default POST /v1/messages is CRS, not CLI', async () => {
+test('default POST /v1/messages uses Go worker pool, not CLI', async () => {
   const gw = await startGateway({ mockText: 'pong' })
   try {
     const r = await api(gw, 'POST', '/v1/messages', {
@@ -17,9 +17,6 @@ test('default POST /v1/messages is CRS, not CLI', async () => {
     assert.equal(tr.via, 'crs-relay')
     assert.ok(!tr.argv)
     assert.equal(tr.system, CRS_OFFICIAL_SYSTEM)
-    const diffs = listCaptures(gw)
-    assert.ok(diffs.some((c) => c.via === 'crs-relay'))
-    assert.ok(!diffs.some((c) => String(c.via || '').includes('cli')))
   } finally {
     await gw.stop()
   }
@@ -47,7 +44,7 @@ test('CRS identity: VM device, hashed caller session, OAuth account', async () =
   }
 })
 
-test('explicit x-kin-forward: cli still writes mock-claude argv', async () => {
+test('explicit x-kin-forward: cli is ignored by Go-only inference path', async () => {
   const gw = await startGateway({ mockText: 'pong' })
   try {
     const r = await api(gw, 'POST', '/v1/messages', {
@@ -56,8 +53,8 @@ test('explicit x-kin-forward: cli still writes mock-claude argv', async () => {
     })
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
-    assert.ok(tr.argv, 'CLI fallback must write argv trace')
-    assert.ok(tr.argv.includes('--permission-mode'))
+    assert.equal(tr.via, 'crs-relay')
+    assert.equal(tr.argv, undefined)
   } finally {
     await gw.stop()
   }

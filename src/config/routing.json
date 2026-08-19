@@ -35,5 +35,19 @@
   "logging": {
     "mode": "normal",
     "retain_days": 7
+  },
+  "pool": {
+    "strategy": "weighted-round-robin",
+    "max_waiters_per_account": 32,
+    "fallback_wait_timeout_ms": 5000,
+    "sticky_wait_timeout_ms": 15000,
+    "worker_health_ttl_ms": 5000,
+    "heartbeat_stale_ms": 15000
+  },
+  "failover": {
+    "max_account_switches": 10,
+    "max_total_attempts": 12,
+    "total_retry_deadline_ms": 120000,
+    "delivery_mode": "realtime"
   }
 }

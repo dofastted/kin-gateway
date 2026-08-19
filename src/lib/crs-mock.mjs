@@ -44,8 +44,8 @@ function message({ text, stop = 'end_turn', content = null }) {
   }
 }
 
-export function mockCrsPayload() {
-  const scenario = process.env.KIN_MOCK_SCENARIO || 'text'
+export function mockCrsPayload(options = {}) {
+  const scenario = options.scenario || process.env.KIN_MOCK_SCENARIO || 'text'
   const text = process.env.KIN_MOCK_TEXT || 'pong'
   if (scenario === 'error') {
     return {
@@ -55,6 +55,19 @@ export function mockCrsPayload() {
       transportError: false,
       body: { type: 'error', error: { type: 'api_error', message: 'crs-mock simulated failure' } },
       headers: {},
+    }
+  }
+  if (scenario === 'rate_limit') {
+    return {
+      ok: false,
+      status: 429,
+      via: 'crs-relay',
+      transportError: false,
+      body: { type: 'error', error: { type: 'rate_limit_error', message: '5h account quota exhausted' } },
+      headers: {
+        'anthropic-ratelimit-unified-5h-status': 'rejected',
+        'anthropic-ratelimit-unified-5h-reset': String(Date.now() + 60_000),
+      },
     }
   }
   if (scenario === 'tool_use') {

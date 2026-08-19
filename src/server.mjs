@@ -69,6 +69,11 @@ import { callClientWorkspaceCli, streamClientWorkspaceCli } from './lib/client-c
 import { extractClientEnv } from './lib/client-env.mjs'
 import { applyCrsUnofficialPersona } from './lib/crs-persona.mjs'
 import { startVmRuntime, stopVmRuntime, OS_CATALOG, OS_ORDER, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, CLAUDE_VER, STANDARD_LOCALE } from './lib/vm-runtime.mjs'
+import { callGoWorker, streamGoWorker, workerHealth, ensureWorkerCredential, importWorkerCredential } from './lib/go-worker-client.mjs'
+import { PoolScheduler } from './lib/pool-scheduler.mjs'
+import { FailoverRunner } from './lib/failover-runner.mjs'
+import { AccountRuntimeRepo } from './lib/db/repos/account-runtime-repo.mjs'
+import { RequestAttemptsRepo } from './lib/db/repos/request-attempts-repo.mjs'
 
 
 function applyVmConcurrency(id, n, { override = true } = {}) {
@@ -100,16 +105,20 @@ function applyRoutingConcurrency(n) {
   return v
 }
 
-const FEATURES = ['passthrough', 'stream', 'protocol-convert', 'crs-relay', 'cli-fallback', 'tools', 'client-workspace', 'forward-cli', 'forward-relay']
+const FEATURES = [
+  'passthrough', 'stream', 'verified-stream', 'protocol-convert', 'go-slot-worker',
+  'account-pool-failover', 'weighted-round-robin', 'tools', 'client-workspace',
+]
 const LIMITATIONS = {
-  client_tools: 'kept and forwarded in official Messages; executed on the client. VM tools only with x-kin-workspace: vm',
-  images: 'CRS forwards official image blocks in Messages. CLI fallback flattens older-turn images to [image]',
-  multi_turn_native: 'context preserved: prior turns flattened into a transcript block, or replayed via sticky --resume when a session is bound. Not native per-turn resume without sticky',
-  claude_session: 'sticky binds vm+account; Claude session is the client process',
-  kernel: 'docker container per VM (PID/net/mount/UTS isolated); host has no nested KVM',
-  workspace: 'default client; opt-in vm via header x-kin-workspace: vm',
-  forward: 'default CRS HTTP from VM UID (official body + CRS identity). CLI process is fallback via x-kin-forward: cli or transport 5xx/529. Never fallback on 401/403',
-  oauth: 'CRS reads slot OAuth and never writes credential files. CLI fallback still harvests. persistOauthToVm remains the only writer',
+  client_tools: 'kept in native Messages and executed by the caller',
+  images: 'all native Messages image blocks are forwarded by the Go slot worker',
+  multi_turn_native: 'full Messages history is preserved for every account attempt',
+  claude_session: 'sticky commits only after a terminally verified response',
+  kernel: 'one Docker container and one long-lived Go worker per slot; not a KVM guest',
+  workspace: 'client only; VM/Claude-CLI inference has been removed',
+  forward: 'Go worker uses the slot-bound SOCKS5 with no direct or CLI fallback',
+  oauth: 'the Go slot worker is the sole refresh owner and uses the same slot SOCKS5',
+  realtime_stream: 'account failover stops after the first downstream business event; verified mode buffers to message_stop',
 }
 
 const cfg = loadConfig()
@@ -177,6 +186,30 @@ const proxyPool = new ProxyPool({
 })
 proxyPool.startScheduler()
 
+let runtimeRepo
+let attemptsRepo
+let poolScheduler
+let failoverRunner
+function initPoolRuntime() {
+  runtimeRepo = new AccountRuntimeRepo()
+  attemptsRepo = new RequestAttemptsRepo()
+  poolScheduler = new PoolScheduler({
+    projectRoot: cfg.paths.project,
+    stickyRouter,
+    accountQuota,
+    runtimeRepo,
+    workerHealth,
+    config: routingConfig.pool || {},
+  })
+  failoverRunner = new FailoverRunner({
+    scheduler: poolScheduler,
+    stickyRouter,
+    attemptsRepo,
+    config: routingConfig.failover || {},
+  })
+}
+initPoolRuntime()
+
 // --- Local backup service (auto schedule default ON; no S3 by design) ---
 const backupService = new BackupService({
   dataDir,
@@ -188,6 +221,7 @@ backupService.onRestored((db) => {
   for (const store of [apiKeyStore, accountQuota, stickyRouter, proxyPool, requestLog]) {
     try { store.rebind(db) } catch {}
   }
+  try { initPoolRuntime() } catch {}
   try { reloadActiveVm(cfg) } catch {}
 })
 backupService.startScheduler()
@@ -407,6 +441,290 @@ function reloadRules() {
 }
 
 async function handleProtocol(req, res, protocol, pathName) {
+  if (!requireAuth(req, res)) return
+
+  const logCtx = requestLog.start(req, { protocol, pathName })
+  res._kinRequestId = logCtx.request_id
+  const logBag = {
+    protocol,
+    model: null,
+    stream: false,
+    inbound_body: null,
+    inbound_summary: null,
+    hop_meta: null,
+    upstream_status: null,
+    outbound_body: null,
+    outbound_summary: null,
+    vm_id: null,
+    account_id: null,
+    workspace: 'client',
+    has_tools: null,
+    usage: null,
+    error_code: null,
+    error_message: null,
+    via: 'go-worker-pool',
+    attempt_count: null,
+    final_state: null,
+    final_account_id: null,
+  }
+  res.on('finish', () => {
+    try {
+      requestLog.finish(logCtx, {
+        status: res.statusCode || 0,
+        api_key_kind: req.apiKeyKind || null,
+        api_key_id: req.apiKeyRecord?.id || null,
+        ...logBag,
+      })
+    } catch {}
+  })
+
+  let inbound
+  try {
+    inbound = await readBody(req, cfg.limits.max_body_bytes)
+  } catch (error) {
+    stats.errors++
+    logBag.error_code = error?.body?.error?.code || ErrorCode.INVALID_JSON
+    logBag.error_message = error?.body?.error?.message || String(error?.message || error)
+    if (error?.body?.error) return json(res, error.status || 400, error.body)
+    return json(res, 400, makeError({
+      type: ErrorType.INVALID_REQUEST,
+      code: ErrorCode.INVALID_JSON,
+      message: String(error?.message || error),
+      status: 400,
+    }).body)
+  }
+  logBag.inbound_body = inbound
+  logBag.inbound_summary = summarizeBody(inbound)
+  logBag.model = inbound?.model || null
+  logBag.stream = !!inbound.stream
+  logBag.has_tools = Array.isArray(inbound?.tools) && inbound.tools.length > 0
+
+  const fp = fingerprintRequest(req, inbound)
+  const workspace = resolveWorkspaceMode(req, inbound, fp.client_class)
+  if (workspace !== 'client') {
+    stats.errors++
+    logBag.error_code = 'vm_workspace_removed'
+    logBag.error_message = 'VM workspace inference was removed; use client workspace'
+    return json(res, 400, makeError({
+      type: ErrorType.INVALID_REQUEST,
+      code: 'vm_workspace_removed',
+      message: 'x-kin-workspace: vm is no longer supported. Go slot workers only relay Messages; tools execute on the client.',
+      status: 400,
+    }).body)
+  }
+
+  let ctx = {
+    path: pathName,
+    protocol,
+    body: sanitizeInboundBody(inbound, defaultSeedPolicy()),
+    headers: { ...req.headers },
+  }
+  ctx = applyIntercept(cfg.intercept.rules, 'before_convert', ctx)
+  const bodyCheck = validateRequestBody(protocol, ctx.body)
+  if (!bodyCheck.ok) {
+    stats.errors++
+    const errorResult = bodyCheck.errorResult
+    logBag.error_code = errorResult.body?.error?.code || 'invalid_request'
+    logBag.error_message = errorResult.body?.error?.message || null
+    return json(res, errorResult.status, errorResult.body)
+  }
+  const modelCheck = validateOfficialModel(ctx.body?.model)
+  if (!modelCheck.ok) {
+    stats.errors++
+    const errorResult = mapModelError(modelCheck)
+    logBag.error_code = errorResult.body?.error?.code || 'model_not_supported'
+    logBag.error_message = errorResult.body?.error?.message || null
+    return json(res, errorResult.status, errorResult.body)
+  }
+  ctx.body = { ...ctx.body, model: modelCheck.model }
+
+  const hdrRewrite = String(req.headers['x-kin-rewrite'] || '') === '1'
+  const rewriteEnabled = cfg.rewrite.enabled || hdrRewrite
+  const converted = toClaudeMessages(protocol, ctx.body, {
+    rewrite: rewriteEnabled,
+    model_map: false,
+    strict_passthrough: String(req.headers['x-kin-strict-passthrough'] || '') === '1',
+  })
+  stats.requests++
+  stats.by_route[protocol] = (stats.by_route[protocol] || 0) + 1
+  if (converted.mode === 'passthrough') stats.passthrough++
+  else if (converted.mode === 'rewrite') stats.rewrite++
+  else stats.convert++
+
+  ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: converted.claude })
+  const officialClient = isOfficialClaudeClient(fp.client_class)
+  if (!officialClient) {
+    ctx.body = applyCrsUnofficialPersona(ctx.body, { officialClient: false })
+  }
+  const canonicalBody = officialMessagesBody(ctx.body)
+  const stickyKey = stickyRouter.extractKey(req, inbound)
+  const managedKey = req.apiKeyRecord || null
+  if (managedKey) {
+    const gate = apiKeyStore.acquire(managedKey)
+    if (!gate.ok) {
+      stats.errors++
+      return json(res, gate.status, makeError({
+        type: gate.status === 429 ? ErrorType.RATE_LIMIT : ErrorType.PERMISSION,
+        code: gate.code,
+        message: gate.message,
+        status: gate.status,
+        details: gate.detail || undefined,
+      }).body)
+    }
+  }
+
+  const abortController = new AbortController()
+  const onAborted = () => abortController.abort(new Error('client_aborted'))
+  const onResponseClose = () => {
+    if (!res.writableEnded) abortController.abort(new Error('client_disconnected'))
+  }
+  req.once('aborted', onAborted)
+  res.once('close', onResponseClose)
+
+  const wantStream = !!inbound.stream
+  const deliveryMode = String(req.headers['x-kin-delivery'] || routingConfig?.failover?.delivery_mode || 'realtime')
+  let result
+  try {
+    result = await failoverRunner.run({
+      requestId: logCtx.request_id,
+      canonicalBody,
+      model: canonicalBody.model,
+      stickyKey,
+      stream: wantStream,
+      deliveryMode: deliveryMode === 'verified' ? 'verified' : 'realtime',
+      signal: abortController.signal,
+      applyAttempt: (body, selected) => {
+        const identity = loadVmIdentity(selected.exec)
+        return applyForwardReplace('relay', officialMessagesBody(body), identity, inbound)
+      },
+      callAttempt: async ({ candidate, body, stream, deliveryMode: attemptDelivery, signal, onCommit }) => {
+        if (!stream) {
+          return callGoWorker({
+            exec: candidate.exec,
+            body,
+            reqHeaders: req.headers,
+            timeoutMs: cfg.limits.upstream_timeout_ms,
+            identity: loadVmIdentity(candidate.exec),
+            signal,
+          })
+        }
+        let state
+        if (protocol === 'openai.chat') {
+          state = createOpenAIChatStreamState(inbound.model || body.model, candidate.vmId)
+        } else if (protocol === 'openai.completions') {
+          state = createOpenAICompletionStreamState(inbound.model || body.model, candidate.vmId)
+        } else if (protocol === 'openai.responses') {
+          state = createResponsesStreamState(inbound.model || body.model, candidate.vmId)
+        }
+        return streamGoWorker({
+          exec: candidate.exec,
+          body,
+          reqHeaders: req.headers,
+          timeoutMs: cfg.limits.upstream_timeout_ms,
+          identity: loadVmIdentity(candidate.exec),
+          signal,
+          deliveryMode: attemptDelivery,
+          onCommit: () => {
+            if (!res.headersSent) writeSSEHeaders(res)
+            onCommit()
+          },
+          onEvent: async (line) => {
+            if (protocol === 'anthropic.messages') {
+              res.write(String(line).endsWith('\n') ? String(line) : String(line) + '\n')
+              return
+            }
+            if (protocol === 'openai.chat') {
+              for (const chunk of claudeSSELineToOpenAIChatChunks(line, state)) {
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              }
+              return
+            }
+            if (protocol === 'openai.completions') {
+              for (const chunk of claudeSSELineToOpenAICompletionChunks(line, state)) {
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+              }
+              return
+            }
+            for (const event of claudeSSELineToResponsesEvents(line, state)) {
+              res.write(`data: ${JSON.stringify(event)}\n\n`)
+            }
+          },
+        })
+      },
+    })
+  } finally {
+    req.off('aborted', onAborted)
+    if (managedKey) {
+      try { apiKeyStore.release(managedKey) } catch {}
+    }
+  }
+
+  logBag.vm_id = result?.vmId || null
+  logBag.account_id = result?.accountId || null
+  logBag.final_account_id = result?.accountId || null
+  logBag.attempt_count = result?.attemptCount || null
+  logBag.final_state = result?.finalState || result?.terminalState || null
+  logBag.upstream_status = result?.status ?? null
+  logBag.usage = result?.body?.usage || result?.usage || null
+  logBag.via = result?.via || 'go-worker-pool'
+
+  if (result?.ok && result?.accountId) {
+    try { accountQuota.ingestHeaders(result.accountId, result.headers || {}, logBag.usage) } catch {}
+    if (managedKey) {
+      try { apiKeyStore.recordUsage(managedKey, logBag.usage || {}) } catch {}
+    }
+  }
+
+  if (wantStream) {
+    if (!res.headersSent) {
+      stats.errors++
+      const mapped = mapUpstreamError(result?.status || 503, result?.body, result?.headers || {})
+      logBag.error_code = mapped.body?.error?.code || 'account_pool_exhausted'
+      logBag.error_message = mapped.body?.error?.message || null
+      return json(res, mapped.status, mapped.body)
+    }
+    if (result?.ok && protocol !== 'anthropic.messages') {
+      res.write('data: [DONE]\n\n')
+    }
+    if (!result?.ok) {
+      stats.errors++
+      logBag.error_code = result?.body?.error?.code || 'stream_incomplete'
+      logBag.error_message = result?.body?.error?.message || 'Stream did not reach a verified terminal state'
+    }
+    return res.end()
+  }
+
+  if (!result?.ok) {
+    stats.errors++
+    const mapped = mapUpstreamError(result?.status || 503, result?.body, result?.headers || {})
+    logBag.error_code = mapped.body?.error?.code || 'upstream_error'
+    logBag.error_message = mapped.body?.error?.message || null
+    return json(res, mapped.status, mapped.body)
+  }
+
+  let output
+  if (protocol === 'anthropic.messages') {
+    output = { ...result.body }
+    if (String(req.headers['x-kin-debug'] || '') === '1') {
+      output.kin = {
+        vm_id: result.vmId,
+        account_id: result.accountId,
+        attempts: result.attemptCount,
+        terminal_state: result.finalState,
+      }
+    }
+  } else if (protocol === 'openai.chat') {
+    output = fromClaudeToOpenAIChat(result.body, inbound.model, result.vmId, converted.mode)
+  } else if (protocol === 'openai.completions') {
+    output = fromClaudeToOpenAICompletions(result.body, inbound.model)
+  } else {
+    output = fromClaudeToResponses(result.body, inbound.model, result.vmId, converted.mode)
+  }
+  ctx = applyIntercept(cfg.intercept.rules, 'before_client', { ...ctx, body: output })
+  return json(res, 200, ctx.body)
+}
+
+async function handleProtocolLegacy(req, res, protocol, pathName) {
   if (!requireAuth(req, res)) return
 
   const logCtx = requestLog.start(req, { protocol, pathName })
@@ -1179,10 +1497,13 @@ const server = http.createServer(async (req, res) => {
       routingConfig = { ...routingConfig, ...body }
       if (body.sticky) routingConfig.sticky = { ...(routingConfig.sticky || {}), ...body.sticky }
       if (body.quota) routingConfig.quota = { ...(routingConfig.quota || {}), ...body.quota }
+      if (body.pool) routingConfig.pool = { ...(routingConfig.pool || {}), ...body.pool }
+      if (body.failover) routingConfig.failover = { ...(routingConfig.failover || {}), ...body.failover }
       fs.mkdirSync(path.dirname(routingConfigPath), { recursive: true })
       fs.writeFileSync(routingConfigPath, JSON.stringify(routingConfig, null, 2))
       stickyRouter.reloadConfig(routingConfig)
       accountQuota.reloadConfig(routingConfig)
+      if (body.pool || body.failover) initPoolRuntime()
       return json(res, 200, { ok: true, routing: routingConfig })
     }
     if (p === '/admin/quota' && req.method === 'GET') {
@@ -1899,7 +2220,10 @@ const server = http.createServer(async (req, res) => {
           }
           let oauth = null
           if (sessionKey) {
-            oauth = await sessionKeyToOAuth(String(sessionKey).trim(), { proxyUrl })
+            oauth = await sessionKeyToOAuth(String(sessionKey).trim(), {
+              proxyUrl,
+              allowDirectFallback: false,
+            })
           } else if (accessToken) {
             oauth = {
               access_token: accessToken,
@@ -1912,16 +2236,40 @@ const server = http.createServer(async (req, res) => {
           } else {
             return json(res, 400, { ok: false, error: { message: 'sessionKey or access_token required' } })
           }
+          const importedCredential = {
+            access_token: oauth.access_token || oauth.accessToken,
+            refresh_token: oauth.refresh_token || oauth.refreshToken || null,
+            expires_at: oauth.expires_at || oauth.expiresAt || (
+              oauth.expires_in ? Math.floor(Date.now() / 1000) + Number(oauth.expires_in) : null
+            ),
+            email: oauth.email || oauth.email_address || oauth.profile?.email || existing.claude?.email || null,
+            account_uuid: oauth.account_uuid || oauth.accountUuid || null,
+            org_uuid: oauth.org_uuid || oauth.orgUuid || null,
+            scopes: Array.isArray(oauth.scopes)
+              ? oauth.scopes
+              : String(oauth.scope || '').split(/\s+/).filter(Boolean),
+          }
+          const workerExec = {
+            vmId,
+            vm: existing,
+            homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
+          }
+          const workerImport = await importWorkerCredential(workerExec, importedCredential)
+          if (!workerImport.ok) {
+            return json(res, workerImport.status || 502, {
+              ok: false,
+              error: {
+                type: 'worker_error',
+                code: 'worker_credential_import_failed',
+                message: workerImport.error?.message || 'Go slot worker rejected credential import',
+              },
+            })
+          }
           // Serialize the token read-modify-write against concurrent harvests (T7).
           await withVmLock(vmPath, () => {
             // Single OAuth writer: persistOauthToVm only
             persistOauthToVm(vmPath, {
-              access_token: oauth.access_token || oauth.accessToken,
-              refresh_token: oauth.refresh_token || oauth.refreshToken || null,
-              expires_at: oauth.expires_at || oauth.expiresAt || null,
-              email: oauth.email || oauth.email_address || oauth.profile?.email || existing.claude?.email || null,
-              account_uuid: oauth.account_uuid || oauth.accountUuid || null,
-              org_uuid: oauth.org_uuid || oauth.orgUuid || null,
+              ...importedCredential,
               source: oauth.source || 'sessionKey-cookie-auth',
               session_key: sessionKey ? String(sessionKey).trim() : (existing.claude?.session_key || null),
               mode: 'oauth',
@@ -1947,21 +2295,6 @@ const server = http.createServer(async (req, res) => {
               claude: existing.claude,
             })
           })
-          try {
-            seedCliCredentials({
-              homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
-              accessToken: existing.claude.access_token,
-              refreshToken: existing.claude.refresh_token,
-              expiresAt: existing.claude.expires_at,
-              timezone: existing.timezone,
-              locale: existing.locale,
-              kernel: existing.kernel,
-              seedPolicy: existing.seed_policy || defaultSeedPolicy(),
-              force: true,
-            })
-          } catch (e) {
-            console.warn('[import] seed cli-home failed', e.message)
-          }
           if (body.activate !== false) {
             try { activateVmSlot(vmId) } catch {}
             oauthGuard.noteImported({
@@ -1991,14 +2324,17 @@ const server = http.createServer(async (req, res) => {
         if (!fs.existsSync(vmPath)) {
           return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
-        const homeDir = vmCliHome(id)
-        const harvested = harvestHomeToVm(homeDir, vmPath)
-        if (id === getActiveVmId(cfg.paths.project)) reloadActiveVm(cfg)
-        return json(res, 200, panel.ok({
-          ok: true,
-          harvested: !!harvested.harvested,
+        const vm = getVm(cfg.paths.project, id)
+        const result = await ensureWorkerCredential({
+          vmId: id,
+          vm,
+          homeDir: path.join(cfg.paths.project, 'vms', id, 'cli-home'),
+        }, { force: true })
+        return json(res, result.ok ? 200 : (result.status || 502), panel.ok({
+          ...result,
           vm_id: id,
-          grant_type_refresh: false,
+          refresh_owner: 'go-slot-worker',
+          proxy_required: true,
         }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
@@ -2030,6 +2366,8 @@ const server = http.createServer(async (req, res) => {
         if (body.sticky) routingConfig.sticky = { ...(routingConfig.sticky || {}), ...body.sticky }
         if (body.quota) routingConfig.quota = { ...(routingConfig.quota || {}), ...body.quota }
         if (body.concurrency) routingConfig.concurrency = { ...(routingConfig.concurrency || {}), ...body.concurrency }
+        if (body.pool) routingConfig.pool = { ...(routingConfig.pool || {}), ...body.pool }
+        if (body.failover) routingConfig.failover = { ...(routingConfig.failover || {}), ...body.failover }
         if (body.logging) {
           routingConfig.logging = { ...(routingConfig.logging || {}), ...body.logging }
           requestLog.setConfig({
@@ -2041,6 +2379,7 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(routingConfigPath, JSON.stringify(routingConfig, null, 2))
         stickyRouter.reloadConfig(routingConfig)
         accountQuota.reloadConfig(routingConfig)
+        if (body.pool || body.failover) initPoolRuntime()
         let applied = null
         if (body.concurrency && (body.concurrency.default_max_per_account != null || body.concurrency.default_key_concurrency != null)) {
           applied = applyRoutingConcurrency(

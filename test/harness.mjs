@@ -40,6 +40,14 @@ export function seedVm({ project, id = 'vm-sim-01', oauth = true } = {}) {
     seed_policy: { telemetry_disabled: true },
     fingerprint: { device_id: 'dev-sim-01', session_id: 'sess-sim-01', machineID: 'mid-sim-01' },
     policy: { maxConcurrency: 16, weight: 1 },
+    proxy_cli_enabled: true,
+    proxy: { id: `proxy-${id}`, url: 'socks5h://127.0.0.1:19080', host: '127.0.0.1', port: 19080 },
+    runtime: {
+      worker: 'go',
+      worker_socket: path.join(vms, id, 'run', 'worker.sock'),
+      worker_run_dir: path.join(vms, id, 'run'),
+      worker_token_file: path.join(vms, id, 'run', 'internal.token'),
+    },
     claude: oauth
       ? {
         access_token: 'sk-ant-oat01-FAKE-SEED',

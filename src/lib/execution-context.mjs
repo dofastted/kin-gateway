@@ -13,15 +13,17 @@ import { harvestHomeToVm, readCliOauth } from './oauth-refresh.mjs'
 export const GATEWAY_CAPABILITIES = {
   runtime: 'docker-container',
   kernel: 'mixed-os-docker',
-  // Honest capability surface (see LIMITATIONS in server for wording):
-  client_tools: true,            // forwarded in official Messages; executed on the caller
-  images: true,                  // active-turn image blocks forwarded natively into the CLI hop
-  multi_turn_native: false,      // context preserved via history flatten + sticky --resume, not native turns
+  worker: 'go-slot-worker',
+  client_tools: true,
+  images: true,
+  multi_turn_native: true,
   sticky: 'vm-account',
   claude_session: false,
   workspace_default: 'client',
   tool_execution: 'client',
   forward_default: 'relay',
+  stream_delivery_default: 'realtime',
+  stream_delivery_optional: 'verified',
 }
 
 export function vmJsonPath(projectRoot, vmId) {
@@ -60,12 +62,14 @@ export function pickSchedulableVmId(projectRoot, preferredId = null) {
   for (const id of order) {
     const vm = getVm(projectRoot, id)
     if (!vm) continue
+    if (vm.status !== 'running') continue
     if (vm.schedulable === false) continue
-    const tok = vm.claude?.access_token || vm.claude?.session_key
+    if (!vm.proxy_cli_enabled || !vm.proxy?.url) continue
+    const tok = vm.claude?.access_token || vm.claude?.refresh_token || vm.claude?.session_key
     if (!tok) continue
     return id
   }
-  return order[0] || null
+  return null
 }
 
 export function snapshotOauth(vm) {
@@ -108,7 +112,9 @@ export function buildExecutionContext({
     return { ok: false, error: 'vm_not_found', message: `VM '${vmId}' not found` }
   }
   const oauth = snapshotOauth(vm)
-  const accountId = bound?.accountId || oauth.account_uuid || vmId
+  const accountId = bound?.vmId === vmId
+    ? (bound?.accountId || oauth.account_uuid || vmId)
+    : (oauth.account_uuid || vmId)
   const seedPolicy = defaultSeedPolicy(vm.seed_policy || {})
   return {
     ok: true,

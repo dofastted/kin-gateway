@@ -71,7 +71,7 @@ test('tools → tool_use stop, name prefix stripped', async () => {
   }
 })
 
-test('fail-closed hop argv: permission-mode default, no bypass, builtins denied', async () => {
+test('legacy x-kin-forward: cli cannot re-enable CLI execution', async () => {
   const gw = await startGateway({ scenario: 'text' })
   try {
     await api(gw, 'POST', '/v1/messages', {
@@ -80,20 +80,15 @@ test('fail-closed hop argv: permission-mode default, no bypass, builtins denied'
     })
     const tr = readTrace(gw)
     assert.ok(tr, 'mock trace written')
-    const a = tr.argv
-    assert.ok(a.includes('--permission-mode'))
-    assert.equal(a[a.indexOf('--permission-mode') + 1], 'default')
-    assert.ok(!a.includes('bypassPermissions'))
-    const dis = a[a.indexOf('--disallowedTools') + 1] || ''
-    assert.match(dis, /Bash/)
-    assert.match(dis, /MultiEdit/)
-    assert.ok(!a.includes('--allowedTools'))
+    assert.equal(tr.via, 'crs-relay')
+    assert.equal(tr.argv, undefined)
+    assert.equal(tr.body.model, MODEL)
   } finally {
     await gw.stop()
   }
 })
 
-test('thinking budget forwarded as MAX_THINKING_TOKENS; max_tokens dropped', async () => {
+test('HTTP worker preserves thinking, sampling and max_tokens', async () => {
   const gw = await startGateway({ scenario: 'thinking' })
   try {
     const r = await api(gw, 'POST', '/v1/messages', {
@@ -108,13 +103,15 @@ test('thinking budget forwarded as MAX_THINKING_TOKENS; max_tokens dropped', asy
     })
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
-    assert.equal(tr.env.MAX_THINKING_TOKENS, '1234')
+    assert.deepEqual(tr.body.thinking, { type: 'enabled', budget_tokens: 1234 })
+    assert.equal(tr.body.max_tokens, 99)
+    assert.equal(tr.body.temperature, 0.2)
   } finally {
     await gw.stop()
   }
 })
 
-test('multi-turn: mock stdin contains prior transcript + trailing user', async () => {
+test('multi-turn Messages remain native and unflattened', async () => {
   const gw = await startGateway({ scenario: 'text' })
   try {
     await api(gw, 'POST', '/v1/messages', {
@@ -130,14 +127,16 @@ test('multi-turn: mock stdin contains prior transcript + trailing user', async (
       },
     })
     const tr = readTrace(gw)
-    assert.match(tr.stdin, /first answer|first question/)
-    assert.match(tr.stdin, /second question/)
+    assert.equal(tr.body.messages.length, 3)
+    assert.equal(tr.body.messages[0].content, 'first question')
+    assert.equal(tr.body.messages[1].content, 'first answer')
+    assert.equal(tr.body.messages[2].content, 'second question')
   } finally {
     await gw.stop()
   }
 })
 
-test('image block reaches mock stdin as Anthropic image', async () => {
+test('image block reaches Go relay envelope as Anthropic image', async () => {
   const gw = await startGateway({ scenario: 'text' })
   try {
     await api(gw, 'POST', '/v1/messages', {
@@ -155,13 +154,14 @@ test('image block reaches mock stdin as Anthropic image', async () => {
       },
     })
     const tr = readTrace(gw)
-    assert.match(tr.stdin, /"type":"image"/)
+    assert.equal(tr.body.messages[0].content[1].type, 'image')
+    assert.equal(tr.body.messages[0].content[1].source.media_type, 'image/png')
   } finally {
     await gw.stop()
   }
 })
 
-test('long system is truncated on argv', async () => {
+test('HTTP path preserves long system without CLI argv truncation', async () => {
   const gw = await startGateway({ scenario: 'text' })
   try {
     const sys = 'S'.repeat(30000)
@@ -175,9 +175,11 @@ test('long system is truncated on argv', async () => {
       },
     })
     const tr = readTrace(gw)
-    const i = tr.argv.indexOf('--append-system-prompt')
-    assert.ok(i >= 0)
-    assert.ok(tr.argv[i + 1].length <= 24000)
+    const text = Array.isArray(tr.body.system)
+      ? tr.body.system.map((block) => block.text || '').join('\n')
+      : tr.body.system
+    assert.ok(text.length >= 30000)
+    assert.equal(tr.argv, undefined)
   } finally {
     await gw.stop()
   }

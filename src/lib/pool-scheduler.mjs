@@ -89,6 +89,14 @@ export class PoolScheduler {
         }
         continue
       }
+      if (candidates.length === 0) {
+        return {
+          ok: false,
+          code: 'no_available_accounts',
+          reason: 'no_eligible_accounts',
+          waitMs: Date.now() - startedAt,
+        }
+      }
       if (!allowWait || Date.now() >= finalDeadline) {
         return {
           ok: false,
@@ -284,6 +292,7 @@ export class PoolScheduler {
     const current = this.inflight.get(candidate.accountId) || 0
     if (current >= candidate.maxConcurrency) return null
     this.inflight.set(candidate.accountId, current + 1)
+    this.accountQuota?.acquire?.(candidate.accountId)
     let released = false
     return {
       reserved: true,
@@ -293,6 +302,7 @@ export class PoolScheduler {
         const next = Math.max(0, (this.inflight.get(candidate.accountId) || 1) - 1)
         if (next === 0) this.inflight.delete(candidate.accountId)
         else this.inflight.set(candidate.accountId, next)
+        this.accountQuota?.release?.(candidate.accountId)
         this.notifyCapacity()
       },
     }
