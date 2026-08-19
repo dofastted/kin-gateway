@@ -87,6 +87,12 @@ npm test
 
 面板契约：[docs/PANEL_API.md](docs/PANEL_API.md)。
 
+## 文档
+
+- [OAuth 与凭证生命周期](docs/OAUTH.md)
+- [面板 API](docs/PANEL_API.md)
+- [Claude 转发架构对比](docs/CLAUDE_FORWARDING_COMPARISON.md)：CRS、Sub2API、CLIProxyAPI 与 KIN 的 HTTP 数据面、功能、健壮性和优化路线
+
 ## 安全
 
 不要提交 OAuth、sessionKey、SOCKS、`gateway-v2.json`。不要给热路径注入长期 `ANTHROPIC_AUTH_TOKEN`。
