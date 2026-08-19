@@ -1,232 +1,82 @@
 # KIN Gateway
 
-多虚拟机槽位的 **Claude Code 官方协议转发网关**。
+多槽位 Claude 协议网关。非官方协议先转成官方 Messages，再从**虚拟机 UID** 用 CRS HTTP 转发到 Anthropic。默认只换 `device_id` 为槽位 id。
 
-将 OpenAI / Anthropic / 第三方 Agent（Claude Code、Hermes、Codex 等）的请求，整理为官方形态后，在虚拟机槽内用 **官方 `claude` CLI** 完成推理；凭证只在槽内使用与续期，网关不拿 OAuth 直打 Anthropic HTTP。
+控制台：`https://ccmax20.cc`（[kin-console](https://github.com/dofastted/kin-console)）  
+网关：本机 `8787`，无独立域名。
 
-线上入口：`https://kin.fkcodex.com`
-
----
-
-## 目的
-
-| 目标 | 说明 |
-|------|------|
-| 统一出口 | 多客户端协议收敛到官方 Claude Code 执行面 |
-| 凭证安全 | sessionKey → OAuth 只导入一次；续期由官方 CLI 完成；网关只收割 |
-| 身份一致 | 调用方 device / 时区 / settings / 指纹全部替换为槽位标准特征 |
-| 工具归属清晰 | 默认工具在**调用方本机**执行（Windows 文件可读）；可选 VM 沙箱 |
-| 可运营 | Web 控制台维护虚拟机、凭证、代理、用量、路由 |
-
-**不是**：KVM/QEMU 真虚拟机管理器，也不是 sub2api 式 Anthropic HTTP 中继。
-
----
-
-## 最终需求（产品锁定）
-
-1. **OAuth**：支持 sessionKey 转换为凭证  
-2. **统一维护**：Web 可显示、可导入、可收割、可清空（形态参考 sub2api，不照搬实现）  
-3. **使用位置唯一**：凭证实际只在虚拟机槽内使用  
-4. **默认转发**：Claude Code 转发；替换凭证 + 虚拟机特征  
-5. **请求保留**：用户业务内容完整保留；只替换与虚拟机冲突的身份字段（device_id、时区、settings、指纹等）  
-6. **借鉴范围**：仅借鉴 sub2api / cliproxy 的**替换逻辑**，不借网关侧 refresh、不借伪装打官方 HTTP  
-7. **流式返回**：支持 SSE / stream-json 回包  
-8. **多协议**：OpenAI Chat、Responses、Anthropic Messages → 官方 Messages 后再转发  
-
-### 硬性禁止
-
-- 使用 OAuth / sessionKey 在热路径打 `api.anthropic.com`
-- 网关执行 `grant_type=refresh_token`（与官方 CLI 抢票会导致废号）
-- 默认路径剥离 client tools 或压扁为纯文本
-
----
-
-## 架构
+## 转发
 
 ```text
-客户端 (Claude Code / Hermes / Codex / OpenAI SDK …)
-        │  Bearer KIN API Key
-        ▼
-   kin-gateway (server-v2.mjs)
-        │  选槽 + sticky
-        │  协议 → 官方 Messages
-        │  身份 → VM 标准特征
-        ▼
-   虚拟机槽 cli-home
-        │  官方 claude CLI（唯一持有并刷新 OAuth）
-        ▼
-   流式 / 整包响应
-        │
-        └─ tool_use → 默认回调用方执行
+客户端 ──Bearer sk-kin-…──► server-v2.mjs
+                              │ 选槽 / sticky / 并发
+                              │ 协议 → Messages
+                              │ 非官方：追加一行官方人设
+                              ▼
+                         槽 UID 10001+
+                              │ 外层 SOCKS5（若已绑）
+                              ▼
+                         api.anthropic.com
 ```
 
-### 工作区
+| 模式 | 触发 | 说明 |
+|------|------|------|
+| **relay（默认）** | 不传或 `x-kin-forward: relay` | 槽内读 access token，HTTP 中继 |
+| **cli（替补）** | `x-kin-forward: cli`，或 529 / 超时 | 槽内 `claude` 进程。401/403 **不**降级 |
 
-| 模式 | Header | 工具执行位置 |
-|------|--------|----------------|
-| **client**（默认） | `x-kin-workspace: client` 或不传 | 调用方本机 |
-| **vm**（可选） | `x-kin-workspace: vm` | 槽内沙箱 |
+身份：`device_id` = 虚拟机 id；`session_id` 用 CRS hash；`account_uuid` 用 OAuth 账号。
 
-### 转发模式
+工作区默认 `client`（工具回调用方）。`x-kin-workspace: vm` 才进槽内沙箱。
 
-| 模式 | Header | 说明 |
-|------|--------|------|
-| **cli**（默认） | `x-kin-forward: cli` | Claude Code 传输（槽内官方 CLI） |
-| **relay** | `x-kin-forward: relay` | 协议中继**标签**；当前与 cli 同传输，身份替换集相同 |
-
-两者都做全量 VM 标准身份替换：`credentials / session_id / device_id / metadata.user_id / characteristics / fingerprint / settings`。
-
-> 说明：Anthropic HTTP hop 永久 501，故不存在独立的 HTTP relay；`relay` 仅为标签。`cli` 传输下真正生效的身份来自槽内 cli-home（credentials/settings/fingerprint）；body 的 `metadata.user_id` 替换用于审计与一致性，`claude -p` 不会把 body `metadata` 原样发往官方。
-
----
-
-## 协议与接入
+## 协议
 
 | 路径 | 协议 |
 |------|------|
 | `POST /v1/messages` | Anthropic Messages |
-| `POST /v1/chat/completions` | OpenAI Chat Completions |
+| `POST /v1/chat/completions` | OpenAI Chat |
+| `POST /v1/completions` | OpenAI Completions（旧） |
 | `POST /v1/responses` | OpenAI Responses |
-| `GET /v1/models` | 模型列表（来自槽内 CLI 目录） |
-| `GET /health` · `GET /v1/meta` | 健康与能力声明 |
+| `GET /v1/models` | 槽内 CLI 模型目录 |
+| `GET /health` | 健康 / 能力 |
 
-鉴权：`Authorization: Bearer <KIN_API_KEY>` 或 `x-api-key`。
+鉴权：`Authorization: Bearer <key>` 或 `x-api-key`。Master `KIN_API_KEY` 无限制；面板发的 `sk-kin-…` 只走协议口。
 
-控制台：`/console`（面板登录后管理虚拟机与凭证）。
+非官方 system **只追加** `You are Claude Code, Anthropic's official CLI for Claude.`，不整段替换。官方 Claude Code 请求体不改业务内容。
 
----
+## 凭证
 
-## OAuth 生命周期
+导入 sessionKey → `persistOauthToVm` → 写入槽 `credentials.json`。  
+热路径**禁止** `grant_type=refresh_token`。CLI 路径由官方 CLI 续期后 harvest；relay 只读槽内 access。
 
-```text
-管理台粘贴 sessionKey
-    → CookieAuth 换出 access/refresh
-    → 唯一写入 persistOauthToVm(vm.json)
-    → seed 到槽内 credentials.json
-    → 官方 claude CLI 自行续期
-    → 网关 harvest 回写（不 refresh）
-```
+额度探测从**槽 UID** 发：`GET /api/oauth/usage`（5h / 7d）+ 1 token `claude-fable-5`。fable 429 只标 fable，不摘整号。
 
-详情见 [`gateway/OAUTH.md`](gateway/OAUTH.md)。
+详见 [gateway/OAUTH.md](gateway/OAUTH.md)。
 
----
-
-## 控制台能力
-
-- **总览 / 集群 / 虚拟机**：槽位状态、额度、内核标签  
-- **凭证**：列表筛选、导入 sessionKey、收割 CLI、清空、探测  
-- **代理池 / 用量 / 协议 / 设置**：SOCKS、5h·7d、模型、sticky 与并发  
-
----
-
-## 数据库与备份
-
-数据层参考 **sub2api**（Repository 模式、版本化 SQL 迁移 + SHA-256 校验、settings 表、UsageLog 表、BackupService），落地为 **SQLite**（Node 22 内置 `node:sqlite`，零第三方依赖）。单进程网关无需 sub2api 的 PostgreSQL + Redis。
-
-### 入库数据
-
-| 表 | 内容 |
-|----|------|
-| `api_keys` | 管理端 API 密钥（额度/RPM/并发/用量计数） |
-| `accounts` + `account_allocations` | 账号 5h/7d 用量、分配流水（每账号保留 50 条） |
-| `sticky_sessions` | 粘性会话绑定 |
-| `proxies` | SOCKS5 代理池（config 在 `settings`） |
-| `vms` | **VM 记录 + OAuth 凭证镜像**（见下） |
-| `request_logs` / `request_log_debug` | 请求日志摘要 + debug 全量（脱敏） |
-| `settings` | active_vm、备份调度、导入标记等 |
-| `backup_records` | 备份台账 |
-
-- 数据库文件：`data/kin.db`（WAL，0600）；`KIN_DB_PATH` 可覆盖。
-- **旧 JSON 自动迁移**：首次启动把 `data/*.json`、`request-logs/*`、`vms/*.json` 一次性导入 DB（`settings.legacy_import_done` 幂等标记），原文件保留不删。
-
-### 凭证入库（写穿镜像）
-
-`vms/*.json` 仍是运行时单写者形态（`persistOauthToVm` / CLI seed 依赖文件），但每次写文件都同步 upsert `vms` 表（完整 `vm_json` + 凭证列）：
-
-- 主路径：`atomicWriteJson` 写钩子（oauth-refresh / vm-registry / 面板全部写入点）；
-- 兜底：启动 mtime 对账 + `fs.watch(vms/)`；文件缺失时可从 DB 反向重建；
-- 可选加密：设 `KIN_DB_SECRET` 后凭证列与 `vm_json` 以 AES-256-GCM 加密落库。
-
-### 本地自动备份（默认开启）
-
-- 产物：`data/backups/kin-backup-<时间戳>.tar.gz`（manifest + `db/kin.db`(VACUUM INTO) + `vms/` + `config/`，0600）。
-- 调度：默认 `{enabled: true, interval_hours: 24, retention: 7}`；每 10 分钟检查 + 启动补跑；超量自动清理。
-- 恢复：sha256 校验 → 自动 `pre_restore` 快照 → 换库 → 还原/重建 vm、config 文件 → 各 Store 重绑；恢复期间协议请求返回 503。
-- 面板：设置页「备份」卡片（立即备份 / 下载 / 恢复 / 调度配置）；API 见 [PANEL_API.md](gateway/PANEL_API.md)。
-- 不做 S3/远端上传；异地保存请通过面板下载 tar.gz。
-
-### 相关环境变量
-
-| 变量 | 说明 |
-|------|------|
-| `KIN_DB_PATH` | 数据库文件路径（默认 `<data>/kin.db`） |
-| `KIN_DB_SECRET` | 设置后凭证列/vm_json 加密落库（AES-256-GCM） |
-| `KIN_REQUEST_LOG_JSONL=1` | 请求日志额外镜像写旧 JSONL（外部采集用，默认关） |
-| `KIN_BACKUP_DISABLED=1` | 关闭自动备份 |
-| `KIN_BACKUP_INTERVAL_HOURS` / `KIN_BACKUP_RETENTION` | 覆盖备份间隔/保留数 |
-
-## 本地与部署
-
-生产进程：
+## 运行
 
 ```bash
-# systemd: kin-gateway.service
+# 生产
 WorkingDirectory=/opt/kin-gateway/gateway
-ExecStart=/usr/bin/node server-v2.mjs
-```
+ExecStart=/usr/local/bin/node server-v2.mjs
 
-关键环境变量：`KIN_API_KEY`、`PORT`、`PUBLIC_BASE_URL`、面板账号密码。
-
-### 离线验收（无真实 key / 无真实 claude）
-
-```bash
-# 纯函数单测 + HTTP 模拟 e2e
 npm test
-# 或
-cd gateway && node --test lib test
 ```
 
-模拟套件通过 `KIN_CLI_LAUNCHER=direct` + `gateway/test/mocks/mock-claude.mjs` 替换官方 CLI，不打 Anthropic HTTP。详见 [gateway/SIMULATION_TEST_PLAN.md](gateway/SIMULATION_TEST_PLAN.md)。
-
-夹具：`gateway/fixtures/`（抓包脱敏 + 合成 tools/metadata）。
-
----
-
-## 目录要点
-
-```text
-gateway/
-  server-v2.mjs          # 唯一生产入口
-  lib/                   # 调度、身份、CLI 转发、OAuth、面板 API
-  public/console.html    # 控制台
-  fixtures/              # 离线验收抓包
-  captures/              # 运行时抓包（勿提交真实 token）
-vms/                     # 槽位元数据 + cli-home
-session-to-oauth.mjs     # sessionKey → OAuth（导入专用）
-```
-
----
-
-## 相关文档
-
-| 文档 | 内容 |
+| 变量 | 作用 |
 |------|------|
-| [OAUTH.md](gateway/OAUTH.md) | 凭证策略与和 sub2api 的差异 |
-| [ALIGNMENT.md](gateway/ALIGNMENT.md) | 非伪装对齐原则 |
-| [COMPAT.md](gateway/COMPAT.md) | 协议兼容 |
-| [PANEL_API.md](gateway/PANEL_API.md) | 面板 API |
-| [CHANGELOG_PR.md](CHANGELOG_PR.md) | 本轮完整改动清单（PR 用） |
+| `KIN_API_KEY` | Master key |
+| `KIN_ADMIN_USER` / `KIN_ADMIN_PASSWORD` | 面板登录 |
+| `KIN_REQUEST_LOG_MODE` | `off` / `normal` / `debug`（启动优先于 routing.json） |
+| `KIN_DB_PATH` | SQLite，默认 `data/kin.db` |
+| `KIN_DB_SECRET` | 凭证列 AES-256-GCM |
+| `KIN_BACKUP_DISABLED=1` | 关自动备份 |
 
----
+默认并发 20（账号 / 密钥均可热改）。日志模式也可在控制台设置里改。
+
+数据在 SQLite（WAL）。`vms/*.json` 仍是 OAuth 单写者，写穿入库。本地备份默认 24h，面板可恢复。
+
+面板契约：[gateway/PANEL_API.md](gateway/PANEL_API.md)。
 
 ## 安全
 
-- 禁止提交真实 OAuth、sessionKey、SOCKS 账号  
-- 网关不得将 `ANTHROPIC_AUTH_TOKEN` 注入为长期绕过 CLI 的手段  
-- 凭证文件权限应限制为运行用户可读  
-
----
-
-## License / 归属
-
-私有部署组件。第三方协议与 Claude Code 商标归原厂商所有。
+不要提交 OAuth、sessionKey、SOCKS、`gateway-v2.json`。不要给热路径注入长期 `ANTHROPIC_AUTH_TOKEN`。
