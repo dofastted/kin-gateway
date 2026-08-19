@@ -7,8 +7,8 @@
  * Transient state (inflight counters) stays in memory.
  */
 
-import { resolveStoreDb } from './db/database.mjs'
-import { AccountsRepo } from './db/repos/accounts-repo.mjs'
+import { resolveStoreDb } from '../db/database.mjs'
+import { AccountsRepo } from '../db/repos/accounts-repo.mjs'
 
 export class AccountQuota {
   constructor({ dataDir, db, config, accounts }) {

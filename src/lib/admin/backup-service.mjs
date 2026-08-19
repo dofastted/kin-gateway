@@ -33,10 +33,10 @@ import zlib from 'node:zlib'
 import { spawnSync } from 'node:child_process'
 import {
   getDb, getDbPath, closeDatabase, openDatabase, vacuumInto,
-} from './db/database.mjs'
-import { SettingsRepo } from './db/repos/settings-repo.mjs'
-import { BackupRepo } from './db/repos/backup-repo.mjs'
-import { reconcileVms } from './vm-db-sync.mjs'
+} from '../db/database.mjs'
+import { SettingsRepo } from '../db/repos/settings-repo.mjs'
+import { BackupRepo } from '../db/repos/backup-repo.mjs'
+import { reconcileVms } from '../vm/vm-db-sync.mjs'
 
 const SCHEDULE_KEY = 'backup_schedule'
 

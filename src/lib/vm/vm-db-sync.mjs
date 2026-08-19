@@ -19,8 +19,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { isDbOpen, getDb } from './db/database.mjs'
-import { VmsRepo } from './db/repos/vms-repo.mjs'
+import { isDbOpen, getDb } from '../db/database.mjs'
+import { VmsRepo } from '../db/repos/vms-repo.mjs'
 import { setVmWriteHook, atomicWriteJson } from './vm-file.mjs'
 
 let _repo = null

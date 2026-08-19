@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { atomicWriteJson, writeJsonIfChanged } from './vm-file.mjs'
+import { atomicWriteJson, writeJsonIfChanged } from '../vm/vm-file.mjs'
 
 export function readJsonSafe(p, fallback = null) {
   try {

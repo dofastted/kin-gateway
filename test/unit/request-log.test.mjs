@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { RequestLogStore, resolveLogMode, summarizeBody, newRequestId } from '../../src/lib/request-log.mjs'
+import { RequestLogStore, resolveLogMode, summarizeBody, newRequestId } from '../../src/lib/admin/request-log.mjs'
 
 function tmpStore(mode = 'normal') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-rlog-'))
@@ -162,7 +162,7 @@ test('jsonl mirror writes legacy format when enabled', () => {
 })
 
 test('sanitizeRequestBodySnapshot redacts secrets and summarizes tools', async () => {
-  const { sanitizeRequestBodySnapshot } = await import('../../src/lib/request-log.mjs')
+  const { sanitizeRequestBodySnapshot } = await import('../../src/lib/admin/request-log.mjs')
   const snap = sanitizeRequestBodySnapshot({
     model: 'claude-haiku-4-5-20251001',
     authorization: 'Bearer secret',

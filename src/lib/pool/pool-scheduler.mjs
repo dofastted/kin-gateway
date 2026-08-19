@@ -1,5 +1,5 @@
-import { getVm, listVms } from './vm-registry.mjs'
-import { vmCliHomePath, vmJsonPath } from './execution-context.mjs'
+import { getVm, listVms } from '../vm/vm-registry.mjs'
+import { vmCliHomePath, vmJsonPath } from '../vm/execution-context.mjs'
 
 const DEFAULT_CONFIG = {
   strategy: 'weighted-round-robin',

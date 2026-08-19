@@ -9,7 +9,7 @@
  * ONLY `persistOauthToVm` may write access_token/refresh_token into vm.json.
  */
 import fs from 'node:fs'
-import { atomicWriteJson } from './vm-file.mjs'
+import { atomicWriteJson } from '../vm/vm-file.mjs'
 
 /** Kept for status / diagnostics only — refresh scheduling lives in the Go worker. */
 export const REFRESH_SKEW_MS = 5 * 60 * 1000

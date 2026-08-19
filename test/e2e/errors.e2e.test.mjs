@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startGateway, api } from '../harness.mjs'
-import { callAnthropicMessages, streamAnthropicMessages } from '../../src/lib/anthropic-messages.mjs'
+import { callAnthropicMessages, streamAnthropicMessages } from '../../src/lib/protocol/anthropic-messages.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 

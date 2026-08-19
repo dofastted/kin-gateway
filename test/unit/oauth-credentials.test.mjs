@@ -10,7 +10,7 @@ import {
   applyOauthToCfg,
   persistOauthToVm,
   REFRESH_SKEW_MS,
-} from '../../src/lib/oauth-credentials.mjs'
+} from '../../src/lib/oauth/oauth-credentials.mjs'
 
 test('needsRefresh: missing/expired/skew', () => {
   const now = 1_000_000_000_000

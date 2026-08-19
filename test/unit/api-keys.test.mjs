@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ApiKeyStore, generateApiKey, maskApiKey } from '../../src/lib/api-keys.mjs'
+import { ApiKeyStore, generateApiKey, maskApiKey } from '../../src/lib/admin/api-keys.mjs'
 
 function tmpStore() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-keys-'))

@@ -8,7 +8,7 @@ import {
   callGoWorker,
   streamGoWorker,
   workerHealth,
-} from '../../src/lib/go-worker-client.mjs'
+} from '../../src/lib/transport/go-worker-client.mjs'
 
 async function fixture(handler) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-go-client-'))

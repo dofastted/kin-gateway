@@ -5,7 +5,7 @@ import {
   rewriteToolNames,
   restoreToolNames,
   restoreToolNamesInSSELine,
-} from '../../src/lib/anthropic-policy.mjs'
+} from '../../src/lib/protocol/anthropic-policy.mjs'
 
 test('request policy strips empty blocks, caps cache controls and disables forced-tool thinking', () => {
   const body = prepareAnthropicRequest({

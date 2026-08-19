@@ -10,7 +10,7 @@ import {
   listOfficialModels,
   validateOfficialModel,
   clearModelsCache,
-} from '../../src/lib/models.mjs'
+} from '../../src/lib/protocol/models.mjs'
 
 test('isCatalogModelId rejects fragments', () => {
   assert.equal(isCatalogModelId('claude-sonnet-5'), true)
@@ -64,7 +64,7 @@ test('ingestWorkerModels merges worker list responses into the catalog', () => {
 })
 
 test('models module never talks to Anthropic or a CLI binary', () => {
-  const src = fs.readFileSync(new URL('../../src/lib/models.mjs', import.meta.url), 'utf8')
+  const src = fs.readFileSync(new URL('../../src/lib/protocol/models.mjs', import.meta.url), 'utf8')
   assert.equal(src.includes('api.anthropic.com'), false)
   assert.equal(src.includes('oauth-2025-04-20'), false)
   assert.equal(src.includes('spawnSync'), false)

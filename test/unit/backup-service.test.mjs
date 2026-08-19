@@ -7,10 +7,10 @@ import { spawnSync } from 'node:child_process'
 import { openDatabase, closeDatabase, getDb } from '../../src/lib/db/database.mjs'
 import { SettingsRepo } from '../../src/lib/db/repos/settings-repo.mjs'
 import { VmsRepo } from '../../src/lib/db/repos/vms-repo.mjs'
-import { BackupService, tarAvailable } from '../../src/lib/backup-service.mjs'
-import { ApiKeyStore } from '../../src/lib/api-keys.mjs'
-import { stopVmWatch, initVmDbSync } from '../../src/lib/vm-db-sync.mjs'
-import { setVmWriteHook } from '../../src/lib/vm-file.mjs'
+import { BackupService, tarAvailable } from '../../src/lib/admin/backup-service.mjs'
+import { ApiKeyStore } from '../../src/lib/admin/api-keys.mjs'
+import { stopVmWatch, initVmDbSync } from '../../src/lib/vm/vm-db-sync.mjs'
+import { setVmWriteHook } from '../../src/lib/vm/vm-file.mjs'
 
 let root, dataDir, configDir, svc
 

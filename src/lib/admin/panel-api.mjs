@@ -8,9 +8,9 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm } from './vm-registry.mjs'
-import { probeAccount } from './usage-probe.mjs'
-import { makeError, ErrorType, ErrorCode } from './errors.mjs'
+import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm } from '../vm/vm-registry.mjs'
+import { probeAccount } from '../oauth/usage-probe.mjs'
+import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 
 export function ok(data, meta) {
   const out = { ok: true, data }

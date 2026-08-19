@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startGateway, api, readTrace } from '../harness.mjs'
-import { CRS_OFFICIAL_SYSTEM } from '../../src/lib/crs-persona.mjs'
-import { uuidFromSeed } from '../../src/lib/identity-rewrite.mjs'
+import { CRS_OFFICIAL_SYSTEM } from '../../src/lib/identity/crs-persona.mjs'
+import { uuidFromSeed } from '../../src/lib/identity/identity-rewrite.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 

@@ -4,8 +4,8 @@
  */
 
 import crypto from 'node:crypto'
-import { resolveStoreDb } from './db/database.mjs'
-import { StickyRepo } from './db/repos/sticky-repo.mjs'
+import { resolveStoreDb } from '../db/database.mjs'
+import { StickyRepo } from '../db/repos/sticky-repo.mjs'
 
 export class StickyRouter {
   constructor({ dataDir, db, config }) {

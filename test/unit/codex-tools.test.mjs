@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { remapCodexTools, CODEX_TOOL_MAP } from '../../src/lib/codex-tools.mjs'
-import { classifyClient } from '../../src/lib/client-fingerprint.mjs'
+import { remapCodexTools, CODEX_TOOL_MAP } from '../../src/lib/protocol/codex-tools.mjs'
+import { classifyClient } from '../../src/lib/protocol/client-fingerprint.mjs'
 
 test('codex tool remap', () => {
   const out = remapCodexTools([{ name: 'apply_patch' }, { function: { name: 'read_file' } }])

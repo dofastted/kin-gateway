@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { StickyRouter } from '../../src/lib/sticky-router.mjs'
-import { ProxyPool } from '../../src/lib/proxy-pool.mjs'
+import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
+import { ProxyPool } from '../../src/lib/vm/proxy-pool.mjs'
 
 function tmpDir(prefix = 'kin-sticky-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))

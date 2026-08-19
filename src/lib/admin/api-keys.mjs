@@ -12,8 +12,8 @@
  */
 
 import crypto from 'node:crypto'
-import { resolveStoreDb } from './db/database.mjs'
-import { ApiKeysRepo } from './db/repos/api-keys-repo.mjs'
+import { resolveStoreDb } from '../db/database.mjs'
+import { ApiKeysRepo } from '../db/repos/api-keys-repo.mjs'
 
 const KEY_PREFIX = 'sk-kin-'
 const HASH_MARKER = 'hmac:'

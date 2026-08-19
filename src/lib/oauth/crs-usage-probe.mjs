@@ -2,8 +2,8 @@
  * CRS-aligned account status probe.
  * All Anthropic I/O runs as the VM UID (SOCKS egress). Host never calls Anthropic.
  */
-import { isCrsMock } from './crs-mock.mjs'
-import { callGoWorker, callWorkerGet } from './go-worker-client.mjs'
+import { isCrsMock } from '../transport/crs-mock.mjs'
+import { callGoWorker, callWorkerGet } from '../transport/go-worker-client.mjs'
 
 export const FABLE_PROBE_MODEL = 'claude-fable-5'
 export const OAUTH_USAGE_PATH = '/api/oauth/usage'

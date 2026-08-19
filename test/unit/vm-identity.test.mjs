@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatMetadataUserId, loadVmIdentity } from '../../src/lib/vm-identity.mjs'
-import { applyCrsIdentityReplace } from '../../src/lib/identity-rewrite.mjs'
+import { formatMetadataUserId, loadVmIdentity } from '../../src/lib/identity/vm-identity.mjs'
+import { applyCrsIdentityReplace } from '../../src/lib/identity/identity-rewrite.mjs'
 
 test('metadata.user_id is official JSON for current CLI', () => {
   const s = formatMetadataUserId({

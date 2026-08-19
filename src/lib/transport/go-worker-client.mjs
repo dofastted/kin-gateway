@@ -1,7 +1,7 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { resolveCrsHeaders } from './crs-headers.mjs'
+import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
 import { isCrsMock, writeCrsTrace, mockCrsPayload, emitMockSse } from './crs-mock.mjs'
 
 const MAX_BODY = 64 * 1024 * 1024

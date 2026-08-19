@@ -11,8 +11,8 @@
  */
 import net from 'node:net'
 import crypto from 'node:crypto'
-import { resolveStoreDb } from './db/database.mjs'
-import { ProxiesRepo } from './db/repos/proxies-repo.mjs'
+import { resolveStoreDb } from '../db/database.mjs'
+import { ProxiesRepo } from '../db/repos/proxies-repo.mjs'
 
 const DEFAULT_CONFIG = {
   probe_interval_min: 10, // 5 | 10 | 30 | 60

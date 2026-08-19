@@ -4,7 +4,7 @@ import {
   applyCrsIdentityReplace,
   uuidFromSeed,
   parseUserId,
-} from '../../src/lib/identity-rewrite.mjs'
+} from '../../src/lib/identity/identity-rewrite.mjs'
 
 test('identity replace: device is slot, session is hashed caller session', () => {
   const body = {

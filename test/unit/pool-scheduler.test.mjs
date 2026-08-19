@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { PoolScheduler } from '../../src/lib/pool-scheduler.mjs'
+import { PoolScheduler } from '../../src/lib/pool/pool-scheduler.mjs'
 
 function project() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-pool-scheduler-'))

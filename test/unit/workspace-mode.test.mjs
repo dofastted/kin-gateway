@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveWorkspaceMode, isOfficialClaudeClient } from '../../src/lib/workspace-mode.mjs'
+import { resolveWorkspaceMode, isOfficialClaudeClient } from '../../src/lib/protocol/workspace-mode.mjs'
 
 test('default workspace is client — VM tools are opt-in', () => {
   assert.equal(resolveWorkspaceMode({}, {}, 'claude_code_official'), 'client')

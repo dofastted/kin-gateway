@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { atomicWriteJson, writeJsonIfChanged, withVmLock } from '../../src/lib/vm-file.mjs'
+import { atomicWriteJson, writeJsonIfChanged, withVmLock } from '../../src/lib/vm/vm-file.mjs'
 
 test('atomicWriteJson writes valid JSON and leaves no temp files', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-vf-'))

@@ -6,7 +6,7 @@ import {
   normUtilization,
   FABLE_PROBE_MODEL,
   probeVmUsage,
-} from '../../src/lib/crs-usage-probe.mjs'
+} from '../../src/lib/oauth/crs-usage-probe.mjs'
 
 test('oauth usage parse: 5h / 7d / sonnet / extra', () => {
   const p = parseOAuthUsage({

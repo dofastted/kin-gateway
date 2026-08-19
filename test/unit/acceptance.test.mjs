@@ -7,12 +7,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { toClaudeMessages } from '../../src/lib/convert.mjs'
-import { officialMessagesBody, callAnthropicMessages, streamAnthropicMessages } from '../../src/lib/anthropic-messages.mjs'
-import { applyCrsIdentityReplace, IDENTITY_REPLACE } from '../../src/lib/identity-rewrite.mjs'
-import { resolveWorkspaceMode } from '../../src/lib/workspace-mode.mjs'
-import { persistOauthToVm, normalizeOauth } from '../../src/lib/oauth-credentials.mjs'
-import { formatMetadataUserId } from '../../src/lib/vm-identity.mjs'
+import { toClaudeMessages } from '../../src/lib/protocol/convert.mjs'
+import { officialMessagesBody, callAnthropicMessages, streamAnthropicMessages } from '../../src/lib/protocol/anthropic-messages.mjs'
+import { applyCrsIdentityReplace, IDENTITY_REPLACE } from '../../src/lib/identity/identity-rewrite.mjs'
+import { resolveWorkspaceMode } from '../../src/lib/protocol/workspace-mode.mjs'
+import { persistOauthToVm, normalizeOauth } from '../../src/lib/oauth/oauth-credentials.mjs'
+import { formatMetadataUserId } from '../../src/lib/identity/vm-identity.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIX = path.join(__dirname, '..', 'fixtures')

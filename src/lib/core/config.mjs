@@ -2,10 +2,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { hashKey } from './security.mjs'
-import { atomicWriteJson } from './vm-file.mjs'
+import { atomicWriteJson } from '../vm/vm-file.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.resolve(__dirname, '..')
+// this file lives at src/lib/core/ — the gateway root is src/
+const ROOT = path.resolve(__dirname, '..', '..')
 const PROJECT = path.resolve(process.env.KIN_PROJECT_ROOT || path.resolve(ROOT, '..'))
 
 export function loadConfig() {

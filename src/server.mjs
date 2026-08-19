@@ -8,13 +8,13 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadConfig, saveVmPatch, reloadActiveVm } from './lib/config.mjs'
+import { loadConfig, saveVmPatch, reloadActiveVm } from './lib/core/config.mjs'
 import {
   extractApiKey, timingSafeEqualStr, redactSecrets, createRateLimiter,
   verifyPanelLogin, createPanelSession, verifyPanelSession, extractPanelToken, panelSessionCookie, clearPanelSessionCookie, revokePanelSession,
   getPanelAdmin,
-} from './lib/security.mjs'
-import { applyIntercept } from './lib/intercept.mjs'
+} from './lib/core/security.mjs'
+import { applyIntercept } from './lib/core/intercept.mjs'
 import {
   toClaudeMessages,
   fromClaudeToOpenAIChat,
@@ -26,36 +26,36 @@ import {
   claudeSSELineToOpenAICompletionChunks,
   createResponsesStreamState,
   claudeSSELineToResponsesEvents,
-} from './lib/convert.mjs'
-import { sanitizeInboundBody, defaultSeedPolicy } from './lib/seed-policy.mjs'
+} from './lib/protocol/convert.mjs'
+import { sanitizeInboundBody, defaultSeedPolicy } from './lib/protocol/seed-policy.mjs'
 import { sessionKeyToOAuth } from '../scripts/session-to-oauth.mjs'
-import { persistOauthToVm, applyOauthToCfg } from './lib/oauth-credentials.mjs'
+import { persistOauthToVm, applyOauthToCfg } from './lib/oauth/oauth-credentials.mjs'
 import crypto from 'node:crypto'
-import { fingerprintRequest } from './lib/client-fingerprint.mjs'
-import { validateOfficialModel, ingestWorkerModels } from './lib/models.mjs'
-import { StickyRouter } from './lib/sticky-router.mjs'
-import { AccountQuota } from './lib/account-quota.mjs'
-import { ApiKeyStore, publicKeyView } from './lib/api-keys.mjs'
-import { RequestLogStore, summarizeBody } from './lib/request-log.mjs'
-import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm-registry.mjs'
+import { fingerprintRequest } from './lib/protocol/client-fingerprint.mjs'
+import { validateOfficialModel, ingestWorkerModels } from './lib/protocol/models.mjs'
+import { StickyRouter } from './lib/pool/sticky-router.mjs'
+import { AccountQuota } from './lib/pool/account-quota.mjs'
+import { ApiKeyStore, publicKeyView } from './lib/admin/api-keys.mjs'
+import { RequestLogStore, summarizeBody } from './lib/admin/request-log.mjs'
+import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm/vm-registry.mjs'
 import {
   makeError, mapUpstreamError, validateRequestBody, inspectRequestBody,
   mapQuotaGateError, mapModelError, ErrorType, ErrorCode,
-} from './lib/errors.mjs'
-import * as panel from './lib/panel-api.mjs'
-import { ProxyPool } from './lib/proxy-pool.mjs'
-import { GATEWAY_CAPABILITIES } from './lib/execution-context.mjs'
-import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/workspace-mode.mjs'
-import { officialMessagesBody } from './lib/anthropic-messages.mjs'
-import { loadVmIdentity } from './lib/vm-identity.mjs'
-import { withVmLock, atomicWriteJson } from './lib/vm-file.mjs'
+} from './lib/core/errors.mjs'
+import * as panel from './lib/admin/panel-api.mjs'
+import { ProxyPool } from './lib/vm/proxy-pool.mjs'
+import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
+import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/protocol/workspace-mode.mjs'
+import { officialMessagesBody } from './lib/protocol/anthropic-messages.mjs'
+import { loadVmIdentity } from './lib/identity/vm-identity.mjs'
+import { withVmLock, atomicWriteJson } from './lib/vm/vm-file.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
 import { runLegacyImport } from './lib/db/legacy-import.mjs'
-import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm-db-sync.mjs'
-import { BackupService } from './lib/backup-service.mjs'
-import { applyCrsIdentityReplace } from './lib/identity-rewrite.mjs'
-import { applyCrsUnofficialPersona } from './lib/crs-persona.mjs'
-import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm-runtime.mjs'
+import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
+import { BackupService } from './lib/admin/backup-service.mjs'
+import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
+import { applyCrsUnofficialPersona } from './lib/identity/crs-persona.mjs'
+import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
 import {
   callGoWorker,
   streamGoWorker,
@@ -63,9 +63,9 @@ import {
   ensureWorkerCredential,
   importWorkerCredential,
   callWorkerGet,
-} from './lib/go-worker-client.mjs'
-import { PoolScheduler } from './lib/pool-scheduler.mjs'
-import { FailoverRunner } from './lib/failover-runner.mjs'
+} from './lib/transport/go-worker-client.mjs'
+import { PoolScheduler } from './lib/pool/pool-scheduler.mjs'
+import { FailoverRunner } from './lib/pool/failover-runner.mjs'
 import { AccountRuntimeRepo } from './lib/db/repos/account-runtime-repo.mjs'
 import { RequestAttemptsRepo } from './lib/db/repos/request-attempts-repo.mjs'
 import {
@@ -73,7 +73,7 @@ import {
   rewriteToolNames,
   restoreToolNames,
   restoreToolNamesInSSELine,
-} from './lib/anthropic-policy.mjs'
+} from './lib/protocol/anthropic-policy.mjs'
 
 
 function applyVmConcurrency(id, n, { override = true } = {}) {

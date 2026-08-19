@@ -8,7 +8,7 @@ test('panel admin has no hard-coded password fallback', async () => {
   const previous = process.env.KIN_ADMIN_PASSWORD
   delete process.env.KIN_ADMIN_PASSWORD
   try {
-    const { getPanelAdmin } = await import(`../../src/lib/security.mjs?admin=${Date.now()}`)
+    const { getPanelAdmin } = await import(`../../src/lib/core/security.mjs?admin=${Date.now()}`)
     assert.equal(getPanelAdmin().username, process.env.KIN_ADMIN_USER || 'admin')
     assert.equal(getPanelAdmin().password, '')
   } finally {
@@ -22,7 +22,7 @@ test('panel session persistence stores only token hashes', async () => {
   const previous = process.env.KIN_DATA_DIR
   process.env.KIN_DATA_DIR = dir
   try {
-    const security = await import(`../../src/lib/security.mjs?session=${Date.now()}`)
+    const security = await import(`../../src/lib/core/security.mjs?session=${Date.now()}`)
     const token = security.createPanelSession('admin', 60_000)
     assert.match(token, /^kin-panel-/)
     assert.equal(security.verifyPanelSession(token).user, 'admin')

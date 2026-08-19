@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FailoverRunner } from '../../src/lib/failover-runner.mjs'
+import { FailoverRunner } from '../../src/lib/pool/failover-runner.mjs'
 
 class Scheduler {
   constructor(candidates) {

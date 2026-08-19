@@ -8,7 +8,7 @@ import {
   resolveVmProxyUrl,
   GATEWAY_CAPABILITIES,
   snapshotOauth,
-} from '../../src/lib/execution-context.mjs'
+} from '../../src/lib/vm/execution-context.mjs'
 
 function writeVm(root, id, patch = {}) {
   const vm = {

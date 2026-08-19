@@ -4,7 +4,7 @@ import {
   classifyUpstreamResult,
   repairAnthropicRequest,
   shouldContinue,
-} from '../../src/lib/upstream-error-policy.mjs'
+} from '../../src/lib/pool/upstream-error-policy.mjs'
 
 test('unified account 429 cools account until authoritative reset', () => {
   const now = 1_700_000_000_000

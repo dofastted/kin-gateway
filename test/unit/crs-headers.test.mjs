@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { extractClaudeCodeHeaders, resolveCrsHeaders, isOfficialClaudeUa } from '../../src/lib/crs-headers.mjs'
+import { extractClaudeCodeHeaders, resolveCrsHeaders, isOfficialClaudeUa } from '../../src/lib/identity/crs-headers.mjs'
 
 test('does not keep authorization or x-api-key', () => {
   const h = extractClaudeCodeHeaders({

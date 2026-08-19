@@ -17,9 +17,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { redactSecrets } from './security.mjs'
-import { resolveStoreDb } from './db/database.mjs'
-import { RequestLogsRepo } from './db/repos/request-logs-repo.mjs'
+import { redactSecrets } from '../core/security.mjs'
+import { resolveStoreDb } from '../db/database.mjs'
+import { RequestLogsRepo } from '../db/repos/request-logs-repo.mjs'
 
 const MODES = new Set(['off', 'normal', 'debug'])
 
