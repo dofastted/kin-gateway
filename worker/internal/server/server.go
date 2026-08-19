@@ -169,6 +169,7 @@ func (s *Server) messages(writer http.ResponseWriter, request *http.Request) {
 		writeWorkerError(writer, http.StatusBadRequest, "worker_request_invalid", errors.New("body must be valid JSON"))
 		return
 	}
+	input.Body = applyStreamFlag(input.Body, input.Stream)
 	response, err := s.Upstream.Messages(request.Context(), input.Body, input.Headers)
 	if err != nil {
 		s.setLastError(err)
@@ -332,6 +333,23 @@ func (s *Server) forwardError(writer http.ResponseWriter, response *upstream.Res
 	writer.Header().Set("Content-Type", contentTypeOrJSON(response.Header))
 	writer.WriteHeader(response.Status)
 	_, _ = writer.Write(data)
+}
+
+func applyStreamFlag(body json.RawMessage, stream bool) json.RawMessage {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil || obj == nil {
+		return body
+	}
+	current, isBool := obj["stream"].(bool)
+	if isBool && current == stream {
+		return body
+	}
+	obj["stream"] = stream
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func (s *Server) streamOptions() kinstream.Options {

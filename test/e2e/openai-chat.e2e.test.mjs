@@ -42,6 +42,8 @@ test('POST /v1/chat/completions stream ends with [DONE] and chat.completion.chun
     assert.match(body, /data:/)
     assert.match(body, /\[DONE\]/)
     assert.match(body, /chat\.completion\.chunk/)
+    const tr = takeTrace(gw)
+    assert.equal(tr.body.stream, true)
   } finally {
     await gw.stop()
   }

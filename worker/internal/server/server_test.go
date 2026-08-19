@@ -57,6 +57,43 @@ func TestVerifiedStreamRejectsMissingTerminalBeforeCommit(t *testing.T) {
 	}
 }
 
+func TestRealtimeStreamInjectsBodyStreamFlag(t *testing.T) {
+	var sawBody map[string]any
+	anthropic := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		defer request.Body.Close()
+		if err := json.NewDecoder(request.Body).Decode(&sawBody); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(
+			"data: {\"type\":\"message_start\",\"message\":{}}\n\n" +
+				"data: {\"type\":\"message_stop\"}\n\n",
+		))
+	}))
+	defer anthropic.Close()
+	worker := testServer(t, anthropic.URL)
+	payload := map[string]any{
+		"body": map[string]any{
+			"model":      "claude-test",
+			"max_tokens": 8,
+			"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		},
+		"headers":       map[string]string{"user-agent": "claude-cli/test"},
+		"stream":        true,
+		"delivery_mode": "realtime",
+	}
+	data, _ := json.Marshal(payload)
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/messages", bytes.NewReader(data))
+	recorder := httptest.NewRecorder()
+	worker.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if sawBody["stream"] != true {
+		t.Fatalf("upstream body stream=%v body=%v, want true", sawBody["stream"], sawBody)
+	}
+}
+
 func TestRealtimeStreamReportsVerifiedTrailer(t *testing.T) {
 	anthropic := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

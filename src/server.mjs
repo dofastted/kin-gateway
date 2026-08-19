@@ -585,12 +585,10 @@ async function handleProtocol(req, res, protocol, pathName) {
   }
 
   const abortController = new AbortController()
-  const onAborted = () => abortController.abort(new Error('client_aborted'))
-  const onResponseClose = () => {
-    if (!res.writableEnded) abortController.abort(new Error('client_disconnected'))
+  const onAborted = () => {
+    if (!abortController.signal.aborted) abortController.abort(new Error('client_aborted'))
   }
   req.once('aborted', onAborted)
-  res.once('close', onResponseClose)
 
   const wantStream = !!inbound.stream
   const deliveryMode = String(req.headers['x-kin-delivery'] || routingConfig?.failover?.delivery_mode || 'realtime')
@@ -606,7 +604,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        const identified = applyCrsIdentityReplace(officialMessagesBody(body), identity, inbound)
+        const identified = applyCrsIdentityReplace(officialMessagesBody(body, { stream: wantStream }), identity, inbound)
         const cleaned = prepareAnthropicRequest(identified, {
           cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
         })
@@ -647,31 +645,32 @@ async function handleProtocol(req, res, protocol, pathName) {
           signal,
           deliveryMode: attemptDelivery,
           onCommit: () => {
-            if (!res.headersSent) writeSSEHeaders(res)
+            if (protocol === 'anthropic.messages' && !res.headersSent) writeSSEHeaders(res)
             onCommit()
           },
           onEvent: async (line) => {
             line = restoreToolNamesInSSELine(line, attemptMeta?.toolNames || {})
-            if (!res.headersSent) writeSSEHeaders(res)
             if (protocol === 'anthropic.messages') {
+              if (!res.headersSent) writeSSEHeaders(res)
               res.write(String(line).endsWith('\n') ? String(line) : String(line) + '\n')
               return
             }
-            if (protocol === 'openai.chat') {
-              for (const chunk of claudeSSELineToOpenAIChatChunks(line, state)) {
+            const writeChunks = (chunks) => {
+              if (!chunks.length) return
+              if (!res.headersSent) writeSSEHeaders(res)
+              for (const chunk of chunks) {
                 res.write(`data: ${JSON.stringify(chunk)}\n\n`)
               }
+            }
+            if (protocol === 'openai.chat') {
+              writeChunks(claudeSSELineToOpenAIChatChunks(line, state))
               return
             }
             if (protocol === 'openai.completions') {
-              for (const chunk of claudeSSELineToOpenAICompletionChunks(line, state)) {
-                res.write(`data: ${JSON.stringify(chunk)}\n\n`)
-              }
+              writeChunks(claudeSSELineToOpenAICompletionChunks(line, state))
               return
             }
-            for (const event of claudeSSELineToResponsesEvents(line, state)) {
-              res.write(`data: ${JSON.stringify(event)}\n\n`)
-            }
+            writeChunks(claudeSSELineToResponsesEvents(line, state))
           },
         })
       },

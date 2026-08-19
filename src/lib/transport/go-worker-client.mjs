@@ -123,14 +123,40 @@ function streamMetaFromHeaders(headers = {}) {
   }
 }
 
+function dumpSessionEnvelope(envelope) {
+  const dir = process.env.KIN_SESSION_DUMP
+  if (!dir) return
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    const headers = {}
+    for (const [key, value] of Object.entries(envelope.headers || {})) {
+      headers[key] = /authorization|api-key|cookie|token/i.test(key) ? '***REDACTED***' : value
+    }
+    const rec = {
+      ts: new Date().toISOString(),
+      hop: 'go-worker-envelope',
+      note: 'This is the JSON body+headers the slot worker POSTs to api.anthropic.com/v1/messages. Authorization is attached by the worker from OAuth and is not in this envelope.',
+      stream: envelope.stream,
+      delivery_mode: envelope.delivery_mode,
+      headers,
+      body: envelope.body,
+    }
+    const name = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}-envelope.json`
+    fs.writeFileSync(path.join(dir, name), JSON.stringify(rec, null, 2))
+  } catch {}
+}
+
 function workerEnvelope({ body, reqHeaders, exec, identity, stream, deliveryMode }) {
-  return {
+  const envelope = {
     body,
     headers: resolveCrsHeaders(reqHeaders, exec?.homeDir, identity),
     stream: !!stream,
     delivery_mode: deliveryMode || 'realtime',
   }
+  dumpSessionEnvelope(envelope)
+  return envelope
 }
+
 
 function mockScenario(exec) {
   try {
@@ -304,6 +330,21 @@ export async function streamGoWorker({
     let buffer = ''
     let lastError = null
     let sawTerminal = false
+    let dataBuf = ''
+    const takeSseEvent = () => {
+      try {
+        const event = JSON.parse(dataBuf)
+        dataBuf = ''
+        return event && typeof event === 'object' ? event : null
+      } catch {
+        return null
+      }
+    }
+    const observeSseEvent = (event) => {
+      if (!event) return
+      if (event.type === 'message_stop') sawTerminal = true
+      if (event.type === 'error') lastError = event
+    }
     for await (const chunk of response) {
       buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
       let newline
@@ -311,16 +352,25 @@ export async function streamGoWorker({
         const line = buffer.slice(0, newline).replace(/\r$/, '')
         buffer = buffer.slice(newline + 1)
         if (line.startsWith('data:')) {
-          try {
-            const event = JSON.parse(line.slice(5).trim())
-            if (event?.type === 'message_stop') sawTerminal = true
-            if (event?.type === 'error') lastError = event
-          } catch {}
+          const piece = line.slice(5).trim()
+          if (piece && piece !== '[DONE]') {
+            dataBuf = dataBuf ? `${dataBuf}\n${piece}` : piece
+            observeSseEvent(takeSseEvent())
+          }
           if (!committed) {
             committed = true
             ttftMs = Date.now() - startedAt
             if (typeof onCommit === 'function') onCommit()
           }
+        } else if (line === '') {
+          if (dataBuf) {
+            const event = takeSseEvent()
+            dataBuf = ''
+            observeSseEvent(event)
+          }
+        } else if (dataBuf && !line.startsWith('event:') && !line.startsWith(':')) {
+          dataBuf = `${dataBuf}\n${line}`
+          observeSseEvent(takeSseEvent())
         }
         if (onEvent) await onEvent(line)
       }

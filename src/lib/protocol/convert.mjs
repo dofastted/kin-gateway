@@ -217,6 +217,7 @@ function openaiToClaude(body, opts) {
   if (tc) out.tool_choice = tc
   const thinking = openaiReasoningToClaudeThinking(body)
   if (thinking) out.thinking = thinking
+  if (body.stream) out.stream = true
   return out
 }
 
@@ -269,6 +270,7 @@ function responsesToClaude(body, opts) {
   if (tools?.length) out.tools = tools
   const thinking = openaiReasoningToClaudeThinking(body)
   if (thinking) out.thinking = thinking
+  if (body.stream) out.stream = true
   return out
 }
 
@@ -387,15 +389,56 @@ export function createOpenAIChatStreamState(model, vmId) {
     toolIndex: 0,
     toolMap: new Map(), // block index → tool call index
     sentRole: false,
+    dataBuf: '',
   }
 }
 
+/** Reassemble Anthropic SSE JSON that may be split across lines. */
+export function consumeClaudeSSEData(line, state) {
+  if (!state || typeof state !== 'object') return null
+  if (typeof state.dataBuf !== 'string') state.dataBuf = ''
+  const raw = String(line ?? '').replace(/\r$/, '')
+
+  if (raw.startsWith('event:') || raw.startsWith(':')) return null
+
+  if (raw.startsWith('data:')) {
+    const piece = raw.slice(5).trim()
+    if (!piece || piece === '[DONE]') {
+      state.dataBuf = ''
+      return null
+    }
+    state.dataBuf = state.dataBuf ? `${state.dataBuf}\n${piece}` : piece
+    return takeParsedSseData(state)
+  }
+
+  if (raw === '') {
+    if (!state.dataBuf) return null
+    const evt = takeParsedSseData(state)
+    state.dataBuf = ''
+    return evt
+  }
+
+  if (state.dataBuf) {
+    state.dataBuf = `${state.dataBuf}\n${raw}`
+    return takeParsedSseData(state)
+  }
+  return null
+}
+
+function takeParsedSseData(state) {
+  try {
+    const evt = JSON.parse(state.dataBuf)
+    if (evt && typeof evt === 'object') {
+      state.dataBuf = ''
+      return evt
+    }
+  } catch {}
+  return null
+}
+
 export function claudeSSELineToOpenAIChatChunks(line, state) {
-  if (!line.startsWith('data:')) return []
-  const payload = line.slice(5).trim()
-  if (!payload || payload === '[DONE]') return []
-  let evt
-  try { evt = JSON.parse(payload) } catch { return [] }
+  const evt = consumeClaudeSSEData(line, state)
+  if (!evt) return []
 
   const chunks = []
   const base = {
@@ -497,15 +540,13 @@ export function createResponsesStreamState(model, vmId) {
     model,
     vmId,
     text: '',
+    dataBuf: '',
   }
 }
 
 export function claudeSSELineToResponsesEvents(line, state) {
-  if (!line.startsWith('data:')) return []
-  const payload = line.slice(5).trim()
-  if (!payload || payload === '[DONE]') return []
-  let evt
-  try { evt = JSON.parse(payload) } catch { return [] }
+  const evt = consumeClaudeSSEData(line, state)
+  if (!evt) return []
   const out = []
 
   if (evt.type === 'message_start') {
