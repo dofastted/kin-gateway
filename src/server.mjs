@@ -55,7 +55,7 @@ import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.m
 import { BackupService } from './lib/admin/backup-service.mjs'
 import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona } from './lib/identity/crs-persona.mjs'
-import { ensureClaudeWebSearch } from './lib/protocol/web-search.mjs'
+import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './lib/protocol/web-search.mjs'
 import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
 import {
   callGoWorker,
@@ -565,7 +565,9 @@ async function handleProtocol(req, res, protocol, pathName) {
   const officialClient = isOfficialClaudeClient(fp.client_class)
   if (!officialClient) {
     ctx.body = applyCrsUnofficialPersona(ctx.body, { officialClient: false })
-    ctx.body = ensureClaudeWebSearch(ctx.body)
+    ctx.body = ensureClaudeWebSearch(ctx.body, {
+      enabled: shouldInjectClaudeWebSearch({ clientClass: fp.client_class, headers: req.headers }),
+    })
   }
   const canonicalBody = officialMessagesBody(ctx.body)
   const stickyKey = stickyRouter.extractKey(req, inbound)

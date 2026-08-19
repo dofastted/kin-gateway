@@ -1,9 +1,12 @@
 /**
  * Claude server-side web search.
  *
- * Third-party clients (Chat/OpenAI/Hermes/…) usually omit Anthropic's native
- * server tool. Official Claude Code already ships its own tool list — leave it
- * alone. Schema is Anthropic-only: { type: "web_search_20250305", name: "web_search" }.
+ * Chat-style third parties (Hermes / RikkaHub / OpenClaw / …) usually omit
+ * Anthropic's native server tool. Official Claude Code and protocol-compliance
+ * clients (CCTest, SDKs, Go-http-client) already ship their own tool list —
+ * leave those alone.
+ *
+ * Schema is Anthropic-only: { type: "web_search_20250305", name: "web_search" }.
  */
 
 export const CLAUDE_WEB_SEARCH_TOOL = Object.freeze({
@@ -17,6 +20,9 @@ const WEB_SEARCH_NAMES = new Set([
   'WebSearch',
   'google_search',
 ])
+
+const INJECT_CLIENT_CLASS = new Set(['hermes', 'openclaw'])
+const INJECT_UA = /rikkahub|hermes|openclaw|clawdbot|moltbot|cherry[\s-]?studio|lobe-?chat|open-?webui|sillytavern/i
 
 export function isWebSearchTool(tool) {
   if (!tool || typeof tool !== 'object') return false
@@ -34,6 +40,16 @@ export function hasClaudeWebSearch(tools) {
   return Array.isArray(tools) && tools.some(isWebSearchTool)
 }
 
+/**
+ * Inject native web_search only for chat-style unofficial clients.
+ * Protocol testers / SDKs / generic HTTP clients must not gain a server tool.
+ */
+export function shouldInjectClaudeWebSearch({ clientClass, headers } = {}) {
+  if (INJECT_CLIENT_CLASS.has(String(clientClass || ''))) return true
+  const ua = String(headers?.['user-agent'] || headers?.['User-Agent'] || '')
+  return INJECT_UA.test(ua)
+}
+
 function toolChoiceNone(toolChoice) {
   if (toolChoice == null) return false
   if (toolChoice === 'none') return true
@@ -42,7 +58,7 @@ function toolChoiceNone(toolChoice) {
 
 /**
  * Append the native Claude web_search server tool when the inbound body has none.
- * No-ops when the client already declared search, or when tool_choice is none.
+ * No-ops when disabled, when the client already declared search, or when tool_choice is none.
  */
 export function ensureClaudeWebSearch(body, { enabled = true } = {}) {
   if (!enabled || !body || typeof body !== 'object') return body

@@ -22,7 +22,7 @@ test('CRS default keeps thinking + max_tokens + temperature in official body', a
     assert.equal(tr.body.max_tokens, 99)
     assert.equal(tr.body.temperature, 0.2)
     assert.equal(tr.body.thinking.budget_tokens, 512)
-    assert.ok((tr.tools || []).includes('web_search'))
+    assert.ok(!(tr.tools || []).includes('web_search'))
   } finally {
     await gw.stop()
   }
@@ -69,6 +69,56 @@ test('legacy CLI selector cannot drop HTTP request parameters', async () => {
     assert.equal(trace.body.max_tokens, 99)
     assert.equal(trace.body.temperature, 0.2)
     assert.equal(trace.body.thinking.budget_tokens, 512)
+  } finally {
+    await gw.stop()
+  }
+})
+
+test('native messages keep output_config and do not inject search for Go-http-client', async () => {
+  const gw = await startGateway()
+  try {
+    const r = await api(gw, 'POST', '/v1/messages', {
+      headers: { 'user-agent': 'Go-http-client/1.1' },
+      body: {
+        model: MODEL,
+        max_tokens: 32,
+        output_config: {
+          format: { type: 'json_schema', schema: { type: 'object', properties: { ok: { type: 'boolean' } } } },
+          effort: 'medium',
+        },
+        extra_body: { should_drop: true },
+        settings: { theme: 'light' },
+        messages: [{ role: 'user', content: 'json' }],
+      },
+    })
+    assert.equal(r.status, 200, r.text)
+    const tr = readTrace(gw)
+    assert.equal(tr?.via, 'go-worker')
+    assert.equal(tr.body.output_config.effort, 'medium')
+    assert.equal(tr.body.output_config.format.type, 'json_schema')
+    assert.equal(tr.body.extra_body, undefined)
+    assert.equal(tr.body.settings, undefined)
+    assert.ok(!(tr.tools || []).includes('web_search'))
+  } finally {
+    await gw.stop()
+  }
+})
+
+test('RikkaHub unofficial injects native web_search', async () => {
+  const gw = await startGateway()
+  try {
+    const r = await api(gw, 'POST', '/v1/messages', {
+      headers: { 'user-agent': 'RikkaHub-Android/2.4.10' },
+      body: {
+        model: MODEL,
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })
+    assert.equal(r.status, 200, r.text)
+    const tr = readTrace(gw)
+    assert.equal(tr?.via, 'go-worker')
+    assert.ok((tr.tools || []).includes('web_search'))
   } finally {
     await gw.stop()
   }

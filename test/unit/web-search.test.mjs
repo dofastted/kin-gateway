@@ -6,6 +6,7 @@ import {
   hasClaudeWebSearch,
   isAnthropicServerTool,
   isWebSearchTool,
+  shouldInjectClaudeWebSearch,
 } from '../../src/lib/protocol/web-search.mjs'
 import { openaiToolsToClaude, toClaudeMessages } from '../../src/lib/protocol/convert.mjs'
 import { rewriteToolNames } from '../../src/lib/protocol/anthropic-policy.mjs'
@@ -33,6 +34,28 @@ test('ensureClaudeWebSearch respects tool_choice none', () => {
   const out = ensureClaudeWebSearch({ tool_choice: { type: 'none' } })
   assert.equal(out.tools, undefined)
   assert.equal(ensureClaudeWebSearch({ tool_choice: 'none' }).tools, undefined)
+})
+
+test('ensureClaudeWebSearch disabled leaves tools unchanged', () => {
+  const body = { messages: [{ role: 'user', content: 'hi' }] }
+  const out = ensureClaudeWebSearch(body, { enabled: false })
+  assert.equal(out, body)
+  assert.equal(out.tools, undefined)
+})
+
+test('shouldInjectClaudeWebSearch only for chat-style unofficial clients', () => {
+  assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'hermes' }), true)
+  assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'openclaw' }), true)
+  assert.equal(shouldInjectClaudeWebSearch({ headers: { 'user-agent': 'RikkaHub-Android/2.4.10' } }), true)
+  assert.equal(shouldInjectClaudeWebSearch({ headers: { 'user-agent': 'Cherry Studio/1.0' } }), true)
+  assert.equal(shouldInjectClaudeWebSearch({ headers: { 'user-agent': 'Lobe-Chat/1.0' } }), true)
+  assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'unknown' }), false)
+  assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'third_party_sdk' }), false)
+  assert.equal(shouldInjectClaudeWebSearch({ headers: { 'user-agent': 'Go-http-client/1.1' } }), false)
+  assert.equal(shouldInjectClaudeWebSearch({ headers: { 'user-agent': 'python-requests/2.32' } }), false)
+  assert.equal(shouldInjectClaudeWebSearch({ headers: { 'user-agent': 'OpenAI/Python 1.40' } }), false)
+  assert.equal(shouldInjectClaudeWebSearch({ headers: { 'user-agent': 'curl/8.6.0' } }), false)
+  assert.equal(shouldInjectClaudeWebSearch({ clientClass: 'claude_code_official' }), false)
 })
 
 test('OpenAI web_search type is not dropped during convert', () => {

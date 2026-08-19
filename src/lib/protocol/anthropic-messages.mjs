@@ -2,33 +2,19 @@
  * Official Messages body shaping only.
  * The HTTP hop lives in the per-slot Go worker. This file only sanitizes the body.
  */
-const ALLOWED_BODY = new Set([
-  'model',
-  'messages',
-  'system',
-  'max_tokens',
-  'stream',
-  'temperature',
-  'top_p',
-  'top_k',
-  'stop_sequences',
-  'stop',
-  'tools',
-  'tool_choice',
-  'metadata',
-  'thinking',
-  'context_management',
-])
+import { copyOfficialAnthropicFields } from './sanitize.mjs'
 
 export function officialMessagesBody(body = {}, { stream = undefined } = {}) {
-  const out = {}
-  for (const [k, v] of Object.entries(body || {})) {
-    if (ALLOWED_BODY.has(k) && v !== undefined) out[k] = v
-  }
+  const out = copyOfficialAnthropicFields(body)
   if (stream !== undefined) out.stream = !!stream
   if (!out.max_tokens) out.max_tokens = 8192
   if (Array.isArray(out.tools) && out.tools.length === 0) delete out.tools
   if (out.tool_choice && !out.tools) delete out.tool_choice
+  if (out.stop_sequences) delete out.stop
+  else if (out.stop != null) {
+    out.stop_sequences = Array.isArray(out.stop) ? out.stop : [out.stop]
+    delete out.stop
+  }
   return out
 }
 

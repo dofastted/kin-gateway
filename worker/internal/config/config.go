@@ -80,19 +80,19 @@ func (c *Config) applyDefaults() {
 		c.RequestTimeoutSec = 180
 	}
 	if c.FirstByteSecs <= 0 {
-		c.FirstByteSecs = 30
+		c.FirstByteSecs = 120
 	}
 	if c.IdleTimeoutSecs <= 0 {
-		c.IdleTimeoutSecs = 60
+		c.IdleTimeoutSecs = 180
 	}
 	if c.MaxRequestBytes <= 0 {
-		c.MaxRequestBytes = 8 << 20
+		c.MaxRequestBytes = 32 << 20
 	}
 	if c.MaxResponseBytes <= 0 {
 		c.MaxResponseBytes = 64 << 20
 	}
 	if c.MaxEventBytes <= 0 {
-		c.MaxEventBytes = 8 << 20
+		c.MaxEventBytes = 32 << 20
 	}
 	if c.DeliveryMode == "" {
 		c.DeliveryMode = "realtime"
@@ -169,8 +169,8 @@ func FromEnv() (Config, error) {
 	}
 	cfg.RefreshSkewSecs = envInt("KIN_REFRESH_SKEW_SECONDS", 300)
 	cfg.RequestTimeoutSec = envInt("KIN_WORKER_REQUEST_TIMEOUT_SECONDS", 180)
-	cfg.FirstByteSecs = envInt("KIN_WORKER_FIRST_BYTE_SECONDS", 30)
-	cfg.IdleTimeoutSecs = envInt("KIN_WORKER_IDLE_SECONDS", 60)
+	cfg.FirstByteSecs = envInt("KIN_WORKER_FIRST_BYTE_SECONDS", 120)
+	cfg.IdleTimeoutSecs = envInt("KIN_WORKER_IDLE_SECONDS", 180)
 	cfg.applyDefaults()
 	return cfg, cfg.Validate()
 }

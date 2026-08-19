@@ -210,11 +210,11 @@ function writeWorkerFiles(vm, projectRoot) {
     delivery_mode: 'realtime',
     refresh_skew_seconds: 300,
     request_timeout_seconds: 180,
-    first_byte_timeout_seconds: 30,
-    idle_timeout_seconds: 60,
-    max_request_bytes: 8 * 1024 * 1024,
+    first_byte_timeout_seconds: 120,
+    idle_timeout_seconds: 180,
+    max_request_bytes: 32 * 1024 * 1024,
     max_response_bytes: 64 * 1024 * 1024,
-    max_event_bytes: 8 * 1024 * 1024,
+    max_event_bytes: 32 * 1024 * 1024,
   }
   fs.writeFileSync(paths.config, JSON.stringify(workerConfig, null, 2) + '\n', { mode: 0o600 })
   try {

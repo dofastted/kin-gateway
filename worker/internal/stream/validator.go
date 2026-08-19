@@ -58,13 +58,13 @@ func Pump(
 	}
 	defer body.Close()
 	if options.MaxEventBytes <= 0 {
-		options.MaxEventBytes = 8 << 20
+		options.MaxEventBytes = 32 << 20
 	}
 	if options.FirstByte <= 0 {
-		options.FirstByte = 30 * time.Second
+		options.FirstByte = 120 * time.Second
 	}
 	if options.Idle <= 0 {
-		options.Idle = 60 * time.Second
+		options.Idle = 180 * time.Second
 	}
 	events := make(chan Event, 1)
 	readErrors := make(chan error, 1)

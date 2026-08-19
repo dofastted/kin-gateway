@@ -20,6 +20,36 @@ test('sanitize keeps official context_management and maps stop → stop_sequence
   assert.equal(out.context_management.edits[0].keep, 'all')
 })
 
+test('sanitize passthrough keeps output_config and drops OpenAI leftovers', () => {
+  const out = sanitizeAnthropicBody({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: 'hi' }],
+    max_tokens: 32,
+    output_config: {
+      format: { type: 'json_schema', schema: { type: 'object', properties: { price: { type: 'number' } } } },
+      effort: 'medium',
+    },
+    output_format: { type: 'json_schema' },
+    container: { id: 'cntr_1' },
+    mcp_servers: [{ name: 'files', type: 'url', url: 'https://example.invalid' }],
+    service_tier: 'auto',
+    extra_body: { should_drop: true },
+    settings: { theme: 'light' },
+    n: 1,
+    response_format: { type: 'json_object' },
+  })
+  assert.equal(out.output_config.effort, 'medium')
+  assert.equal(out.output_config.format.type, 'json_schema')
+  assert.equal(out.output_format.type, 'json_schema')
+  assert.equal(out.container.id, 'cntr_1')
+  assert.equal(out.mcp_servers[0].name, 'files')
+  assert.equal(out.service_tier, 'auto')
+  assert.equal(out.extra_body, undefined)
+  assert.equal(out.settings, undefined)
+  assert.equal(out.n, undefined)
+  assert.equal(out.response_format, undefined)
+})
+
 test('third-party persona appends official line and keeps caller system', () => {
   const { claude } = toClaudeMessages('openai.chat', {
     model: 'claude-haiku-4-5-20251001',
