@@ -34,7 +34,9 @@
 
 attempts 包含每次选中的 VM/账号、错误域、cooldown、响应提交边界和终态。日志：`normal` 摘要；`debug` 另存脱敏 body 快照。`X-Request-ID` 回写响应头。
 
-### 请求日志协议字段（与 Sub2API usage_logs 对齐）
+### 请求日志协议字段
+
+与 Sub2API `usage_logs` 对齐。
 
 每行摘要除 `input_tokens` / `output_tokens` 外还包含：
 
@@ -46,7 +48,32 @@ attempts 包含每次选中的 VM/账号、错误域、cooldown、响应提交�
 | `first_token_ms` | 首个业务事件延迟（流式实测；由 worker 数据面回传） |
 | `stop_reason` | Anthropic 终态 stop_reason（流式来自 `message_delta`） |
 
-流式请求的 usage 由 Go worker SSE 校验器合并后经 `X-Kin-Usage`/`X-Kin-Model`/`X-Kin-Stop-Reason` trailer 回传，与非流式同样只在终态 attempt 记一次。`/dashboard`、`/usage`、`/request-logs/stats` 的汇总均含缓存 token；`/vms/:id` 的 `account.runtime_window` 提供结构化 5h 会话窗口与限流 reset（`rate_limited_at` / `rate_limit_reset_at` / `overload_until` / `session_window_start|end|status`）。
+流式请求的 usage 由 Go worker 的 SSE 校验器合并后经 `X-Kin-Usage` / `X-Kin-Model` / `X-Kin-Stop-Reason` trailer 回传，与非流式同样只在终态 attempt 记一次。客户端可见的 usage 字段映射见 [API.md](API.md#4-usage-字段口径)。
+
+### 汇总口径
+
+| 端点 | 汇总字段 |
+|------|----------|
+| `/request-logs/stats` | `totals` 与每个 `buckets[]`：`requests`、`errors`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_creation_tokens`、`avg_duration_ms`、`avg_first_token_ms` |
+| `/usage` | 每账号 + `totals`：`requests`、`tokens_in`、`tokens_out`、`cache_read_tokens`、`cache_creation_tokens`、`peak_5h`、`peak_7d`、`near_limit` |
+| `/dashboard` | `summary` 同上（含缓存 token），另有 `db_totals`（直接来自 `request_logs` 表，重启不丢） |
+
+### 账号运行态窗口
+
+`/vms/:id` 的 `account.runtime_window` 来自 `account_runtime_states`，提供结构化的限流与会话窗口（毫秒时间戳）：
+
+```json
+{
+  "rate_limited_at": null,
+  "rate_limit_reset_at": null,
+  "overload_until": null,
+  "session_window_start": null,
+  "session_window_end": null,
+  "session_window_status": "active"
+}
+```
+
+`rate_limited_at` / `rate_limit_reset_at` 在账号级 429 冷却时写入，`overload_until` 对应 529/上游过载，`session_window_*` 由 5h 窗口 reset 反推得到（`start = end - 5h`）。
 
 ## 备份 / 代理
 
