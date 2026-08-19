@@ -57,14 +57,24 @@
 ## 目录
 
 ```text
-src/server.mjs     入口
-src/lib/           运行时
-worker/            Go 槽位数据面
-src/config/        路由等（密钥不入库）
-docs/              OAUTH / PANEL_API
-test/              unit · e2e · fixtures
-scripts/           sessionKey 导入
+src/server.mjs        入口（HTTP 路由 + 控制面装配）
+src/lib/core/         config · errors · security · intercept
+src/lib/protocol/     协议转换 / 请求清洗 / 模型目录（convert、sanitize、anthropic-*、models…）
+src/lib/identity/     槽位身份改写与人设（vm-identity、identity-rewrite、crs-persona、crs-headers）
+src/lib/pool/         账号池调度 · failover · 错误策略 · sticky · 配额
+src/lib/transport/    Go worker Unix socket 客户端 + 测试 mock
+src/lib/vm/           VM 注册 / Docker 运行时 / 文件锁 / DB 镜像 / 代理池
+src/lib/oauth/        凭证归一化持久化 · 用量探测
+src/lib/admin/        面板 API · API key · 请求日志 · 备份
+src/lib/db/           SQLite migrations / repos
+worker/               Go 槽位数据面（cmd + internal）
+src/config/           路由等（密钥不入库）
+docs/                 OAUTH / PANEL_API / 架构对比
+test/                 unit · e2e · fixtures（Go 测试在 worker/internal 内）
+scripts/              sessionKey 导入
 ```
+
+生产代码已无 Claude CLI 残留：不再存在 CLI 推理、CLI 凭证 harvest、CLI 模型目录或每请求 Node UID 子进程。
 
 ## 运行
 

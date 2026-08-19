@@ -845,15 +845,21 @@ KIN 不需要复制 Sub2API 的全部 SaaS，也不应回退到 Claude CLI。最
 
 ### KIN
 
+> 本轮清理后，快照中的 `crs-relay.mjs`（每请求 Node UID worker）、`forward-mode.mjs`（CLI fallback 判定）、`oauth-refresh.mjs`（CLI harvest guard）以及全部 Claude CLI 推理模块已从代码库删除；`src/lib` 已按职责重组为 `core/ protocol/ identity/ pool/ transport/ vm/ oauth/ admin/ db/`。以下索引指向当前实现：
+
 - [`src/server.mjs`](../src/server.mjs)
-- [`src/lib/crs-relay.mjs`](../src/lib/crs-relay.mjs)
-- [`src/lib/crs-headers.mjs`](../src/lib/crs-headers.mjs)
-- [`src/lib/crs-persona.mjs`](../src/lib/crs-persona.mjs)
-- [`src/lib/forward-mode.mjs`](../src/lib/forward-mode.mjs)
-- [`src/lib/execution-context.mjs`](../src/lib/execution-context.mjs)
-- [`src/lib/vm-runtime.mjs`](../src/lib/vm-runtime.mjs)
-- [`src/lib/oauth-refresh.mjs`](../src/lib/oauth-refresh.mjs)
-- [`src/lib/crs-usage-probe.mjs`](../src/lib/crs-usage-probe.mjs)
+- [`src/lib/transport/go-worker-client.mjs`](../src/lib/transport/go-worker-client.mjs)
+- [`src/lib/pool/pool-scheduler.mjs`](../src/lib/pool/pool-scheduler.mjs)
+- [`src/lib/pool/failover-runner.mjs`](../src/lib/pool/failover-runner.mjs)
+- [`src/lib/pool/upstream-error-policy.mjs`](../src/lib/pool/upstream-error-policy.mjs)
+- [`src/lib/identity/identity-rewrite.mjs`](../src/lib/identity/identity-rewrite.mjs)
+- [`src/lib/identity/crs-headers.mjs`](../src/lib/identity/crs-headers.mjs)
+- [`src/lib/identity/crs-persona.mjs`](../src/lib/identity/crs-persona.mjs)
+- [`src/lib/vm/execution-context.mjs`](../src/lib/vm/execution-context.mjs)
+- [`src/lib/vm/vm-runtime.mjs`](../src/lib/vm/vm-runtime.mjs)
+- [`src/lib/oauth/oauth-credentials.mjs`](../src/lib/oauth/oauth-credentials.mjs)
+- [`src/lib/oauth/crs-usage-probe.mjs`](../src/lib/oauth/crs-usage-probe.mjs)
+- [`worker/`](../worker/)（Go 槽位数据面：SOCKS5、OAuth refresh、SSE 终态）
 
 ### CRS
 

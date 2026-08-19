@@ -8,7 +8,7 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
-import { loadConfig, saveVmPatch, reloadActiveVm } from './lib/core/config.mjs'
+import { loadConfig, reloadActiveVm } from './lib/core/config.mjs'
 import {
   extractApiKey, timingSafeEqualStr, redactSecrets, createRateLimiter,
   verifyPanelLogin, createPanelSession, verifyPanelSession, extractPanelToken, panelSessionCookie, clearPanelSessionCookie, revokePanelSession,
@@ -39,8 +39,8 @@ import { ApiKeyStore, publicKeyView } from './lib/admin/api-keys.mjs'
 import { RequestLogStore, summarizeBody } from './lib/admin/request-log.mjs'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm/vm-registry.mjs'
 import {
-  makeError, mapUpstreamError, validateRequestBody, inspectRequestBody,
-  mapQuotaGateError, mapModelError, ErrorType, ErrorCode,
+  makeError, mapUpstreamError, validateRequestBody,
+  mapModelError, ErrorType, ErrorCode,
 } from './lib/core/errors.mjs'
 import * as panel from './lib/admin/panel-api.mjs'
 import { ProxyPool } from './lib/vm/proxy-pool.mjs'
