@@ -23,6 +23,8 @@ function writeVm(root, id, patch = {}) {
     locale: 'en_US.UTF-8',
     seed_policy: { reject_client_settings: true },
     policy: { maxConcurrency: 2 },
+    proxy_cli_enabled: true,
+    proxy: { id: `proxy-${id}`, url: 'socks5h://127.0.0.1:1080', host: '127.0.0.1', port: 1080 },
     claude: {
       access_token: `at-${id}`,
       refresh_token: `rt-${id}`,
@@ -44,7 +46,7 @@ function fixture() {
   writeVm(root, 'vm-01')
   writeVm(root, 'vm-02', { claude: { access_token: 'at-vm-02', account_uuid: 'acct-vm-02' } })
   writeVm(root, 'vm-03', { schedulable: false })
-  writeVm(root, 'vm-04', { claude: { access_token: null, session_key: null } })
+  writeVm(root, 'vm-04', { claude: { access_token: null, refresh_token: null, session_key: null } })
   return {
     root,
     cfg: { paths: { project: root }, limits: { upstream_timeout_ms: 120000 } },
@@ -57,7 +59,7 @@ test('capabilities are honest: CRS default, client tools, docker runtime', () =>
   assert.equal(GATEWAY_CAPABILITIES.tool_execution, 'client')
   assert.equal(GATEWAY_CAPABILITIES.workspace_default, 'client')
   assert.equal(GATEWAY_CAPABILITIES.forward_default, 'relay')
-  assert.equal(GATEWAY_CAPABILITIES.multi_turn_native, false)
+  assert.equal(GATEWAY_CAPABILITIES.multi_turn_native, true)
   assert.equal(GATEWAY_CAPABILITIES.claude_session, false)
   assert.equal(GATEWAY_CAPABILITIES.kernel, 'mixed-os-docker')
   assert.equal(GATEWAY_CAPABILITIES.runtime, 'docker-container')
@@ -90,7 +92,7 @@ test('buildExecutionContext does not read a process-global vm', () => {
   assert.equal(built.exec.accountId, 'acct-vm-02')
   assert.equal(built.exec.oauth.access_token, 'at-vm-02')
   assert.match(built.exec.homeDir, /vms\/vm-02\/cli-home$/)
-  assert.equal(built.exec.proxyUrl, null)
+  assert.equal(built.exec.proxyUrl, 'socks5h://127.0.0.1:1080')
 
   const opts = buildCliOptsFromExec(built.exec, { model: 'claude-haiku-4-5-20251001' })
   assert.equal(opts.accessToken, 'at-vm-02')

@@ -57,12 +57,13 @@ test('validateOfficialModel only accepts CLI catalog', () => {
   assert.equal(validateOfficialModel('claude-opus-4-1').ok, false)
 })
 
-test('empty catalog fails closed — no unverified claude-* passthrough', () => {
+test('empty local catalog accepts only well-formed Claude IDs while worker catalog loads', () => {
   setCliModelCatalogForTest([])
   const r = resolveCliModel('claude-sonnet-5', [])
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'cli_catalog_unavailable')
-  assert.equal(validateOfficialModel('claude-sonnet-5').ok, false)
+  assert.equal(validateOfficialModel('claude-sonnet-5').ok, true)
+  assert.equal(validateOfficialModel('claude-made-up-99').ok, false)
 })
 
 test('models module does not spoof Anthropic HTTP', () => {

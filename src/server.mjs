@@ -135,6 +135,9 @@ const LIMITATIONS = {
 }
 
 const cfg = loadConfig()
+if (!getPanelAdmin().password) {
+  throw new Error('KIN_ADMIN_PASSWORD must be set; insecure default panel credentials are disabled')
+}
 fs.mkdirSync(cfg.paths.captures, { recursive: true })
 const oauthGuard = createOauthGuard(cfg)
 

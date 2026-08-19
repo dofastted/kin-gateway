@@ -61,12 +61,16 @@ export const HOP_BY_HOP = new Set([
 export function getPanelAdmin() {
   return {
     username: process.env.KIN_ADMIN_USER || 'admin',
-    password: process.env.KIN_ADMIN_PASSWORD || '123456qwe',
+    password: process.env.KIN_ADMIN_PASSWORD || '',
   }
 }
 
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000
-const panelSessions = new Map() // token -> { user, exp }
+const panelSessions = new Map() // sha256(token) -> { user, exp }
+
+function panelSessionKey(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex')
+}
 
 function sessionFile() {
   const dir = process.env.KIN_DATA_DIR || path.join(process.cwd(), 'data')
@@ -79,9 +83,12 @@ function loadSessions() {
     if (!fs.existsSync(f)) return
     const raw = JSON.parse(fs.readFileSync(f, 'utf8'))
     const now = Date.now()
-    for (const [token, s] of Object.entries(raw || {})) {
-      if (s && s.exp > now && token.startsWith('kin-panel-')) {
-        panelSessions.set(token, { user: s.user, exp: s.exp })
+    for (const [storedKey, s] of Object.entries(raw || {})) {
+      if (s && s.exp > now) {
+        const key = storedKey.startsWith('kin-panel-')
+          ? panelSessionKey(storedKey)
+          : storedKey
+        panelSessions.set(key, { user: s.user, exp: s.exp })
       }
     }
   } catch {}
@@ -104,22 +111,23 @@ loadSessions()
 
 export function createPanelSession(username, ttlMs = SESSION_TTL_MS) {
   const token = 'kin-panel-' + crypto.randomBytes(24).toString('hex')
-  panelSessions.set(token, { user: username, exp: Date.now() + ttlMs })
+  panelSessions.set(panelSessionKey(token), { user: username, exp: Date.now() + ttlMs })
   saveSessions()
   return token
 }
 
 export function verifyPanelSession(token) {
   if (!token || !token.startsWith('kin-panel-')) return null
-  let s = panelSessions.get(token)
+  const key = panelSessionKey(token)
+  let s = panelSessions.get(key)
   if (!s) {
     // reload from disk once (multi-process / restart)
     loadSessions()
-    s = panelSessions.get(token)
+    s = panelSessions.get(key)
   }
   if (!s) return null
   if (Date.now() > s.exp) {
-    panelSessions.delete(token)
+    panelSessions.delete(key)
     saveSessions()
     return null
   }
@@ -128,7 +136,7 @@ export function verifyPanelSession(token) {
 
 export function revokePanelSession(token) {
   if (!token) return
-  panelSessions.delete(token)
+  panelSessions.delete(panelSessionKey(token))
   saveSessions()
 }
 

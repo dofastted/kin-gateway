@@ -1,24 +1,16 @@
 /**
- * Long-session + multi-protocol: same x-session-id across sequential hops.
- * After turn 1 the mock session_id is bound; later hops must --resume
- * and send only the trailing user turn (history lives in the CLI session).
+ * Long-session + multi-protocol: same x-session-id stays on the terminally
+ * successful pool account while every HTTP attempt carries native history.
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
 import path from 'node:path'
 import { startGateway, api, takeTrace } from '../harness.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 const SID = 'conv-long-sim-001'
 
-function hasResume(tr, sessionId = 'sess-mock-1') {
-  if (!tr?.argv) return false
-  const i = tr.argv.indexOf('--resume')
-  return i >= 0 && tr.argv[i + 1] === sessionId
-}
-
-test('same x-session-id: turn1 no resume, later hops --resume and drop history', async () => {
+test('same x-session-id keeps native full history without CLI resume', async () => {
   const gw = await startGateway({ mockText: 'ack' })
   try {
     const h = { 'x-session-id': SID, 'x-kin-forward': 'cli' }
@@ -30,8 +22,8 @@ test('same x-session-id: turn1 no resume, later hops --resume and drop history',
     assert.equal(t1.status, 200, t1.text)
     const tr1 = takeTrace(gw)
     assert.ok(tr1, 'trace1')
-    assert.equal(hasResume(tr1), false, 'first hop must not --resume')
-    assert.match(tr1.stdin, /turn-one-hello/)
+    assert.equal(tr1.argv, undefined)
+    assert.equal(tr1.body.messages[0].content, 'turn-one-hello')
 
     const t2 = await api(gw, 'POST', '/v1/messages', {
       headers: h,
@@ -48,15 +40,16 @@ test('same x-session-id: turn1 no resume, later hops --resume and drop history',
     assert.equal(t2.status, 200, t2.text)
     const tr2 = takeTrace(gw)
     assert.ok(tr2, 'trace2')
-    assert.equal(hasResume(tr2), true, `expected --resume sess-mock-1, argv=${JSON.stringify(tr2.argv)}`)
-    assert.match(tr2.stdin, /turn-two-followup/)
-    assert.doesNotMatch(tr2.stdin, /turn-one-hello/)
+    assert.equal(tr2.argv, undefined)
+    assert.equal(tr2.body.messages.length, 3)
+    assert.equal(tr2.body.messages[0].content, 'turn-one-hello')
+    assert.equal(tr2.body.messages[2].content, 'turn-two-followup')
   } finally {
     await gw.stop()
   }
 })
 
-test('one sticky session, three protocols + stream, resume holds', async () => {
+test('one sticky session holds across three protocols and stream', async () => {
   const gw = await startGateway({ mockText: 'ack' })
   try {
     const h = { 'x-session-id': 'conv-multi-proto-1', 'x-kin-forward': 'cli' }
@@ -66,7 +59,7 @@ test('one sticky session, three protocols + stream, resume holds', async () => {
       body: { model: MODEL, max_tokens: 16, messages: [{ role: 'user', content: 'p-anthropic' }] },
     })
     assert.equal(a.status, 200, a.text)
-    assert.equal(hasResume(takeTrace(gw)), false)
+    assert.equal(takeTrace(gw).argv, undefined)
 
     const b = await api(gw, 'POST', '/v1/chat/completions', {
       headers: h,
@@ -75,9 +68,8 @@ test('one sticky session, three protocols + stream, resume holds', async () => {
     assert.equal(b.status, 200, b.text)
     assert.match(JSON.stringify(b.json), /ack/)
     const trChat = takeTrace(gw)
-    assert.equal(hasResume(trChat), true)
-    assert.match(trChat.stdin, /p-openai-chat/)
-    assert.doesNotMatch(trChat.stdin, /p-anthropic/)
+    assert.equal(trChat.argv, undefined)
+    assert.match(JSON.stringify(trChat.body.messages), /p-openai-chat/)
 
     const c = await api(gw, 'POST', '/v1/responses', {
       headers: h,
@@ -85,8 +77,8 @@ test('one sticky session, three protocols + stream, resume holds', async () => {
     })
     assert.equal(c.status, 200, c.text)
     const trResp = takeTrace(gw)
-    assert.equal(hasResume(trResp), true)
-    assert.match(trResp.stdin, /p-openai-responses/)
+    assert.equal(trResp.argv, undefined)
+    assert.match(JSON.stringify(trResp.body.messages), /p-openai-responses/)
 
     const res = await fetch(gw.baseUrl + '/v1/messages', {
       method: 'POST',
@@ -107,23 +99,24 @@ test('one sticky session, three protocols + stream, resume holds', async () => {
     assert.match(sse, /event:/)
     assert.match(sse, /data:/)
     const trSse = takeTrace(gw)
-    assert.equal(hasResume(trSse), true)
-    assert.match(trSse.stdin, /p-stream/)
+    assert.equal(trSse.argv, undefined)
+    assert.match(JSON.stringify(trSse.body.messages), /p-stream/)
 
     const snap = await api(gw, 'GET', '/admin/routing')
     assert.equal(snap.status, 200, snap.text)
     const sessions = snap.json?.sticky?.sessions || {}
     const hit = sessions['conv-multi-proto-1']
     assert.ok(hit, `missing sticky bind: ${JSON.stringify(snap.json?.sticky)}`)
-    assert.equal(hit.session_id, 'sess-mock-1')
+    assert.equal(hit.session_id, null)
     assert.ok(hit.hits >= 4, `hits=${hit.hits}`)
     assert.equal(hit.vm_id, 'vm-sim-01')
+    assert.equal(hit.account_id, 'acct-seed')
   } finally {
     await gw.stop()
   }
 })
 
-test('different x-session-id does not inherit --resume', async () => {
+test('different x-session-id creates independent sticky bindings', async () => {
   const gw = await startGateway({ mockText: 'ack' })
   try {
     await api(gw, 'POST', '/v1/messages', {
@@ -137,8 +130,11 @@ test('different x-session-id does not inherit --resume', async () => {
     })
     const trB = takeTrace(gw)
     assert.ok(trB)
-    assert.equal(hasResume(trB), false, 'new conversation must start clean')
-    assert.match(trB.stdin, /only-B/)
+    assert.equal(trB.argv, undefined)
+    assert.equal(trB.body.messages[0].content, 'only-B')
+    const snap = await api(gw, 'GET', '/admin/routing')
+    assert.ok(snap.json.sticky.sessions['conv-A'])
+    assert.ok(snap.json.sticky.sessions['conv-B'])
   } finally {
     await gw.stop()
   }
@@ -155,8 +151,8 @@ test('sticky bindings persist in sqlite after a long sequential session', async 
       })
       assert.equal(r.status, 200, r.text)
       const tr = takeTrace(gw)
-      if (i === 0) assert.equal(hasResume(tr), false)
-      else assert.equal(hasResume(tr), true)
+      assert.equal(tr.argv, undefined)
+      assert.equal(tr.body.messages[0].content, `n-${i}`)
     }
     // sticky bindings now live in the SQLite store (data/kin.db)
     const { DatabaseSync } = await import('node:sqlite')
@@ -164,7 +160,7 @@ test('sticky bindings persist in sqlite after a long sequential session', async 
     try {
       const row = db.prepare('SELECT * FROM sticky_sessions WHERE key = ?').get('conv-long-n')
       assert.ok(row, 'sticky binding row should exist in DB')
-      assert.equal(row.session_id, 'sess-mock-1')
+      assert.equal(row.session_id, null)
       assert.ok(row.hits >= 6)
     } finally {
       db.close()
