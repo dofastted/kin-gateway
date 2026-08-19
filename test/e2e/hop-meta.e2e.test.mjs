@@ -22,6 +22,7 @@ test('CRS default keeps thinking + max_tokens + temperature in official body', a
     assert.equal(tr.body.max_tokens, 99)
     assert.equal(tr.body.temperature, 0.2)
     assert.equal(tr.body.thinking.budget_tokens, 512)
+    assert.ok((tr.tools || []).includes('web_search'))
   } finally {
     await gw.stop()
   }
@@ -43,6 +44,7 @@ test('CRS default does not truncate a long official system (unofficial is replac
     const tr = readTrace(gw)
     assert.equal(tr?.via, 'go-worker')
     assert.equal(String(tr.system || '').length, 30000)
+    assert.ok(!(tr.tools || []).includes('web_search'))
   } finally {
     await gw.stop()
   }

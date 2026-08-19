@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { isAnthropicServerTool } from './web-search.mjs'
 
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -117,6 +118,7 @@ export function rewriteToolNames(body = {}, { enabled = true } = {}) {
   const forward = {}
   const reverse = {}
   out.tools = out.tools.map((tool) => {
+    if (isAnthropicServerTool(tool)) return tool
     const original = String(tool?.name || '')
     const rewritten = safeToolName(original, used)
     forward[original] = rewritten

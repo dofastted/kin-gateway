@@ -70,3 +70,12 @@ test('valid unique tool names are not changed', () => {
   })
   assert.deepEqual(result.body.tools.map((tool) => tool.name), ['read_file', 'write_file'])
 })
+
+test('server web_search tool is not renamed', () => {
+  const result = rewriteToolNames({
+    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+  })
+  assert.equal(result.body.tools[0].name, 'web_search')
+  assert.equal(result.body.tools[0].type, 'web_search_20250305')
+  assert.deepEqual(result.reverse, {})
+})

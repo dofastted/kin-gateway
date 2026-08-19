@@ -8,6 +8,7 @@ import { sanitizeAnthropicBody } from './sanitize.mjs'
 import { openaiReasoningToClaudeThinking, claudeThinkingToOpenAIReasoning } from './thinking.mjs'
 import { openaiContentToClaudeContent } from './images.mjs'
 import { remapCodexTools } from './codex-tools.mjs'
+import { CLAUDE_WEB_SEARCH_TOOL, isWebSearchTool } from './web-search.mjs'
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 
@@ -42,28 +43,42 @@ export function isClaudeMessagesShape(body) {
   )
 }
 
-/** OpenAI tools → Claude tools */
+/** OpenAI tools → Claude tools. Server search maps to web_search_20250305; function tools stay client tools. */
 export function openaiToolsToClaude(tools) {
   if (!Array.isArray(tools) || !tools.length) return undefined
-  return remapCodexTools(tools)
-    .filter((t) => t && (t.type === 'function' || t.function || t.name))
-    .map((t) => {
-      if (t.type === 'function' && t.function) {
-        return {
-          name: t.function.name,
-          description: t.function.description || '',
-          input_schema: t.function.parameters || { type: 'object', properties: {} },
-        }
-      }
-      // already Claude-ish
-      if (t.name && t.input_schema) return t
-      return {
-        name: t.name || t.function?.name,
-        description: t.description || '',
-        input_schema: t.input_schema || t.parameters || { type: 'object', properties: {} },
-      }
+  const seenSearch = new Set()
+  const out = []
+  for (const t of remapCodexTools(tools)) {
+    if (!t) continue
+    if (isWebSearchTool(t)) {
+      if (seenSearch.has('web_search')) continue
+      seenSearch.add('web_search')
+      out.push({ ...CLAUDE_WEB_SEARCH_TOOL })
+      continue
+    }
+    if (!(t.type === 'function' || t.function || t.name)) continue
+    if (t.type === 'function' && t.function) {
+      if (!t.function.name) continue
+      out.push({
+        name: t.function.name,
+        description: t.function.description || '',
+        input_schema: t.function.parameters || { type: 'object', properties: {} },
+      })
+      continue
+    }
+    if (t.name && t.input_schema) {
+      out.push(t)
+      continue
+    }
+    const name = t.name || t.function?.name
+    if (!name) continue
+    out.push({
+      name,
+      description: t.description || '',
+      input_schema: t.input_schema || t.parameters || { type: 'object', properties: {} },
     })
-    .filter((t) => t.name)
+  }
+  return out.length ? out : undefined
 }
 
 /** OpenAI tool_choice → Claude */
