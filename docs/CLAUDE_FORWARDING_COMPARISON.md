@@ -78,7 +78,7 @@
 
 - 本文是源码静态分析，没有用同一批真实 Claude 账号做四项目线上压测。
 - 不提供可用率、QPS、TTFT 等未经统一测试的绝对数值。
-- KIN 引用的 `/opt/kin-gateway/hypervisor/socks-egress.sh` 不在仓库中，本文无法审计其实现。
+- KIN 的宿主机 uid `iptables` REDIRECT（legacy gost）与 Go worker 显式 SOCKS 不能叠两层；槽位 SOCKS 目的地址必须在 REDIRECT 之前 RETURN。实现见 `src/lib/vm/socks-egress.mjs`。
 - 用户确认生产不再使用 Claude CLI 推理；最新源码仍保留 CLI fallback、VM workspace CLI 和 CLI 模型目录，本文将其视为残留兼容路径。
 - 使用订阅账号中继、账号共享或客户端身份重构可能涉及供应商条款风险；技术架构评价不代表法律或服务条款结论。
 
@@ -628,7 +628,7 @@ KIN 的方向是合理的，但应完成最后一步：
 | 每请求 worker/TLS | P1 | 长驻 worker + keep-alive |
 | 无队列和跨槽 failover | P1 | 已实现有界调度/failover |
 | stream 无 terminal 校验 | P1 | 已实现 SSE状态机和两种交付模式 |
-| proxy 脚本不在仓库 | P1 | 改为 worker显式 SOCKS5，不再依赖 direct fallback |
+| proxy 脚本不在仓库 / uid REDIRECT 与显式 SOCKS 叠层 | P1 | worker 显式 SOCKS5；宿主机对 SOCKS 目的地址 RETURN，不再把 greeting 拐进 gost |
 | unproxied slots 共用 UID | P1 | 所有 slot唯一 UID且 proxy必填 |
 | hard-coded wire profile | P2 | 部分缓解，仍是后续增强项 |
 | 同步 DB/文件 I/O | P2 | 仍是后续性能项 |

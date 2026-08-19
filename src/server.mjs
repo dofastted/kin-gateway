@@ -55,7 +55,8 @@ import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.m
 import { BackupService } from './lib/admin/backup-service.mjs'
 import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona } from './lib/identity/crs-persona.mjs'
-import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
+import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE, socksUidFor } from './lib/vm/vm-runtime.mjs'
+import { startSocksExemptScheduler } from './lib/vm/socks-egress.mjs'
 import {
   callGoWorker,
   streamGoWorker,
@@ -117,6 +118,7 @@ const LIMITATIONS = {
   kernel: 'one Docker container and one long-lived Go worker per slot; not a KVM guest',
   workspace: 'client only; VM/Claude-CLI inference has been removed',
   forward: 'Go worker uses the slot-bound SOCKS5 with no direct or CLI fallback',
+  egress: 'host uid iptables REDIRECT (legacy gost) must RETURN the slot SOCKS destination; guest has no proxy env',
   oauth: 'the Go slot worker is the sole refresh owner and uses the same slot SOCKS5',
   realtime_stream: 'account failover stops after the first downstream business event; verified mode buffers to message_stop',
 }
@@ -187,6 +189,17 @@ const proxyPool = new ProxyPool({
   },
 })
 proxyPool.startScheduler()
+{
+  const socksExempt = startSocksExemptScheduler({
+    projectRoot: cfg.paths.project,
+    socksUidFor,
+  })
+  if (!socksExempt.first?.ok) {
+    console.warn('[egress] uid SOCKS REDIRECT exemption failed:', socksExempt.first?.error || 'unknown')
+  } else if (socksExempt.first.results?.some((r) => r.applied)) {
+    console.log('[egress] slot SOCKS destinations exempted from host uid REDIRECT')
+  }
+}
 
 let runtimeRepo
 let attemptsRepo
