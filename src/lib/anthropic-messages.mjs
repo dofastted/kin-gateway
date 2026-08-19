@@ -1,6 +1,6 @@
 /**
  * Official Messages body shaping only.
- * HTTP hop lives in crs-relay.mjs (VM UID). This file only sanitizes the body.
+ * The HTTP hop lives in the per-slot Go worker. This file only sanitizes the body.
  */
 const ALLOWED_BODY = new Set([
   'model',
@@ -40,13 +40,13 @@ const DISABLED = {
     type: 'error',
     error: {
       type: 'api_error',
-      message: 'Direct host HTTP hop is disabled. Use crs-relay (VM UID) or CLI fallback.',
+      message: 'Direct host HTTP hop is disabled. All Anthropic I/O goes through the Go slot worker.',
     },
   },
   headers: {},
 }
 
-/** Host-process hop stays disabled. CRS uses crs-relay.mjs as uid worker. */
+/** Host-process hop stays disabled. The Go slot worker owns the Anthropic HTTP hop. */
 export async function callAnthropicMessages(_opts = {}) {
   return { ...DISABLED }
 }

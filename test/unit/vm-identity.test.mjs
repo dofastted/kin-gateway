@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { formatMetadataUserId, loadVmIdentity } from '../../src/lib/vm-identity.mjs'
-import { applyForwardReplace } from '../../src/lib/forward-mode.mjs'
+import { applyCrsIdentityReplace } from '../../src/lib/identity-rewrite.mjs'
 
 test('metadata.user_id is official JSON for current CLI', () => {
   const s = formatMetadataUserId({
@@ -15,11 +15,13 @@ test('metadata.user_id is official JSON for current CLI', () => {
   assert.equal(o.session_id, 'sess')
 })
 
-test('applyForwardReplace overwrites client metadata with VM identity', () => {
+test('identity replace overwrites client metadata with slot identity', () => {
   const id = {
+    deviceId: 'd'.repeat(64),
+    accountUuid: 'u',
     metadataUserId: formatMetadataUserId({ deviceId: 'd'.repeat(64), accountUuid: 'u', sessionId: 's' }),
   }
-  const out = applyForwardReplace('cli', { model: 'x', metadata: { user_id: 'windows-client' } }, id)
+  const out = applyCrsIdentityReplace({ model: 'x', metadata: { user_id: 'windows-client' } }, id)
   assert.notEqual(out.metadata.user_id, 'windows-client')
   assert.ok(String(out.metadata.user_id).includes('account_uuid'))
 })
@@ -43,7 +45,7 @@ test('loadVmIdentity builds settings from seed + timezone', () => {
 })
 
 
-test('default applyForwardReplace uses VM device_id', () => {
+test('identity replace uses the slot device_id', () => {
   const id = {
     deviceId: 'd'.repeat(64),
     accountUuid: 'u',
@@ -53,7 +55,7 @@ test('default applyForwardReplace uses VM device_id', () => {
   const inbound = {
     metadata: { user_id: JSON.stringify({ device_id: 'caller-dev', account_uuid: '', session_id: 'caller-sess' }) },
   }
-  const out = applyForwardReplace('relay', { model: 'x', metadata: inbound.metadata }, id, inbound)
+  const out = applyCrsIdentityReplace({ model: 'x', metadata: inbound.metadata }, id, inbound)
   const uid = JSON.parse(out.metadata.user_id)
   assert.equal(uid.device_id, 'd'.repeat(64))
   assert.equal(uid.account_uuid, 'u')

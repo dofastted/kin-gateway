@@ -5,8 +5,6 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   pickSchedulableVmId,
-  buildExecutionContext,
-  buildCliOptsFromExec,
   resolveVmProxyUrl,
   GATEWAY_CAPABILITIES,
   snapshotOauth,
@@ -71,33 +69,6 @@ test('pickSchedulableVmId prefers sticky then active, skips unschedulable / no-t
   assert.equal(pickSchedulableVmId(root, 'vm-03'), 'vm-01')
   assert.equal(pickSchedulableVmId(root, 'vm-04'), 'vm-01')
   assert.equal(pickSchedulableVmId(root, null), 'vm-01')
-})
-
-test('buildExecutionContext does not read a process-global vm', () => {
-  const { cfg } = fixture()
-  const stickyRouter = {
-    extractKey: () => 'conv-1',
-    resolve: () => ({ accountId: 'acct-vm-02', vmId: 'vm-02' }),
-  }
-  const built = buildExecutionContext({
-    cfg,
-    inbound: { model: 'claude-haiku-4-5-20251001' },
-    req: { headers: {} },
-    protocol: 'anthropic.messages',
-    pathName: '/v1/messages',
-    stickyRouter,
-  })
-  assert.equal(built.ok, true)
-  assert.equal(built.exec.vmId, 'vm-02')
-  assert.equal(built.exec.accountId, 'acct-vm-02')
-  assert.equal(built.exec.oauth.access_token, 'at-vm-02')
-  assert.match(built.exec.homeDir, /vms\/vm-02\/cli-home$/)
-  assert.equal(built.exec.proxyUrl, 'socks5h://127.0.0.1:1080')
-
-  const opts = buildCliOptsFromExec(built.exec, { model: 'claude-haiku-4-5-20251001' })
-  assert.equal(opts.accessToken, 'at-vm-02')
-  assert.equal(opts.homeDir, built.exec.homeDir)
-  assert.equal(opts.timezone, 'America/Los_Angeles')
 })
 
 test('resolveVmProxyUrl stays off unless proxy_cli_enabled', () => {

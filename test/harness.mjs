@@ -1,5 +1,6 @@
 /**
- * Spawn src/server.mjs against a temp PROJECT + mock Claude CLI.
+ * Spawn src/server.mjs against a temp PROJECT with the in-process
+ * Anthropic mock (KIN_CRS_MOCK=1). No CLI, no network.
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -12,7 +13,6 @@ import { createRequire } from 'node:module'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const GATEWAY_ROOT = path.resolve(__dirname, '../src')
 export const REPO_ROOT = path.resolve(__dirname, '..')
-export const MOCK_CLAUDE = path.join(__dirname, 'mocks', 'mock-claude.mjs')
 export const TEST_API_KEY = 'sk-kin-test-sim-001'
 
 export function pickFreePort() {
@@ -89,9 +89,6 @@ export async function startGateway(opts = {}) {
     KIN_PROJECT_ROOT: project,
     KIN_CAPTURES_DIR: captures,
     KIN_DATA_DIR: dataDir,
-    KIN_CLI_LAUNCHER: 'direct',
-    KIN_DISABLE_PRIVDROP: '1',
-    CLAUDE_CLI_PATH: MOCK_CLAUDE,
     KIN_FAKE_SESSION_OAUTH: '1',
     KIN_DIFF_CAPTURE: opts.diffCapture ?? '0',
     KIN_UPSTREAM_TIMEOUT: String(opts.timeoutMs ?? 8000),
@@ -99,7 +96,6 @@ export async function startGateway(opts = {}) {
     KIN_MOCK_TRACE_FILE: traceFile,
     KIN_MOCK_TEXT: opts.mockText || 'pong',
     KIN_CRS_MOCK: '1',
-    KIN_CLI_MODELS_CACHE: path.join(dataDir, 'cli-models.json'),
   }
   if (opts.env) Object.assign(env, opts.env)
 
@@ -197,23 +193,6 @@ export function listCaptures(gw) {
 export function latestHopMeta(gw) {
   const caps = listCaptures(gw).filter((c) => c.hop_meta)
   return caps.length ? caps[caps.length - 1].hop_meta : null
-}
-
-export function listMockClaudePids() {
-  const out = []
-  let names
-  try { names = fs.readdirSync('/proc') } catch { return out }
-  for (const pid of names) {
-    if (!/^\d+$/.test(pid)) continue
-    let cmd = ''
-    try { cmd = fs.readFileSync(path.join('/proc', pid, 'cmdline'), 'utf8') } catch { continue }
-    // Catalog harvest uses `mock-claude --version` and can race with asserts;
-    // only count hop processes (stream-json / long-lived) as orphans.
-    if (!cmd.includes('mock-claude')) continue
-    if (cmd.includes('--version')) continue
-    out.push({ pid, cmd: cmd.replace(/\0/g, ' ') })
-  }
-  return out
 }
 
 export function requireNoFetch() {

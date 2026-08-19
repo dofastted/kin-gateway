@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startGateway, api, readTrace } from '../harness.mjs'
 import { CRS_OFFICIAL_SYSTEM } from '../../src/lib/crs-persona.mjs'
-import { uuidFromSeed } from '../../src/lib/forward-mode.mjs'
+import { uuidFromSeed } from '../../src/lib/identity-rewrite.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 
@@ -14,7 +14,7 @@ test('default POST /v1/messages uses Go worker pool, not CLI', async () => {
     })
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
-    assert.equal(tr.via, 'crs-relay')
+    assert.equal(tr.via, 'go-worker')
     assert.ok(!tr.argv)
     assert.equal(tr.system, CRS_OFFICIAL_SYSTEM)
   } finally {
@@ -53,7 +53,7 @@ test('explicit x-kin-forward: cli is ignored by Go-only inference path', async (
     })
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
-    assert.equal(tr.via, 'crs-relay')
+    assert.equal(tr.via, 'go-worker')
     assert.equal(tr.argv, undefined)
   } finally {
     await gw.stop()

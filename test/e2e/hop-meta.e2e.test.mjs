@@ -18,7 +18,7 @@ test('CRS default keeps thinking + max_tokens + temperature in official body', a
     })
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
-    assert.equal(tr?.via, 'crs-relay')
+    assert.equal(tr?.via, 'go-worker')
     assert.equal(tr.body.max_tokens, 99)
     assert.equal(tr.body.temperature, 0.2)
     assert.equal(tr.body.thinking.budget_tokens, 512)
@@ -41,7 +41,7 @@ test('CRS default does not truncate a long official system (unofficial is replac
     })
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
-    assert.equal(tr?.via, 'crs-relay')
+    assert.equal(tr?.via, 'go-worker')
     assert.equal(String(tr.system || '').length, 30000)
   } finally {
     await gw.stop()

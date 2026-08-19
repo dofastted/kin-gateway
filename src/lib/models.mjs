@@ -1,16 +1,8 @@
 /**
- * Models the VM official Claude Code actually recognizes.
- * Harvested from the installed CLI binary — never a gateway Anthropic models HTTP call.
+ * Official Claude model catalog.
+ * Fed by the Go slot workers (`/internal/v1/models` via the slot SOCKS5).
+ * The gateway never calls Anthropic directly and never reads a CLI binary.
  */
-import fs from 'node:fs'
-import path from 'node:path'
-import { spawnSync } from 'node:child_process'
-
-const CLI_BIN_CANDIDATES = [
-  process.env.CLAUDE_CLI_PATH,
-  '/usr/bin/claude',
-  '/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe',
-].filter(Boolean)
 
 const FAMILY_ALIASES = new Map([
   ['sonnet', 'sonnet'],
@@ -23,27 +15,8 @@ const FAMILY_ALIASES = new Map([
   ['fable[1m]', 'fable'],
 ])
 
-const ID_RE = /"claude-(?:opus|sonnet|haiku|fable|3)[a-zA-Z0-9._-]{2,48}"/g
-
-/** @type {{ at: number, key: string, ids: string[], aliases: string[], version: string|null, bin: string|null }} */
-let cache = { at: 0, key: '', ids: [], aliases: [], version: null, bin: null }
-
-/** @deprecated kept so old imports do not crash; no longer the source of truth */
-export const OFFICIAL_CLAUDE_MODELS = []
-
-export function resolveCliBin(explicit) {
-  if (explicit && fs.existsSync(explicit)) {
-    try { return fs.realpathSync(explicit) } catch { return explicit }
-  }
-  for (const p of CLI_BIN_CANDIDATES) {
-    try {
-      if (p && fs.existsSync(p)) return fs.realpathSync(p)
-    } catch {
-      if (p && fs.existsSync(p)) return p
-    }
-  }
-  return null
-}
+/** @type {{ at: number, ids: string[], aliases: string[], source: string|null }} */
+let cache = { at: 0, ids: [], aliases: [], source: null }
 
 export function isCatalogModelId(id) {
   const s = String(id || '')
@@ -51,42 +24,6 @@ export function isCatalogModelId(id) {
   if (s.endsWith('-') || s.endsWith('.')) return false
   if (/\.md$/i.test(s)) return false
   return s.split('-').length >= 3
-}
-
-export function extractQuotedClaudeIds(buf) {
-  const text = Buffer.isBuffer(buf) ? buf.toString('latin1') : String(buf || '')
-  const ids = new Set()
-  ID_RE.lastIndex = 0
-  let m
-  while ((m = ID_RE.exec(text))) {
-    const id = m[0].slice(1, -1)
-    if (isCatalogModelId(id)) ids.add(id)
-  }
-  return [...ids]
-}
-
-function readBinaryQuotedIds(binPath) {
-  const fd = fs.openSync(binPath, 'r')
-  const chunk = Buffer.alloc(1024 * 1024)
-  const ids = new Set()
-  let carry = ''
-  try {
-    for (;;) {
-      const n = fs.readSync(fd, chunk, 0, chunk.length, null)
-      if (!n) break
-      const text = carry + chunk.toString('latin1', 0, n)
-      carry = text.slice(-80)
-      ID_RE.lastIndex = 0
-      let m
-      while ((m = ID_RE.exec(text))) {
-        const id = m[0].slice(1, -1)
-        if (isCatalogModelId(id)) ids.add(id)
-      }
-    }
-  } finally {
-    fs.closeSync(fd)
-  }
-  return [...ids]
 }
 
 function modelRank(id) {
@@ -121,7 +58,7 @@ export function latestIdForFamily(family, ids) {
   return preferred[0] || null
 }
 
-export function resolveCliModel(raw, ids = cache.ids) {
+export function resolveCatalogModel(raw, ids = cache.ids) {
   const m = String(raw || '').trim()
   if (!m) return { ok: false, reason: 'empty' }
   const bare = m.split('/').filter(Boolean).pop() || m
@@ -138,144 +75,51 @@ export function resolveCliModel(raw, ids = cache.ids) {
     return { ok: true, model: id }
   }
   // Fail closed: empty catalog or unknown id → reject. Never passthrough unverified claude-*.
-  return { ok: false, model: id, reason: ids.length ? 'not_in_cli_catalog' : 'cli_catalog_unavailable' }
+  return { ok: false, model: id, reason: ids.length ? 'not_in_catalog' : 'catalog_unavailable' }
 }
 
-function binCacheKey(bin) {
-  try {
-    const st = fs.statSync(bin)
-    return `${bin}:${st.size}:${Math.floor(st.mtimeMs)}`
-  } catch {
-    return bin || 'missing'
-  }
-}
-
-function persistPath() {
-  return process.env.KIN_CLI_MODELS_CACHE
-    || path.join(process.cwd(), 'data', 'cli-models.json')
-}
-
-function readPersisted(key) {
-  try {
-    const raw = JSON.parse(fs.readFileSync(persistPath(), 'utf8'))
-    if (raw?.key === key && Array.isArray(raw.ids) && raw.ids.length) return raw
-  } catch {}
-  return null
-}
-
-function writePersisted(entry) {
-  try {
-    const p = persistPath()
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, JSON.stringify(entry, null, 2))
-  } catch {}
-}
-
-function readCliVersion(bin) {
-  try {
-    const r = spawnSync(bin, ['--version'], {
-      encoding: 'utf8',
-      timeout: 8000,
-      env: {
-        PATH: process.env.PATH || '/usr/bin',
-        CI: '1',
-        NO_COLOR: '1',
-        TERM: 'dumb',
-        HOME: process.env.HOME || '/tmp',
-      },
-    })
-    const text = `${r.stdout || ''} ${r.stderr || ''}`.trim()
-    const m = text.match(/(\d+\.\d+\.\d+)/)
-    return m ? m[1] : (text.slice(0, 40) || null)
-  } catch {
-    return null
-  }
-}
-
-export function harvestCliModelCatalog({ cliBin = null, force = false } = {}) {
-  if (!force && cache.key === 'test' && cache.ids.length) return cache
-  const bin = resolveCliBin(cliBin)
-  const key = binCacheKey(bin)
-  if (!force && cache.ids.length && cache.key === key) return cache
-  if (!bin) {
-    cache = { at: Date.now(), key, ids: [], aliases: [...FAMILY_ALIASES.keys()], version: null, bin: null }
-    return cache
-  }
-  if (!force) {
-    const disk = readPersisted(key)
-    if (disk) {
-      cache = { at: Date.now(), key, ids: disk.ids, aliases: disk.aliases || [...FAMILY_ALIASES.keys()], version: disk.version || null, bin }
-      return cache
-    }
-  }
-  const ids = readBinaryQuotedIds(bin).sort(cmpRank)
-  const version = readCliVersion(bin)
+/**
+ * Replace the cached catalog. Production feed: Go slot worker models responses.
+ * Tests inject a catalog with the same call.
+ */
+export function setModelCatalog(ids, { source = 'go-slot-worker' } = {}) {
   cache = {
     at: Date.now(),
-    key,
-    ids,
+    ids: [...new Set((ids || []).filter((id) => isCatalogModelId(id)))],
     aliases: [...FAMILY_ALIASES.keys()],
-    version,
-    bin,
+    source,
   }
-  writePersisted({ key, ids, aliases: cache.aliases, version, harvested_at: new Date().toISOString() })
   return cache
 }
 
-/** Test helper — inject a catalog without touching the CLI binary. */
-export function setCliModelCatalogForTest(ids, { version = 'test', bin = 'test' } = {}) {
-  cache = {
-    at: Date.now(),
-    key: 'test',
-    ids: [...new Set(ids || [])],
-    aliases: [...FAMILY_ALIASES.keys()],
-    version,
-    bin,
-  }
-  return cache
+/** Merge worker model list objects ({ data: [{id}] }) into the catalog. */
+export function ingestWorkerModels(list) {
+  const ids = (Array.isArray(list?.data) ? list.data : [])
+    .map((m) => (typeof m === 'string' ? m : m?.id))
+    .filter(Boolean)
+  if (!ids.length) return cache
+  return setModelCatalog([...new Set([...cache.ids, ...ids])], { source: 'go-slot-worker' })
 }
 
 export function clearModelsCache() {
-  cache = { at: 0, key: '', ids: [], aliases: [], version: null, bin: null }
+  cache = { at: 0, ids: [], aliases: [], source: null }
 }
 
 export function listOfficialModels() {
-  if (!cache.ids.length) harvestCliModelCatalog()
   return (cache.ids || []).map((id) => ({
     id,
     object: 'model',
     type: 'model',
     display_name: id,
     owned_by: 'anthropic',
-    source: 'claude_cli_catalog',
+    source: cache.source || 'worker_catalog',
   }))
 }
 
 /**
- * Compat name. Tokens are ignored — models come from the VM CLI, not OAuth HTTP.
- */
-export async function fetchOfficialModels(_accessToken, { force = false } = {}) {
-  const harvested = harvestCliModelCatalog({ force })
-  const data = listOfficialModels()
-  return {
-    object: 'list',
-    data,
-    source: harvested.ids.length ? 'claude_cli_catalog' : 'cli_catalog_unavailable',
-    fetched_at: new Date().toISOString(),
-    total: data.length,
-    cli_version: harvested.version,
-    cli_bin: harvested.bin,
-    aliases: harvested.aliases,
-    note: harvested.ids.length
-      ? 'Models recognized by the VM official Claude Code binary'
-      : 'CLI binary not readable; catalog empty',
-  }
-}
-
-/**
- * Only names the VM Claude Code catalog knows.
+ * Only names the worker catalog knows.
  * Provider prefixes (anthropic/…, openrouter/anthropic/…) are stripped first.
- * Family aliases (sonnet/opus/haiku/fable) resolve to the latest CLI id.
+ * Family aliases (sonnet/opus/haiku/fable) resolve to the latest catalog id.
  */
 export function validateOfficialModel(model) {
   const m = String(model || '').trim()
@@ -283,7 +127,7 @@ export function validateOfficialModel(model) {
     return {
       ok: false,
       error: {
-        message: 'model is required. Use a model this VM Claude Code recognizes.',
+        message: 'model is required. Use a model the slot workers recognize.',
         type: 'invalid_request_error',
         code: 'model_required',
       },
@@ -291,13 +135,13 @@ export function validateOfficialModel(model) {
   }
 
   const bare = m.split('/').filter(Boolean).pop() || m
-  const id = /^claude-/i.test(bare) ? bare : bare
+  const id = bare
 
   if (/^(gpt-|o1|o3|o4|text-|davinci|gemini|deepseek|mistral|grok)/i.test(id)) {
     return {
       ok: false,
       error: {
-        message: `model '${m}' is not supported. Only models recognized by VM Claude Code are accepted.`,
+        message: `model '${m}' is not supported. Only official Claude models are accepted.`,
         type: 'invalid_request_error',
         code: 'model_not_supported',
         param: 'model',
@@ -308,7 +152,7 @@ export function validateOfficialModel(model) {
   // Go slot workers own the live model catalog. Request validation remains
   // fail-closed for non-Claude providers while allowing well-formed official
   // Claude IDs when the asynchronous worker catalog is not yet cached.
-  const resolved = resolveCliModel(m, cache.ids)
+  const resolved = resolveCatalogModel(m, cache.ids)
   if (resolved.ok) {
     return { ok: true, model: resolved.model, alias: resolved.alias || null }
   }
@@ -319,7 +163,7 @@ export function validateOfficialModel(model) {
   return {
     ok: false,
     error: {
-      message: `model '${m}' is not recognized by this VM Claude Code. Request rejected; no hop.`,
+      message: `model '${m}' is not recognized by the slot worker catalog. Request rejected; no hop.`,
       type: 'invalid_request_error',
       code: 'model_not_supported',
       param: 'model',

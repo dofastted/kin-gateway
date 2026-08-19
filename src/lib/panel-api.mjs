@@ -10,7 +10,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm } from './vm-registry.mjs'
 import { probeAccount } from './usage-probe.mjs'
-import { fetchOfficialModels } from './models.mjs'
 import { makeError, ErrorType, ErrorCode } from './errors.mjs'
 
 export function ok(data, meta) {
@@ -207,35 +206,6 @@ export function buildUsage({ accountQuota, cfg }) {
       peak_7d: Math.max(0, ...accounts.map((a) => a.utilization_7d), 0),
       near_limit: accounts.filter((a) => a.near_limit).length,
     },
-  })
-}
-
-export async function buildModels({ cfg, force = false }) {
-  // Prefer active VM token; fall back to any VM oauth token
-  const tokens = []
-  if (cfg.vm?.access_token) tokens.push(cfg.vm.access_token)
-  try {
-    const { listVms, getVm } = await import('./vm-registry.mjs')
-    for (const s of listVms(cfg.paths.project) || []) {
-      const vm = getVm(cfg.paths.project, s.id)
-      const tok = vm?.claude?.access_token
-      if (tok && !tokens.includes(tok)) tokens.push(tok)
-    }
-  } catch {}
-  const result = await fetchOfficialModels(tokens.length ? tokens : null, { force })
-  const items = (result.data || []).map((m) => ({
-    id: m.id,
-    label: m.display_name || m.id,
-    max_tokens: m.max_tokens,
-    max_input_tokens: m.max_input_tokens,
-  }))
-  return ok({
-    items,
-    source: result.source,
-    fetched_at: result.fetched_at || null,
-    total: items.length,
-    upstream_status: result.upstream_status || null,
-    note: result.note || result.error || null,
   })
 }
 

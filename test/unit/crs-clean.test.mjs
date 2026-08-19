@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sanitizeAnthropicBody } from '../../src/lib/sanitize.mjs'
 import { toClaudeMessages, fromClaudeToOpenAICompletions } from '../../src/lib/convert.mjs'
-import { applyCrsIdentityReplace, uuidFromSeed } from '../../src/lib/forward-mode.mjs'
+import { applyCrsIdentityReplace, uuidFromSeed } from '../../src/lib/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona, CRS_OFFICIAL_SYSTEM } from '../../src/lib/crs-persona.mjs'
 
 test('sanitize keeps official context_management and maps stop → stop_sequences', () => {

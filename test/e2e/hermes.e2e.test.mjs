@@ -35,7 +35,7 @@ test('Hermes unofficial: Go relay keeps persona/tools and never launches CLI', a
     assert.match(text, /pong/)
 
     const tr = readTrace(gw)
-    assert.equal(tr?.via, 'crs-relay')
+    assert.equal(tr?.via, 'go-worker')
     assert.match(String(tr?.system || ''), /You are Hermes/)
     assert.match(String(tr?.system || ''), /Claude Code/)
     assert.ok(tr?.tools.includes('read_file'))
@@ -59,7 +59,7 @@ test('Hermes system blob without UA still classifies as hermes', async () => {
     })
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
-    assert.equal(tr?.via, 'crs-relay')
+    assert.equal(tr?.via, 'go-worker')
     assert.match(String(tr?.system || ''), /You are Hermes/)
     assert.match(String(tr?.system || ''), /Claude Code/)
   } finally {

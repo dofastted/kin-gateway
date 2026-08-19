@@ -6,7 +6,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { atomicWriteJson, writeJsonIfChanged } from './vm-file.mjs'
-import { clientEnvSettingsPatch } from './client-env.mjs'
 
 export function readJsonSafe(p, fallback = null) {
   try {
@@ -99,18 +98,6 @@ export function loadVmIdentity(exec = {}) {
       x_app: 'cli',
     },
   }
-}
-
-export function applyClientEnvToIdentity(identity, clientEnv) {
-  if (!identity || !clientEnv) return identity
-  const patch = clientEnvSettingsPatch(clientEnv)
-  if (!Object.keys(patch).length) return identity
-  const env = { ...(identity.settings?.env || {}) }
-  for (const [k, v] of Object.entries(env)) {
-    if (String(k).startsWith('KIN_CLIENT_')) delete env[k]
-  }
-  identity.settings = { ...(identity.settings || {}), env: { ...env, ...patch } }
-  return identity
 }
 
 export function persistVmSettings(exec, identity) {

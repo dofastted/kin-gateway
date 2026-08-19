@@ -31,7 +31,6 @@ export const US_TIMEZONES = [
   'America/Los_Angeles',
 ]
 export const STANDARD_LOCALE = 'en_US.UTF-8'
-export const CLAUDE_VER = '2.1.234'
 
 export function kernelForIndex(i) {
   return OS_ORDER[(Number(i) - 1) % OS_ORDER.length]

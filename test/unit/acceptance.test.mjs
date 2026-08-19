@@ -9,16 +9,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { toClaudeMessages } from '../../src/lib/convert.mjs'
 import { officialMessagesBody, callAnthropicMessages, streamAnthropicMessages } from '../../src/lib/anthropic-messages.mjs'
-import {
-  applyForwardReplace,
-  applyVmStandardReplace,
-  resolveForwardMode,
-  VM_STANDARD_REPLACE,
-  CRS_REPLACE,
-  FORWARD_MODES,
-} from '../../src/lib/forward-mode.mjs'
+import { applyCrsIdentityReplace, IDENTITY_REPLACE } from '../../src/lib/identity-rewrite.mjs'
 import { resolveWorkspaceMode } from '../../src/lib/workspace-mode.mjs'
-import { persistOauthToVm, harvestHomeToVm, normalizeOauth } from '../../src/lib/oauth-refresh.mjs'
+import { persistOauthToVm, normalizeOauth } from '../../src/lib/oauth-credentials.mjs'
 import { formatMetadataUserId } from '../../src/lib/vm-identity.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -85,34 +78,24 @@ test('pkt-003 openai.responses → Claude preserves user text', () => {
 })
 
 // ---------- identity replace / body preserve ----------
-test('cli uses VM_STANDARD_REPLACE; relay uses CRS_REPLACE', () => {
-  assert.deepEqual([...FORWARD_MODES.cli.replace], [...VM_STANDARD_REPLACE])
-  assert.deepEqual([...FORWARD_MODES.relay.replace], [...CRS_REPLACE])
+test('identity replace covers device/account/session/settings', () => {
+  assert.deepEqual([...IDENTITY_REPLACE], [
+    'device_id',
+    'account_uuid',
+    'session_id_hash',
+    'authorization',
+    'fingerprint',
+    'settings',
+  ])
 })
 
-test('synth: tools and messages preserved after CLI identity replace', () => {
-  const pkt = loadPkt('synth-tools-metadata.anthropic.json')
-  const official = officialMessagesBody(pkt.inbound_body)
-  const out = applyForwardReplace('cli', official, VM_IDENTITY)
-  assert.ok(Array.isArray(out.tools) && out.tools.length === 1)
-  assert.equal(out.tools[0].name, 'Read')
-  assert.equal(out.tool_choice?.type, 'auto')
-  const text = JSON.stringify(out.messages)
-  assert.match(text, /CAP_MSG/)
-  assert.equal(out.settings, undefined)
-  const uid = JSON.parse(out.metadata.user_id)
-  assert.equal(uid.session_id, 'vm-session-fixed')
-  assert.equal(uid.account_uuid, 'vm-account-uuid')
-  assert.equal(uid.device_id, 'b'.repeat(64))
-})
-
-test('relay replaces VM device_id only; session hashed CRS-style; tools kept', () => {
+test('identity replace keeps slot device_id; session hashed; tools kept', () => {
   const pkt = loadPkt('synth-tools-metadata.anthropic.json')
   const official = officialMessagesBody(pkt.inbound_body)
   official.metadata = {
     user_id: JSON.stringify({ device_id: 'caller-device', account_uuid: '', session_id: 'caller-sess' }),
   }
-  const out = applyForwardReplace('relay', official, VM_IDENTITY, official)
+  const out = applyCrsIdentityReplace(official, VM_IDENTITY, official)
   assert.equal(out.tools[0].name, 'Read')
   const uid = JSON.parse(out.metadata.user_id)
   assert.equal(uid.device_id, VM_IDENTITY.deviceId)
@@ -121,25 +104,17 @@ test('relay replaces VM device_id only; session hashed CRS-style; tools kept', (
   assert.notEqual(uid.session_id, 'vm-session-fixed')
 })
 
-test('applyVmStandardReplace drops client settings and machine identity', () => {
+test('identity replace drops client settings and machine identity', () => {
   const body = {
     model: 'claude-haiku-4-5-20251001',
     messages: [{ role: 'user', content: 'hi' }],
     settings: { theme: 'light' },
     metadata: { user_id: 'windows', machine_id: 'pc' },
   }
-  const out = applyVmStandardReplace(body, VM_IDENTITY)
+  const out = applyCrsIdentityReplace(body, VM_IDENTITY)
   assert.equal(out.settings, undefined)
   assert.notEqual(out.metadata.user_id, 'windows')
   assert.equal(out.metadata.machine_id, undefined)
-})
-
-test('resolveForwardMode defaults to relay; cli is explicit fallback', () => {
-  assert.equal(resolveForwardMode({}, {}), 'relay')
-  assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'sub2api' } }, {}), 'relay')
-  assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'crs' } }, {}), 'relay')
-  assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'cliproxy' } }, {}), 'cli')
-  assert.equal(resolveForwardMode({ headers: { 'x-kin-forward': 'cli' } }, {}), 'cli')
 })
 
 test('workspace defaults to client', () => {
@@ -147,12 +122,12 @@ test('workspace defaults to client', () => {
   assert.equal(resolveWorkspaceMode({ headers: { 'x-kin-workspace': 'vm' } }, {}, ''), 'vm')
 })
 
-// ---------- host-process HTTP hop stays disabled; CRS uses uid worker ----------
-test('callAnthropicMessages host hop is disabled (CRS is uid worker)', async () => {
+// ---------- host-process HTTP hop stays disabled; Go worker owns Anthropic I/O ----------
+test('callAnthropicMessages host hop is disabled (Go worker owns the hop)', async () => {
   const r = await callAnthropicMessages({ accessToken: 'sk-ant-oat01-FAKE' })
   assert.equal(r.status, 501)
   assert.equal(r.ok, false)
-  assert.match(String(r.body?.error?.message || ''), /disabled|crs-relay|VM UID/i)
+  assert.match(String(r.body?.error?.message || ''), /disabled|worker/i)
 })
 
 test('streamAnthropicMessages host hop is disabled', async () => {
@@ -180,30 +155,6 @@ test('persistOauthToVm is the writer for fake oauth fields', () => {
   assert.equal(vm.claude.email, 'test@example.com')
   assert.equal(vm.claude.source, 'test-fixture')
   assert.ok(vm.claude.refreshed_at)
-  fs.rmSync(dir, { recursive: true, force: true })
-})
-
-test('harvestHomeToVm writes CLI credentials to the given VM path only', () => {
-  const dir = fs.mkdtempSync(path.join('/tmp', 'kin-oauth-'))
-  const vmPath = path.join(dir, 'vm-x.json')
-  const home = path.join(dir, 'cli-home', '.claude')
-  fs.mkdirSync(home, { recursive: true })
-  fs.writeFileSync(vmPath, JSON.stringify({
-    id: 'vm-x',
-    claude: { access_token: 'old', refresh_token: 'oldrt', expires_at: 10 },
-  }))
-  fs.writeFileSync(path.join(home, 'credentials.json'), JSON.stringify({
-    claudeAiOauth: {
-      accessToken: 'home-at',
-      refreshToken: 'home-rt',
-      expiresAt: 2000000000000,
-    },
-  }))
-  const r = harvestHomeToVm(path.join(dir, 'cli-home'), vmPath)
-  assert.equal(r.harvested, true)
-  const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-  assert.equal(vm.claude.access_token, 'home-at')
-  assert.equal(vm.claude.refresh_token, 'home-rt')
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

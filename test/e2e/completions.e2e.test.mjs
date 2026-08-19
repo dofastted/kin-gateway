@@ -15,7 +15,7 @@ test('POST /v1/completions old OpenAI prompt format', async () => {
     assert.equal(r.json.object, 'text_completion')
     assert.equal(r.json.choices[0].text, 'world')
     const tr = readTrace(gw)
-    assert.equal(tr.via, 'crs-relay')
+    assert.equal(tr.via, 'go-worker')
     assert.match(JSON.stringify(tr.body.messages), /hello/)
     assert.equal(tr.system, CRS_OFFICIAL_SYSTEM)
   } finally {

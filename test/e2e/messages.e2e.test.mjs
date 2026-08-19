@@ -80,7 +80,7 @@ test('legacy x-kin-forward: cli cannot re-enable CLI execution', async () => {
     })
     const tr = readTrace(gw)
     assert.ok(tr, 'mock trace written')
-    assert.equal(tr.via, 'crs-relay')
+    assert.equal(tr.via, 'go-worker')
     assert.equal(tr.argv, undefined)
     assert.equal(tr.body.model, MODEL)
   } finally {

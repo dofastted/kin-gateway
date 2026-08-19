@@ -7,7 +7,7 @@
 import { sanitizeAnthropicBody } from './sanitize.mjs'
 import { openaiReasoningToClaudeThinking, claudeThinkingToOpenAIReasoning } from './thinking.mjs'
 import { openaiContentToClaudeContent } from './images.mjs'
-import { remapCodexTools } from './prepare-cli.mjs'
+import { remapCodexTools } from './codex-tools.mjs'
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 

@@ -1,9 +1,9 @@
 /**
- * KIN Gateway v2.1
- * Inference: per-request ExecutionContext (scheduled VM + identity).
- * Default workspace=client: CRS official Messages HTTP from the VM UID.
- * CLI process is fallback (x-kin-forward: cli, or transport 5xx/529).
- * Opt-in workspace=vm: Claude Code CLI agent on the slot.
+ * KIN Gateway v2.1 — Node control plane.
+ * Inference data plane: one long-lived Go slot worker per VM
+ * (slot SOCKS5 + OAuth owner + SSE terminal validation).
+ * The gateway converts protocols, schedules the account pool with bounded
+ * failover, and never talks to Anthropic or spawns a Claude CLI itself.
  */
 import http from 'node:http'
 import fs from 'node:fs'
@@ -27,48 +27,35 @@ import {
   createResponsesStreamState,
   claudeSSELineToResponsesEvents,
 } from './lib/convert.mjs'
-import { callClaudeCli, streamClaudeCli, sanitizeInboundBody, defaultSeedPolicy, writeCliHome, seedCliCredentials } from './lib/cli-runner.mjs'
-import { updateVmClaudeCode, fetchLatestClaudeCodeVersion } from './lib/claude-code-update.mjs'
+import { sanitizeInboundBody, defaultSeedPolicy } from './lib/seed-policy.mjs'
 import { sessionKeyToOAuth } from '../scripts/session-to-oauth.mjs'
-import { createOauthGuard, persistOauthToVm, harvestHomeToVm } from './lib/oauth-refresh.mjs'
+import { persistOauthToVm, applyOauthToCfg } from './lib/oauth-credentials.mjs'
 import crypto from 'node:crypto'
-import { fingerprintRequest, alignToClaudeCodeStandard } from './lib/client-fingerprint.mjs'
-import { extractSystemAudit } from './lib/system-prompt-policy.mjs'
-import { prepareForVmClaude } from './lib/prepare-cli.mjs'
-import { validateOfficialModel, fetchOfficialModels, harvestCliModelCatalog } from './lib/models.mjs'
+import { fingerprintRequest } from './lib/client-fingerprint.mjs'
+import { validateOfficialModel, ingestWorkerModels } from './lib/models.mjs'
 import { StickyRouter } from './lib/sticky-router.mjs'
 import { AccountQuota } from './lib/account-quota.mjs'
 import { ApiKeyStore, publicKeyView } from './lib/api-keys.mjs'
 import { RequestLogStore, summarizeBody } from './lib/request-log.mjs'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm-registry.mjs'
-import { runClaudeAuthStatus } from './lib/cli-probe.mjs'
 import {
   makeError, mapUpstreamError, validateRequestBody, inspectRequestBody,
   mapQuotaGateError, mapModelError, ErrorType, ErrorCode,
 } from './lib/errors.mjs'
 import * as panel from './lib/panel-api.mjs'
 import { ProxyPool } from './lib/proxy-pool.mjs'
-import {
-  buildExecutionContext,
-  harvestExecHome,
-  refreshExecOauth,
-  buildCliOptsFromExec,
-  GATEWAY_CAPABILITIES,
-} from './lib/execution-context.mjs'
+import { GATEWAY_CAPABILITIES } from './lib/execution-context.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/anthropic-messages.mjs'
-import { loadVmIdentity, persistVmSettings, persistVmFingerprint, applyClientEnvToIdentity } from './lib/vm-identity.mjs'
+import { loadVmIdentity } from './lib/vm-identity.mjs'
 import { withVmLock, atomicWriteJson } from './lib/vm-file.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
 import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm-db-sync.mjs'
 import { BackupService } from './lib/backup-service.mjs'
-import { resolveForwardMode, applyForwardReplace, modeSpec, shouldFallbackToCli } from './lib/forward-mode.mjs'
-import { callCrsRelay, streamCrsRelay } from './lib/crs-relay.mjs'
-import { callClientWorkspaceCli, streamClientWorkspaceCli } from './lib/client-cli-hop.mjs'
-import { extractClientEnv } from './lib/client-env.mjs'
+import { applyCrsIdentityReplace } from './lib/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona } from './lib/crs-persona.mjs'
-import { startVmRuntime, stopVmRuntime, OS_CATALOG, OS_ORDER, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, CLAUDE_VER, STANDARD_LOCALE } from './lib/vm-runtime.mjs'
+import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm-runtime.mjs'
 import {
   callGoWorker,
   streamGoWorker,
@@ -139,7 +126,6 @@ if (!getPanelAdmin().password) {
   throw new Error('KIN_ADMIN_PASSWORD must be set; insecure default panel credentials are disabled')
 }
 fs.mkdirSync(cfg.paths.captures, { recursive: true })
-const oauthGuard = createOauthGuard(cfg)
 
 const allowRate = createRateLimiter({
   capacity: cfg.limits.rate_capacity,
@@ -612,7 +598,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        const identified = applyForwardReplace('relay', officialMessagesBody(body), identity, inbound)
+        const identified = applyCrsIdentityReplace(officialMessagesBody(body), identity, inbound)
         const cleaned = prepareAnthropicRequest(identified, {
           cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
         })
@@ -754,706 +740,6 @@ async function handleProtocol(req, res, protocol, pathName) {
   return json(res, 200, ctx.body)
 }
 
-async function handleProtocolLegacy(req, res, protocol, pathName) {
-  if (!requireAuth(req, res)) return
-
-  const logCtx = requestLog.start(req, { protocol, pathName })
-  res._kinRequestId = logCtx.request_id
-  const logBag = {
-    protocol,
-    model: null,
-    stream: false,
-    inbound_body: null,
-    inbound_summary: null,
-    hop_meta: null,
-    upstream_status: null,
-    outbound_body: null,
-    outbound_summary: null,
-    vm_id: null,
-    account_id: null,
-    workspace: null,
-    has_tools: null,
-    usage: null,
-    error_code: null,
-    error_message: null,
-  }
-  const bindLogFinish = () => {
-    if (res._kinLogBound) return
-    res._kinLogBound = true
-    res.on('finish', () => {
-      try {
-        requestLog.finish(logCtx, {
-          status: res.statusCode || 0,
-          api_key_kind: req.apiKeyKind || null,
-          api_key_id: req.apiKeyRecord?.id || null,
-          ...logBag,
-        })
-      } catch {}
-    })
-  }
-  bindLogFinish()
-  res._kinLogBag = logBag
-
-  let inbound
-  try {
-    inbound = await readBody(req, cfg.limits.max_body_bytes)
-  } catch (err) {
-    stats.errors++
-    logBag.error_code = err?.body?.error?.code || ErrorCode.INVALID_JSON
-    logBag.error_message = err?.body?.error?.message || String(err?.message || err)
-    if (err?.body?.error) return json(res, err.status || 400, err.body)
-    return json(res, 400, makeError({
-      type: ErrorType.INVALID_REQUEST,
-      code: ErrorCode.INVALID_JSON,
-      message: String(err?.message || err),
-      status: 400,
-    }).body)
-  }
-  logBag.inbound_body = inbound
-  logBag.inbound_summary = summarizeBody(inbound)
-  logBag.model = inbound?.model || null
-  logBag.stream = !!inbound.stream
-  logBag.has_tools = Array.isArray(inbound?.tools) && inbound.tools.length > 0
-  const wantStream = !!inbound.stream
-
-  const hdrVm = String(req.headers['x-kin-vm'] || '').trim() || null
-  const keyVm = req.apiKeyRecord?.name === 'project-host' ? 'vm-01' : null
-  const built = buildExecutionContext({
-    cfg, inbound, req, protocol, pathName, stickyRouter,
-    preferredVmId: hdrVm || keyVm || null,
-  })
-  if (!built.ok) {
-    stats.errors++
-    return json(res, 503, makeError({
-      type: ErrorType.API,
-      code: 'no_schedulable_vm',
-      message: built.message || 'No schedulable VM',
-      status: 503,
-    }).body)
-  }
-  const exec = built.exec
-  const stickyKey = exec.stickyKey
-  const accountId = exec.accountId
-  const vmId = exec.vmId
-  logBag.vm_id = vmId
-  logBag.account_id = accountId
-  accountQuota.ensure({
-    account_id: accountId,
-    vm_id: vmId,
-    email: exec.oauth.email,
-    max_concurrency: exec.vm.policy?.maxConcurrency || 2,
-  })
-
-  const hdrRewrite = String(req.headers['x-kin-rewrite'] || '') === '1'
-  const rewriteEnabled = cfg.rewrite.enabled || hdrRewrite
-
-  const fp = fingerprintRequest(req, inbound)
-  const diffDir = path.join(cfg.paths.captures, 'client-diff')
-  fs.mkdirSync(diffDir, { recursive: true })
-  fs.writeFileSync(
-    path.join(diffDir, `${Date.now()}-${fp.client_class}.json`),
-    JSON.stringify({ ...fp, exec_vm: vmId, exec_account: accountId }, null, 2),
-  )
-
-  let ctx = {
-    path: pathName,
-    protocol,
-    body: sanitizeInboundBody(inbound, exec.seedPolicy),
-    headers: { ...req.headers },
-    exec,
-  }
-  ctx = applyIntercept(cfg.intercept.rules, 'before_convert', ctx)
-
-  // VM already runs official Claude Code. Do not inject identity.
-  // Convert first happens below; here only drop client identity metadata.
-  let systemPolicyDecisions = []
-
-  const strictPassthrough = String(req.headers['x-kin-strict-passthrough'] || '') === '1'
-
-  // Request body validation
-  const bodyCheck = validateRequestBody(protocol, ctx.body)
-  if (!bodyCheck.ok) {
-    stats.errors++
-    const er = bodyCheck.errorResult
-    logBag.error_code = er.body?.error?.code || 'invalid_request'
-    logBag.error_message = er.body?.error?.message || null
-    er.body.error.details = {
-      ...(er.body.error.details || {}),
-      body_inspect: inspectRequestBody(ctx.body),
-      protocol,
-    }
-    return json(res, er.status, er.body)
-  }
-
-  // Only official Claude model names — no aliases, reject before upstream
-  const modelCheck = validateOfficialModel(ctx.body?.model)
-  if (!modelCheck.ok) {
-    stats.errors++
-    const e = mapModelError(modelCheck)
-    logBag.error_code = e.body?.error?.code || 'model_not_supported'
-    logBag.error_message = e.body?.error?.message || null
-    e.body.error.details = {
-      ...(e.body.error.details || {}),
-      body_inspect: inspectRequestBody(ctx.body),
-      protocol,
-    }
-    return json(res, e.status, e.body)
-  }
-  ctx = { ...ctx, body: { ...ctx.body, model: modelCheck.model } }
-
-  // Quota pre-check + acquire (after validation so failed requests don't hold slots)
-  const gate = accountQuota.canAccept(accountId)
-  if (!gate.ok) {
-    stats.errors++
-    const e = mapQuotaGateError(gate)
-    return json(res, e.status, e.body)
-  }
-  accountQuota.acquire(accountId)
-
-  // Per-API-key concurrency / rpm acquire (managed keys only)
-  const managedKey = req.apiKeyRecord || null
-  if (managedKey) {
-    const kg = apiKeyStore.acquire(managedKey)
-    if (!kg.ok) {
-      accountQuota.release(accountId)
-      stats.errors++
-      const type = kg.status === 429
-        ? (String(kg.code || '').includes('quota') ? ErrorType.QUOTA : ErrorType.RATE_LIMIT)
-        : ErrorType.PERMISSION
-      return json(res, kg.status, makeError({
-        type,
-        code: kg.code,
-        message: kg.message,
-        status: kg.status,
-        details: kg.detail || undefined,
-      }).body)
-    }
-  }
-  const releaseSlots = () => {
-    try { accountQuota.release(accountId) } catch {}
-    if (managedKey) try { apiKeyStore.release(managedKey) } catch {}
-  }
-
-  if (stickyKey) stickyRouter.bind(stickyKey, { accountId, vmId })
-
-  harvestExecHome(exec)
-  refreshExecOauth(exec)
-  // Never auto-convert sessionKey or refresh OAuth on the hop.
-  // Credentials are harvest-only; dead tokens require explicit admin re-import.
-  if (!exec.oauth.access_token) {
-    releaseSlots()
-    stats.errors++
-    return json(res, 401, makeError({
-      type: ErrorType.AUTH,
-      code: ErrorCode.OAUTH_NEED_REIMPORT,
-      message: 'VM has no OAuth access_token. Import sessionKey.',
-      status: 401,
-      details: { vm_id: vmId, need_reimport: true },
-    }).body)
-  }
-
-  const { claude, mode } = toClaudeMessages(protocol, ctx.body, {
-    rewrite: rewriteEnabled,
-    model_map: false, // aliases disabled
-    strict_passthrough: strictPassthrough,
-  })
-
-  stats.requests++
-  stats.by_route[protocol] = (stats.by_route[protocol] || 0) + 1
-  if (mode === 'passthrough') stats.passthrough++
-  else if (mode === 'rewrite') stats.rewrite++
-  else stats.convert++
-
-  ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: claude })
-
-  const officialClient = isOfficialClaudeClient(fp.client_class)
-  if (!officialClient) {
-    ctx = { ...ctx, body: applyCrsUnofficialPersona(ctx.body, { officialClient: false }) }
-  }
-
-  const workspace = resolveWorkspaceMode(req, inbound, fp.client_class)
-  logBag.workspace = workspace
-  const forwardMode = resolveForwardMode(req, inbound)
-  ctx = { ...ctx, workspace, forwardMode }
-
-  // ---- client workspace: CRS HTTP default; CLI is fallback ----
-  if (workspace === 'client') {
-    const identity = loadVmIdentity(exec)
-    const clientEnv = extractClientEnv(req, inbound)
-    const officialBody = applyForwardReplace(forwardMode, officialMessagesBody(ctx.body), identity, inbound)
-    if (forwardMode === 'cli') {
-      applyClientEnvToIdentity(identity, clientEnv)
-      persistVmSettings(exec, identity)
-      persistVmFingerprint(exec, identity)
-    }
-    diffCapture(diffDir, 'client-workspace', {
-      client_class: fp.client_class,
-      protocol,
-      workspace,
-      forward_mode: forwardMode,
-      replace: modeSpec(forwardMode).replace,
-      official_client: officialClient,
-      has_tools: Array.isArray(officialBody.tools) && officialBody.tools.length > 0,
-      message_roles: (officialBody.messages || []).map((m) => m.role),
-      model: officialBody.model,
-      stream: !!wantStream,
-      via: forwardMode === 'cli' ? 'vm-cli-forward' : 'crs-relay',
-      vm_id: identity.vmId,
-      session_id: identity.sessionId,
-      settings_theme: identity.settings?.theme || null,
-      timezone: identity.timezone,
-      locale: identity.locale,
-    })
-    // Official Claude Code owns the conversation. Never --resume a leftover VM session.
-    const resumeSessionId = officialClient ? null : (exec.stickyBound?.sessionId || null)
-    const hopBase = {
-      ...buildCliOptsFromExec(exec, officialBody, { timeoutMs: cfg.limits.upstream_timeout_ms }),
-      body: officialBody,
-      resumeSessionId,
-      clientEnv,
-      inboundBody: inbound,
-    }
-    try {
-      const cap = {
-        at: new Date().toISOString(),
-        client_class: fp.client_class,
-        ua: req.headers?.['user-agent'] || '',
-        inbound_keys: inbound && typeof inbound === 'object' ? Object.keys(inbound) : [],
-        inbound: inbound,
-        official_keys: officialBody && typeof officialBody === 'object' ? Object.keys(officialBody) : [],
-        official: officialBody,
-        client_env: clientEnv,
-        resumeSessionId,
-      }
-      fs.writeFileSync(path.join(diffDir, `full-${Date.now()}-in.json`), JSON.stringify(cap))
-    } catch {}
-
-    const runCrs = forwardMode !== 'cli'
-    const crsBase = {
-      exec,
-      body: officialBody,
-      inbound,
-      reqHeaders: req.headers,
-      timeoutMs: cfg.limits.upstream_timeout_ms,
-      identity,
-    }
-
-    // ---- streaming (default product path) ----
-    if (wantStream) {
-      stats.stream++
-      let result
-      const releaseStream = () => {
-        if (forwardMode === 'cli' || (result && String(result.via || '').includes('cli'))) {
-          try { harvestExecHome(exec) } catch {}
-        }
-        releaseSlots()
-        if (managedKey) {
-          try { apiKeyStore.recordUsage(managedKey) } catch {}
-        }
-      }
-      writeSSEHeaders(res)
-      try {
-        if (runCrs) {
-          if (protocol === 'anthropic.messages') {
-            result = await streamCrsRelay({
-              ...crsBase,
-              onEvent: async (line) => {
-                const raw = String(line || '')
-                res.write(raw.endsWith('\n') ? raw : raw + '\n')
-              },
-            })
-          } else if (protocol === 'openai.chat') {
-            const state = createOpenAIChatStreamState(inbound.model || officialBody.model, vmId)
-            result = await streamCrsRelay({
-              ...crsBase,
-              onEvent: async (line) => {
-                const chunks = claudeSSELineToOpenAIChatChunks(line, state)
-                for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
-              },
-            })
-            if (result?.ok) res.write('data: [DONE]\n\n')
-          } else if (protocol === 'openai.completions') {
-            const state = createOpenAICompletionStreamState(inbound.model || officialBody.model, vmId)
-            result = await streamCrsRelay({
-              ...crsBase,
-              onEvent: async (line) => {
-                const chunks = claudeSSELineToOpenAICompletionChunks(line, state)
-                for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
-              },
-            })
-            if (result?.ok) res.write('data: [DONE]\n\n')
-          } else {
-            const state = createResponsesStreamState(inbound.model || officialBody.model, vmId)
-            result = await streamCrsRelay({
-              ...crsBase,
-              onEvent: async (line) => {
-                const events = claudeSSELineToResponsesEvents(line, state)
-                for (const e of events) res.write(`data: ${JSON.stringify(e)}\n\n`)
-              },
-            })
-            if (result?.ok) res.write('data: [DONE]\n\n')
-          }
-          if (result?.headers) {
-            try { accountQuota.ingestHeaders(accountId, result.headers, result.body) } catch {}
-          }
-          if (result?.ok || !shouldFallbackToCli(result)) {
-            ingestCliHopQuota(accountId, result || {}, logBag)
-            capture({
-              protocol, path: pathName, mode, workspace,
-              rewrite_enabled: rewriteEnabled,
-              has_tools: Array.isArray(officialBody.tools) && officialBody.tools.length > 0,
-              upstream_status: result?.status || 0,
-              via: result?.via || 'crs-relay-stream',
-              stream: true,
-              hop_meta: result?.hop_meta || null,
-            }, logBag)
-            return res.end()
-          }
-        }
-        if (protocol === 'anthropic.messages') {
-          result = await streamClientWorkspaceCli({
-            ...hopBase,
-            onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-            onEvent: async (line) => {
-              let evtName = 'message'
-              const raw = String(line || '')
-              const payload = raw.startsWith('data:') ? raw.slice(5).trim() : raw.trim()
-              try {
-                const obj = JSON.parse(payload)
-                if (obj && typeof obj.type === 'string') evtName = obj.type
-              } catch {}
-              res.write('event: ' + evtName + '\ndata: ' + payload + '\n\n')
-            },
-          })
-        } else if (protocol === 'openai.chat') {
-          const state = createOpenAIChatStreamState(inbound.model || officialBody.model, vmId)
-          result = await streamClientWorkspaceCli({
-            ...hopBase,
-            onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-            onEvent: async (line) => {
-              const chunks = claudeSSELineToOpenAIChatChunks(line, state)
-              for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
-            },
-          })
-          if (result?.ok) res.write('data: [DONE]\n\n')
-        } else if (protocol === 'openai.completions') {
-          const state = createOpenAICompletionStreamState(inbound.model || officialBody.model, vmId)
-          result = await streamClientWorkspaceCli({
-            ...hopBase,
-            onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-            onEvent: async (line) => {
-              const chunks = claudeSSELineToOpenAICompletionChunks(line, state)
-              for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
-            },
-          })
-          if (result?.ok) res.write('data: [DONE]\n\n')
-        } else {
-          const state = createResponsesStreamState(inbound.model || officialBody.model, vmId)
-          result = await streamClientWorkspaceCli({
-            ...hopBase,
-            onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-            onEvent: async (line) => {
-              const events = claudeSSELineToResponsesEvents(line, state)
-              for (const e of events) res.write(`data: ${JSON.stringify(e)}\n\n`)
-            },
-          })
-          if (result?.ok) res.write('data: [DONE]\n\n')
-        }
-        ingestCliHopQuota(accountId, result || {}, logBag)
-        if (stickyKey && result?.session_id) {
-          stickyRouter.bind(stickyKey, { accountId, vmId, sessionId: result.session_id })
-        }
-        if (result && !result.ok) {
-          if (protocol === 'anthropic.messages') {
-            res.write(`event: error\ndata: ${JSON.stringify(mapUpstreamError(result.status || 500, result.body, {}).body)}\n\n`)
-          } else {
-            res.write(`data: ${JSON.stringify(mapUpstreamError(result.status || 500, result.body, {}).body)}\n\n`)
-          }
-        }
-      } finally {
-        releaseStream()
-      }
-      capture({
-        protocol, path: pathName, mode, workspace,
-        rewrite_enabled: rewriteEnabled,
-        has_tools: Array.isArray(officialBody.tools) && officialBody.tools.length > 0,
-        upstream_status: result?.status || 0,
-        via: result?.via || 'vm-cli-forward-stream',
-        stream: true,
-        hop_meta: result?.hop_meta || null,
-      }, logBag)
-      return res.end()
-    }
-
-    // ---- non-stream ----
-    let upstream
-    try {
-      if (runCrs) {
-        upstream = await callCrsRelay(crsBase)
-        if (upstream?.headers) {
-          try { accountQuota.ingestHeaders(accountId, upstream.headers, upstream.body) } catch {}
-        }
-        if (!(upstream?.ok) && shouldFallbackToCli(upstream)) {
-          applyClientEnvToIdentity(identity, clientEnv)
-          persistVmSettings(exec, identity)
-          persistVmFingerprint(exec, identity)
-          upstream = await callClientWorkspaceCli({
-            ...hopBase,
-            onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-          })
-          if (upstream) upstream.via = (upstream.via || 'vm-cli-forward') + '+crs-fallback'
-        }
-      } else {
-      upstream = await callClientWorkspaceCli({
-        ...hopBase,
-        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-      })
-      }
-      ingestCliHopQuota(accountId, upstream, logBag)
-      if (stickyKey && upstream.session_id) {
-        stickyRouter.bind(stickyKey, { accountId, vmId, sessionId: upstream.session_id })
-      }
-    } finally {
-      if (forwardMode === 'cli' || (upstream && String(upstream.via || '').includes('cli'))) {
-        try { harvestExecHome(exec) } catch {}
-      }
-      releaseSlots()
-      if (managedKey) try { apiKeyStore.recordUsage(managedKey) } catch {}
-    }
-    capture({
-      protocol,
-      path: pathName,
-      mode,
-      workspace,
-      rewrite_enabled: rewriteEnabled,
-      has_tools: Array.isArray(officialBody.tools) && officialBody.tools.length > 0,
-      upstream_status: upstream.status,
-      via: upstream.via || 'vm-cli-forward',
-      stop_reason: upstream.body?.stop_reason || null,
-      hop_meta: upstream.hop_meta || null,
-    }, logBag)
-    if (upstream.status !== 200) {
-      stats.errors++
-      const mapped = mapUpstreamError(upstream.status, upstream.body, upstream.headers || {})
-      mapped.body.error.details = {
-        ...(mapped.body.error.details || {}),
-        protocol,
-        mode,
-        workspace,
-        body_inspect: inspectRequestBody(inbound),
-      }
-      return json(res, mapped.status, mapped.body)
-    }
-    let out
-    if (protocol === 'anthropic.messages') {
-      out = { ...upstream.body }
-      if (String(req.headers['x-kin-debug'] || '') === '1') {
-        out = { ...out, kin: { vm_id: vmId, mode, workspace, session_id: upstream.session_id || identity.sessionId, client_env: clientEnv } }
-      }
-    } else if (protocol === 'openai.chat') {
-      out = fromClaudeToOpenAIChat(upstream.body, inbound.model, vmId, mode)
-    } else if (protocol === 'openai.completions') {
-      out = fromClaudeToOpenAICompletions(upstream.body, inbound.model)
-    } else {
-      out = fromClaudeToResponses(upstream.body, inbound.model, vmId, mode)
-    }
-    ctx = applyIntercept(cfg.intercept.rules, 'before_client', { ...ctx, body: out })
-    return json(res, 200, ctx.body)
-  }
-
-  // ---- vm workspace: CLI agent on the slot (opt-in) ----
-  // VM owns official identity. Foreign 人设 → official system text blocks.
-  {
-    const prepared = prepareForVmClaude(ctx.body)
-    ctx = { ...ctx, body: prepared.body }
-    systemPolicyDecisions = prepared.decisions
-    fs.writeFileSync(
-      path.join(diffDir, `${Date.now()}-prepare-cli.json`),
-      JSON.stringify({
-        client_class: fp.client_class,
-        protocol,
-        decisions: prepared.decisions,
-        stripped: prepared.stripped,
-        prompt_preview: prepared.prompt.slice(0, 400),
-        remaining_system: extractSystemAudit(prepared.body),
-        egress_system: prepared.body?.system || null,
-        egress_prompt: prepared.prompt,
-        egress_argv: ['claude', '-p', '<egress_prompt>', '--model', prepared.body?.model || ctx.body?.model, '--output-format', 'stream-json'],
-      }, null, 2),
-    )
-  }
-
-  // Body alignment DEFAULT OFF — do not rewrite body or inject metadata/system.
-  // Headers-only optional via KIN_ALIGN_HEADERS=1; full body align only KIN_ALIGN_BODY=1
-  let upstreamHeadersOverride = null
-  const clientClass = fp.client_class
-  const alignBody = String(process.env.KIN_ALIGN_BODY || '') === '1'
-  const alignHeaders = String(process.env.KIN_ALIGN_HEADERS || '') === '1' || alignBody
-  if (
-    (alignBody || alignHeaders) &&
-    clientClass !== 'claude_code_official' &&
-    clientClass !== 'claude_official_cli'
-  ) {
-    const aligned = alignToClaudeCodeStandard(ctx.body, req.headers)
-    if (alignBody) {
-      ctx = { ...ctx, body: aligned.body }
-    }
-    if (alignHeaders) {
-      upstreamHeadersOverride = aligned.headers
-    }
-    fs.writeFileSync(path.join(diffDir, `${Date.now()}-aligned-claude-code-standard.json`), JSON.stringify({
-      client_class: clientClass,
-      protocol,
-      alignment: aligned.alignment,
-      align_body: alignBody,
-      align_headers: alignHeaders,
-      egress_body_keys: Object.keys(ctx.body || {}),
-    }, null, 2))
-  }
-
-  // -------- streaming path --------
-  if (wantStream) {
-    stats.stream++
-    const releaseStream = () => {
-      try { harvestExecHome(exec) } catch {}
-      releaseSlots()
-      if (managedKey) try { apiKeyStore.recordUsage(managedKey) } catch {}
-    }
-    if (protocol === 'anthropic.messages') {
-      // Official Anthropic SSE requires both event: and data: (RikkaHub uses event.event)
-      writeSSEHeaders(res)
-      const result = await streamClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }), serverTools: true,
-        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-        onEvent: async (line) => {
-          let evtName = "message"
-          const raw = String(line || "")
-          const payload = raw.startsWith("data:") ? raw.slice(5).trim() : raw.trim()
-          try {
-            const obj = JSON.parse(payload)
-            if (obj && typeof obj.type === "string") evtName = obj.type
-          } catch {}
-          res.write("event: " + evtName + "\ndata: " + payload + "\n\n")
-        },
-      })
-      ingestCliHopQuota(accountId, result, logBag)
-      if (!result.ok) {
-        res.write(`event: error\ndata: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
-      }
-      releaseStream()
-      return res.end()
-    }
-
-    if (protocol === 'openai.chat') {
-      writeSSEHeaders(res)
-      const state = createOpenAIChatStreamState(inbound.model || claude.model, vmId)
-      const result = await streamClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }), serverTools: true,
-        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-        onEvent: async (line) => {
-          const chunks = claudeSSELineToOpenAIChatChunks(line, state)
-          for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
-        },
-      })
-      ingestCliHopQuota(accountId, result, logBag)
-      if (!result.ok) {
-        res.write(`data: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
-      }
-      res.write('data: [DONE]\n\n')
-      releaseStream()
-      return res.end()
-    }
-
-    if (protocol === 'openai.responses') {
-      writeSSEHeaders(res)
-      const state = createResponsesStreamState(inbound.model || claude.model, vmId)
-      const result = await streamClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }), serverTools: true,
-        onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
-        onEvent: async (line) => {
-          const events = claudeSSELineToResponsesEvents(line, state)
-          for (const e of events) res.write(`data: ${JSON.stringify(e)}\n\n`)
-        },
-      })
-      ingestCliHopQuota(accountId, result, logBag)
-      if (!result.ok) {
-        res.write(`data: ${JSON.stringify(mapUpstreamError(result.status||500, result.body, result.headers||{}).body)}\n\n`)
-      }
-      res.write('data: [DONE]\n\n')
-      releaseStream()
-      return res.end()
-    }
-    releaseStream()
-  }
-
-  // -------- non-stream --------
-  let upstream
-  try {
-    upstream = await callClaudeCli({ ...buildCliOptsFromExec(exec, ctx.body, { timeoutMs: cfg.limits.upstream_timeout_ms }), serverTools: true,
-    })
-    ingestCliHopQuota(accountId, upstream, logBag)
-  } finally {
-    try { harvestExecHome(exec) } catch {}
-    releaseSlots()
-    if (managedKey) try { apiKeyStore.recordUsage(managedKey) } catch {}
-  }
-
-  capture({
-    protocol,
-    path: pathName,
-    mode,
-    rewrite_enabled: rewriteEnabled,
-    has_tools: Array.isArray(ctx.body.tools) && ctx.body.tools.length > 0,
-    upstream_status: upstream.status,
-  }, logBag)
-
-  if (upstream.status !== 200) {
-    stats.errors++
-    const mapped = mapUpstreamError(upstream.status, upstream.body, upstream.headers || {})
-    mapped.body.error.details = {
-      ...(mapped.body.error.details || {}),
-      protocol,
-      mode,
-      body_inspect: inspectRequestBody(inbound),
-    }
-    return json(res, mapped.status, mapped.body)
-  }
-
-  let out
-  if (protocol === 'anthropic.messages') {
-    // Pure Anthropic passthrough — no extra fields (clients break on unknown top-level keys)
-    out = { ...upstream.body }
-    // debug only when X-Kin-Debug: 1
-    if (String(req.headers['x-kin-debug'] || '') === '1') {
-      if (req.headers['x-kin-debug'] === '1') out = { ...out, kin: { vm_id: vmId, mode } }
-    }
-  } else if (protocol === 'openai.chat') {
-    out = fromClaudeToOpenAIChat(upstream.body, inbound.model, vmId, mode)
-  } else {
-    out = fromClaudeToResponses(upstream.body, inbound.model, vmId, mode)
-  }
-
-  ctx = applyIntercept(cfg.intercept.rules, 'before_client', { ...ctx, body: out })
-  return json(res, 200, ctx.body)
-}
-
-
-
-function ingestCliHopQuota(accountId, hop, logBag = null) {
-  if (!accountId || !hop) return
-  const infos = hop.rate_limits?.length ? hop.rate_limits : (hop.rate_limit ? [hop.rate_limit] : [])
-  const usage = hop.usage || hop.body?.usage || null
-  if (logBag) {
-    logBag.usage = usage
-    if (hop.hop_meta) logBag.hop_meta = hop.hop_meta
-    if (hop.status != null) logBag.upstream_status = hop.status
-  }
-  if (!infos.length && !usage) return
-  accountQuota.ingestCliRateLimit(accountId, infos, usage, { countRequest: true })
-}
-
-function vmCliHome(vmId = null) {
-  const id = vmId || getActiveVmId(cfg.paths.project) || cfg.vm?.id
-  return path.join(cfg.paths.project, 'vms', id || 'default', 'cli-home')
-}
-
 function activateVmSlot(id) {
   setActiveVm(cfg.paths.project, id)
   reloadActiveVm(cfg)
@@ -1511,6 +797,7 @@ async function fetchWorkerModels() {
     const result = await callWorkerGet(exec, '/internal/v1/models')
     last = result
     if (result.ok) {
+      try { ingestWorkerModels(result.body) } catch {}
       return {
         ...(result.body || {}),
         source: 'go-slot-worker',
@@ -1926,20 +1213,12 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, panel.ok(activateVmSlot(id)))
       }
 
-      // POST /api/panel/vms/:id/update-claude-code
+      // POST /api/panel/vms/:id/update-claude-code — Claude CLI runtime was removed
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/update-claude-code$/.test(p)) {
-        const id = p.split('/')[4]
-        const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
-        if (!fs.existsSync(vmPath)) {
-          return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        }
-        const body = await readBody(req, 4096)
-        try {
-          const result = await updateVmClaudeCode(vmPath, { version: body.version || 'latest' })
-          return json(res, 200, panel.ok(result))
-        } catch (e) {
-          return json(res, 500, { ok: false, error: { message: String(e.message || e) } })
-        }
+        return json(res, 410, {
+          ok: false,
+          error: { code: 'claude_cli_removed', message: 'Claude CLI runtime was replaced by the Go slot worker; build and roll out the worker instead' },
+        })
       }
 
       // DELETE /api/panel/vms/:id — remove VM record, cli-home, unbind proxy
@@ -2131,7 +1410,6 @@ const server = http.createServer(async (req, res) => {
           return json(res, 409, { ok: false, error: { message: 'vm id exists' } })
         }
         const startNow = body.start !== false && body.status !== 'stopped'
-        const ccVer = 'removed'
         const wantKernel = body.kernel && OS_CATALOG[body.kernel] ? body.kernel : kernelForIndex(idx)
         const vm = {
           id,
@@ -2151,7 +1429,6 @@ const server = http.createServer(async (req, res) => {
           claude: {},
           fingerprint: { device_id: crypto.randomUUID(), session_id: crypto.randomUUID() },
           stats: {},
-          claude_code_version: ccVer,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
           schedulable: !!startNow,
@@ -2377,7 +1654,7 @@ const server = http.createServer(async (req, res) => {
           })
           if (body.activate !== false) {
             try { activateVmSlot(vmId) } catch {}
-            oauthGuard.noteImported({
+            applyOauthToCfg(cfg, {
               access_token: existing.claude.access_token,
               refresh_token: existing.claude.refresh_token,
               expires_at: existing.claude.expires_at,
@@ -2581,7 +1858,6 @@ const server = http.createServer(async (req, res) => {
         rewrite: cfg.rewrite.enabled ? 'on' : 'off',
         intercept_rules: cfg.intercept.rules.length,
         active_vm: getActiveVmId(cfg.paths.project),
-        claude_code_version: cfg.vm.claude_code_version,
         features: FEATURES,
         capabilities: GATEWAY_CAPABILITIES,
         limitations: LIMITATIONS,
@@ -2602,9 +1878,8 @@ const server = http.createServer(async (req, res) => {
           messages: '/v1/messages',
           models: '/v1/models',
           intercept_rules: '/admin/intercept/rules',
-          claude_code_update: '/admin/vm/claude-code/update',
         },
-        vm: { id: cfg.vm.id, email: cfg.vm.email, claude_code_version: cfg.vm.claude_code_version },
+        vm: { id: cfg.vm.id, email: cfg.vm.email },
       })
     }
 
@@ -2712,7 +1987,6 @@ const pub = {
     responses: `${cfg.base_url}/v1/responses`,
     messages: `${cfg.base_url}/v1/messages`,
     intercept_rules: `${cfg.base_url}/admin/intercept/rules`,
-    cc_update: `${cfg.base_url}/admin/vm/claude-code/update`,
   },
 }
 // Never persist the raw API key. Public snapshot only.

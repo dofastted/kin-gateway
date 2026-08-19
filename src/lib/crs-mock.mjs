@@ -14,7 +14,7 @@ export function writeCrsTrace({ body, headers, stream = false }) {
   if (!dest) return
   try { fs.mkdirSync(path.dirname(dest), { recursive: true }) } catch {}
   fs.writeFileSync(dest, JSON.stringify({
-    via: 'crs-relay',
+    via: 'go-worker',
     stream: !!stream,
     body,
     headers: redact(headers),
@@ -51,7 +51,7 @@ export function mockCrsPayload(options = {}) {
     return {
       ok: false,
       status: 500,
-      via: 'crs-relay',
+      via: 'go-worker',
       transportError: false,
       body: { type: 'error', error: { type: 'api_error', message: 'crs-mock simulated failure' } },
       headers: {},
@@ -61,7 +61,7 @@ export function mockCrsPayload(options = {}) {
     return {
       ok: false,
       status: 429,
-      via: 'crs-relay',
+      via: 'go-worker',
       transportError: false,
       body: { type: 'error', error: { type: 'rate_limit_error', message: '5h account quota exhausted' } },
       headers: {
@@ -74,7 +74,7 @@ export function mockCrsPayload(options = {}) {
     return {
       ok: true,
       status: 200,
-      via: 'crs-relay',
+      via: 'go-worker',
       body: message({
         text: '',
         stop: 'tool_use',
@@ -87,7 +87,7 @@ export function mockCrsPayload(options = {}) {
     return {
       ok: true,
       status: 200,
-      via: 'crs-relay',
+      via: 'go-worker',
       body: message({
         text: 'thoughtful-pong',
         content: [
@@ -101,7 +101,7 @@ export function mockCrsPayload(options = {}) {
   return {
     ok: true,
     status: 200,
-    via: 'crs-relay',
+    via: 'go-worker',
     body: message({ text }),
     headers: { 'anthropic-ratelimit-requests-remaining': '99' },
   }

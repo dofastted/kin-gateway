@@ -8,7 +8,7 @@ import { VmsRepo } from '../../src/lib/db/repos/vms-repo.mjs'
 import { encryptString, decryptString, isEncrypted } from '../../src/lib/db/secure.mjs'
 import { initVmDbSync, stopVmWatch, syncVmFile, removeVmFromDb, reconcileVms } from '../../src/lib/vm-db-sync.mjs'
 import { setVmWriteHook, atomicWriteJson } from '../../src/lib/vm-file.mjs'
-import { persistOauthToVm } from '../../src/lib/oauth-refresh.mjs'
+import { persistOauthToVm } from '../../src/lib/oauth-credentials.mjs'
 import { setVmSchedulable, setActiveVm } from '../../src/lib/vm-registry.mjs'
 
 let project

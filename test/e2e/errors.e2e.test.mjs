@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startGateway, api, listMockClaudePids } from '../harness.mjs'
+import { startGateway, api } from '../harness.mjs'
 import { callAnthropicMessages, streamAnthropicMessages } from '../../src/lib/anthropic-messages.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
@@ -39,7 +39,7 @@ test('unknown model is rejected without hop', async () => {
   }
 })
 
-test('legacy CLI selector cannot start a Claude process', async () => {
+test('legacy CLI selector header is ignored — Go worker still serves', async () => {
   const gw = await startGateway({ scenario: 'hang', timeoutMs: 800 })
   try {
     const r = await api(gw, 'POST', '/v1/messages', {
@@ -47,9 +47,6 @@ test('legacy CLI selector cannot start a Claude process', async () => {
       body: { model: MODEL, max_tokens: 8, messages: [{ role: 'user', content: 'x' }] },
     })
     assert.equal(r.status, 200, r.text)
-    await new Promise((ok) => setTimeout(ok, 250))
-    const leftover = listMockClaudePids()
-    assert.equal(leftover.length, 0, leftover.map((p) => p.cmd).join('\n'))
   } finally {
     await gw.stop()
   }

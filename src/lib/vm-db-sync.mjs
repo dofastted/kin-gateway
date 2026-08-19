@@ -13,7 +13,7 @@
  *   - active.json ↔ settings.active_vm mirrored the same way.
  *
  * All entry points no-op safely when the global DB is not open, so unit
- * tests that exercise oauth-refresh/vm-registry against bare temp dirs
+ * tests that exercise oauth-credentials/vm-registry against bare temp dirs
  * keep working without a database.
  */
 
