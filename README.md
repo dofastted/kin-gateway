@@ -101,6 +101,8 @@ npm run build:worker
 
 数据在 SQLite（WAL）。账号运行态、model/account cooldown 和每次请求 attempt 均持久化；worker 持有活动凭证，数据库保留加密恢复镜像。本地备份默认 24h。
 
+协议数据对齐 Sub2API 的 usage_logs 口径：流式与非流式统一持久化四类 token（输入/输出/缓存读/缓存写，含 5m/1h TTL 细分）、requested/upstream 模型与 mismatch、首 token 延迟和 stop_reason；账号 5h 会话窗口与限流 reset 以结构化列存入 `account_runtime_states`。OpenAI 兼容响应额外携带 `prompt_tokens_details` / `input_tokens_details` 缓存明细。
+
 面板契约：[docs/PANEL_API.md](docs/PANEL_API.md)。
 
 ## 文档

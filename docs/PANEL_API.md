@@ -34,6 +34,20 @@
 
 attempts 包含每次选中的 VM/账号、错误域、cooldown、响应提交边界和终态。日志：`normal` 摘要；`debug` 另存脱敏 body 快照。`X-Request-ID` 回写响应头。
 
+### 请求日志协议字段（与 Sub2API usage_logs 对齐）
+
+每行摘要除 `input_tokens` / `output_tokens` 外还包含：
+
+| 字段 | 说明 |
+|------|------|
+| `cache_read_tokens` / `cache_creation_tokens` | 提示缓存读取 / 写入 token |
+| `cache_creation_5m_tokens` / `cache_creation_1h_tokens` | 缓存写入 TTL 细分（无细分时归入 5m） |
+| `requested_model` / `upstream_model` / `model_mismatch` | 客户端请求模型、上游响应声明模型、三态不一致观测（null=上游未声明） |
+| `first_token_ms` | 首个业务事件延迟（流式实测；由 worker 数据面回传） |
+| `stop_reason` | Anthropic 终态 stop_reason（流式来自 `message_delta`） |
+
+流式请求的 usage 由 Go worker SSE 校验器合并后经 `X-Kin-Usage`/`X-Kin-Model`/`X-Kin-Stop-Reason` trailer 回传，与非流式同样只在终态 attempt 记一次。`/dashboard`、`/usage`、`/request-logs/stats` 的汇总均含缓存 token；`/vms/:id` 的 `account.runtime_window` 提供结构化 5h 会话窗口与限流 reset（`rate_limited_at` / `rate_limit_reset_at` / `overload_until` / `session_window_start|end|status`）。
+
 ## 备份 / 代理
 
 | 方法 | 路径 |

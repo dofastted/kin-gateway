@@ -37,6 +37,57 @@ test('openDatabase creates db, applies migrations, WAL enabled', () => {
   }
 })
 
+test('migration 005 adds protocol usage alignment columns', () => {
+  const db = openDatabase({ dataDir: tmp })
+  const cols = (table) => db.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name)
+  const reqCols = cols('request_logs')
+  for (const c of [
+    'cache_creation_5m_tokens', 'cache_creation_1h_tokens',
+    'requested_model', 'upstream_model', 'model_mismatch',
+    'first_token_ms', 'stop_reason',
+  ]) assert.ok(reqCols.includes(c), `request_logs missing ${c}`)
+  for (const c of ['cache_read_tokens', 'cache_creation_tokens']) {
+    assert.ok(cols('accounts').includes(c), `accounts missing ${c}`)
+    assert.ok(cols('api_keys').includes(c), `api_keys missing ${c}`)
+  }
+  const runtimeCols = cols('account_runtime_states')
+  for (const c of [
+    'rate_limited_at', 'rate_limit_reset_at', 'overload_until',
+    'session_window_start', 'session_window_end', 'session_window_status',
+  ]) assert.ok(runtimeCols.includes(c), `account_runtime_states missing ${c}`)
+})
+
+test('pre-005 database upgrades in place and keeps old rows readable', () => {
+  // Build a DB with migrations 001–004 only, insert a legacy row, then upgrade.
+  const migSrc = path.resolve('src/lib/db/migrations')
+  const oldDir = path.join(tmp, 'old-migs')
+  fs.mkdirSync(oldDir, { recursive: true })
+  for (const f of fs.readdirSync(migSrc)) {
+    if (f < '005') fs.copyFileSync(path.join(migSrc, f), path.join(oldDir, f))
+  }
+  const dbPath = path.join(tmp, 'upgrade.db')
+  const legacy = new DatabaseSync(dbPath)
+  applyMigrations(legacy, { migrationsDir: oldDir })
+  legacy.prepare(`
+    INSERT INTO request_logs (id, request_id, ts, protocol, model, status, input_tokens, output_tokens)
+    VALUES ('log_old', 'rid_old', ?, 'anthropic.messages', 'claude-sonnet-5', 200, 7, 2)
+  `).run(new Date().toISOString())
+  legacy.close()
+
+  process.env.KIN_DB_PATH = dbPath
+  const db = openDatabase({ dbPath })
+  const row = db.prepare('SELECT * FROM request_logs WHERE request_id = ?').get('rid_old')
+  assert.equal(row.input_tokens, 7)
+  assert.equal(row.cache_creation_5m_tokens, null)
+  assert.equal(row.stop_reason, null)
+  // new rows can use the new columns
+  db.prepare(`
+    INSERT INTO request_logs (id, request_id, ts, protocol, model, status, upstream_model, stop_reason, first_token_ms)
+    VALUES ('log_new', 'rid_new', ?, 'anthropic.messages', 'claude-sonnet-5', 200, 'claude-sonnet-5', 'end_turn', 21)
+  `).run(new Date().toISOString())
+  assert.equal(db.prepare('SELECT stop_reason FROM request_logs WHERE request_id = ?').get('rid_new').stop_reason, 'end_turn')
+})
+
 test('openDatabase is idempotent singleton; getDb throws when closed', () => {
   const a = openDatabase({ dataDir: tmp })
   const b = openDatabase({ dataDir: path.join(tmp, 'other') })

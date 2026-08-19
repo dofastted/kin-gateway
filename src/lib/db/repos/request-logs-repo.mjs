@@ -11,6 +11,9 @@ const SUMMARY_COLUMNS = [
   'account_id', 'workspace', 'input_tokens', 'output_tokens', 'error_code',
   'error_message', 'user_agent', 'ip', 'has_tools',
   'via', 'cache_read_tokens', 'cache_creation_tokens',
+  'cache_creation_5m_tokens', 'cache_creation_1h_tokens',
+  'requested_model', 'upstream_model', 'model_mismatch',
+  'first_token_ms', 'stop_reason',
   'attempt_count', 'final_state', 'final_account_id',
 ]
 
@@ -140,7 +143,10 @@ export class RequestLogsRepo {
              SUM(CASE WHEN status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END) AS errors,
              COALESCE(SUM(input_tokens), 0) AS input_tokens,
              COALESCE(SUM(output_tokens), 0) AS output_tokens,
-             CAST(AVG(duration_ms) AS INTEGER) AS avg_duration_ms
+             COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+             COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+             CAST(AVG(duration_ms) AS INTEGER) AS avg_duration_ms,
+             CAST(AVG(first_token_ms) AS INTEGER) AS avg_first_token_ms
       FROM request_logs ${cond}
       GROUP BY bucket ORDER BY bucket
     `).all(...params)
@@ -152,7 +158,9 @@ export class RequestLogsRepo {
       SELECT COUNT(*) AS requests,
              SUM(CASE WHEN status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END) AS errors,
              COALESCE(SUM(input_tokens), 0) AS input_tokens,
-             COALESCE(SUM(output_tokens), 0) AS output_tokens
+             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+             COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+             COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens
       FROM request_logs
     `).get()
   }

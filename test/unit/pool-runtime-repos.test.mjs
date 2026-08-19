@@ -39,6 +39,58 @@ test('account runtime state persists account and model cooldowns', () => {
   }
 })
 
+test('account cooldown mirrors structured rate-limit columns (sub2api style)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-runtime-repo-'))
+  const db = createDatabase({ dataDir: dir })
+  try {
+    const repo = new AccountRuntimeRepo(db)
+    const until = Date.now() + 300_000
+    repo.markCooldown('account-rl', {
+      vmId: 'vm-01',
+      until,
+      reason: 'account_quota_exhausted',
+    })
+    let state = repo.get('account-rl')
+    assert.equal(state.rate_limit_reset_at, until)
+    assert.ok(state.rate_limited_at <= Date.now())
+    assert.equal(state.overload_until, null)
+
+    repo.markCooldown('account-rl', { vmId: 'vm-01', until: until + 1000, reason: 'provider_overloaded' })
+    state = repo.get('account-rl')
+    assert.equal(state.overload_until, until + 1000)
+  } finally {
+    db.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('updateWindow persists session window without touching cooldowns', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-runtime-repo-'))
+  const db = createDatabase({ dataDir: dir })
+  try {
+    const repo = new AccountRuntimeRepo(db)
+    const end = Date.now() + 3600_000
+    repo.updateWindow('account-w', {
+      vmId: 'vm-02',
+      sessionWindowStart: end - 5 * 3600_000,
+      sessionWindowEnd: end,
+      sessionWindowStatus: 'allowed_warning',
+    })
+    const state = repo.get('account-w')
+    assert.equal(state.session_window_end, end)
+    assert.equal(state.session_window_start, end - 5 * 3600_000)
+    assert.equal(state.session_window_status, 'allowed_warning')
+    assert.equal(state.cooldown_until, null)
+    // partial update keeps prior fields
+    repo.updateWindow('account-w', { sessionWindowStatus: 'rejected' })
+    assert.equal(repo.get('account-w').session_window_end, end)
+    assert.equal(repo.get('account-w').session_window_status, 'rejected')
+  } finally {
+    db.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('request attempt ledger records final state and commit boundary', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-attempt-repo-'))
   const db = createDatabase({ dataDir: dir })

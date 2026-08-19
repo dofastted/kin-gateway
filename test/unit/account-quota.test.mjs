@@ -36,6 +36,31 @@ test('ingestHeaders updates unified windows + counters + allocations', () => {
   assert.equal(acc.recent_allocations[0].util_5h, 0.42)
 })
 
+test('ingestHeaders accumulates cache tokens and mirrors the session window', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  const windows = []
+  q.attachRuntimeRepo({ updateWindow: (accountId, patch) => windows.push({ accountId, ...patch }) })
+  q.ingestHeaders('a-cache', {
+    'anthropic-ratelimit-unified-5h-utilization': '0.2',
+    'anthropic-ratelimit-unified-5h-reset': '2026-08-19T20:00:00Z',
+    'anthropic-ratelimit-unified-5h-status': 'allowed',
+  }, {
+    input_tokens: 10,
+    output_tokens: 5,
+    cache_read_input_tokens: 3,
+    cache_creation_input_tokens: 7,
+  })
+  q.ingestHeaders('a-cache', {}, { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 2 })
+  const acc = q.snapshot().accounts.find((a) => a.account_id === 'a-cache')
+  assert.equal(acc.cache_read_tokens, 5)
+  assert.equal(acc.cache_creation_tokens, 7)
+  assert.equal(windows.length, 2)
+  const end = Date.parse('2026-08-19T20:00:00Z')
+  assert.equal(windows[0].sessionWindowEnd, end)
+  assert.equal(windows[0].sessionWindowStart, end - 5 * 3600_000)
+  assert.equal(windows[0].sessionWindowStatus, 'allowed')
+})
+
 test('canAccept blocks at safety ratio and records last_blocked', () => {
   const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
   q.ingestHeaders('a3', { 'anthropic-ratelimit-unified-5h-utilization': '0.96' })

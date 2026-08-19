@@ -285,6 +285,8 @@ export class ApiKeyStore {
     return this.repo.recordUsage(id, {
       tokens_in: Number(usage.input_tokens) || Number(usage.tokens_in) || 0,
       tokens_out: Number(usage.output_tokens) || Number(usage.tokens_out) || 0,
+      cache_read_tokens: Number(usage.cache_read_input_tokens ?? usage.cache_read_tokens) || 0,
+      cache_creation_tokens: Number(usage.cache_creation_input_tokens ?? usage.cache_creation_tokens) || 0,
     })
   }
 

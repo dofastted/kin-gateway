@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sanitizeAnthropicBody } from '../../src/lib/protocol/sanitize.mjs'
-import { toClaudeMessages, fromClaudeToOpenAICompletions } from '../../src/lib/protocol/convert.mjs'
+import { toClaudeMessages, fromClaudeToOpenAICompletions, fromClaudeToOpenAIChat, fromClaudeToResponses } from '../../src/lib/protocol/convert.mjs'
 import { applyCrsIdentityReplace, uuidFromSeed } from '../../src/lib/identity/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona, CRS_OFFICIAL_SYSTEM } from '../../src/lib/identity/crs-persona.mjs'
 
@@ -87,4 +87,48 @@ test('openai.completions prompt converts to Claude user message', () => {
   assert.equal(back.object, 'text_completion')
   assert.equal(back.choices[0].text, 'world')
   assert.equal(back.choices[0].finish_reason, 'stop')
+})
+
+test('OpenAI chat usage carries prompt_tokens_details cache breakdown', () => {
+  const claude = {
+    id: 'msg_1',
+    model: 'claude-haiku-4-5-20251001',
+    content: [{ type: 'text', text: 'hi' }],
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 10,
+      output_tokens: 4,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: 7,
+    },
+  }
+  const out = fromClaudeToOpenAIChat(claude, 'claude-haiku-4-5-20251001', 'vm-1', 'convert')
+  assert.equal(out.usage.prompt_tokens, 10)
+  assert.equal(out.usage.completion_tokens, 4)
+  assert.deepEqual(out.usage.prompt_tokens_details, { cached_tokens: 3, cache_creation_tokens: 7 })
+})
+
+test('OpenAI chat usage omits details when no cache tokens', () => {
+  const claude = {
+    id: 'msg_1',
+    model: 'claude-haiku-4-5-20251001',
+    content: [{ type: 'text', text: 'hi' }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 4 },
+  }
+  const out = fromClaudeToOpenAIChat(claude, 'claude-haiku-4-5-20251001', 'vm-1', 'convert')
+  assert.equal(out.usage.prompt_tokens_details, undefined)
+})
+
+test('OpenAI responses usage carries input_tokens_details cache breakdown', () => {
+  const claude = {
+    id: 'msg_1',
+    model: 'claude-haiku-4-5-20251001',
+    content: [{ type: 'text', text: 'hi' }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 2 },
+  }
+  const out = fromClaudeToResponses(claude, 'claude-haiku-4-5-20251001', 'vm-1', 'convert')
+  assert.equal(out.usage.input_tokens, 10)
+  assert.deepEqual(out.usage.input_tokens_details, { cached_tokens: 2 })
 })

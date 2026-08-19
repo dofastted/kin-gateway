@@ -195,6 +195,7 @@ let failoverRunner
 function initPoolRuntime() {
   runtimeRepo = new AccountRuntimeRepo()
   attemptsRepo = new RequestAttemptsRepo()
+  accountQuota.attachRuntimeRepo(runtimeRepo)
   try { attemptsRepo.cleanup(routingConfig?.logging?.retain_days || 7) } catch {}
   poolScheduler = new PoolScheduler({
     projectRoot: cfg.paths.project,
@@ -469,6 +470,10 @@ async function handleProtocol(req, res, protocol, pathName) {
     attempt_count: null,
     final_state: null,
     final_account_id: null,
+    requested_model: null,
+    upstream_model: null,
+    first_token_ms: null,
+    stop_reason: null,
   }
   res.on('finish', () => {
     try {
@@ -499,6 +504,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   logBag.inbound_body = inbound
   logBag.inbound_summary = summarizeBody(inbound)
   logBag.model = inbound?.model || null
+  logBag.requested_model = inbound?.model || null
   logBag.stream = !!inbound.stream
   logBag.has_tools = Array.isArray(inbound?.tools) && inbound.tools.length > 0
 
@@ -682,6 +688,9 @@ async function handleProtocol(req, res, protocol, pathName) {
   logBag.final_state = result?.finalState || result?.terminalState || null
   logBag.upstream_status = result?.status ?? null
   logBag.usage = result?.body?.usage || result?.usage || null
+  logBag.upstream_model = result?.body?.model || result?.model || null
+  logBag.first_token_ms = result?.ttftMs ?? null
+  logBag.stop_reason = result?.body?.stop_reason || result?.stopReason || null
   logBag.via = result?.via || 'go-worker-pool'
 
   if (result?.ok && result?.accountId) {

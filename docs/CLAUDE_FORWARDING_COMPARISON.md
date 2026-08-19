@@ -5,6 +5,8 @@
 > 结论基于指定源码快照，不代表后续版本。
 
 > **实施更新**：本文静态分析后，KIN 已在本分支完成第一轮目标改造：容器内长驻 Go slot worker、强制槽位 SOCKS5、worker 单一 OAuth refresh owner、priority/load/平滑 WRR/LRU 调度、account/model cooldown、有界 failover、两阶段 sticky、attempt 审计，以及 realtime/verified 两种终态策略。文中“原实现/改造前”风险用于说明改造动机。
+>
+> **数据库协议数据对齐（迁移 005）**：参考 Sub2API usage_logs/account 模型，KIN 已补齐流式 usage 落库（worker 经 `X-Kin-Usage`/`X-Kin-Model`/`X-Kin-Stop-Reason` trailer 回传合并 usage）、缓存 token 四列与 5m/1h TTL 细分、requested/upstream 模型与 mismatch 观测、首 token 延迟、stop_reason，以及 `account_runtime_states` 的结构化限流/5h 会话窗口列；OpenAI 兼容响应输出 `prompt_tokens_details`/`input_tokens_details` 缓存明细。计费/成本/多租户表明确不引入。
 
 ## 1. 结论摘要
 

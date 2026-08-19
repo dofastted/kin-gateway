@@ -96,6 +96,44 @@ test('streamGoWorker forwards SSE and audits terminal state', async () => {
   }
 })
 
+test('streamGoWorker parses usage/model/stop_reason trailers and measures ttft', async () => {
+  const fx = await fixture((req, res) => {
+    res.setHeader('content-type', 'text/event-stream')
+    res.setHeader('trailer', 'x-kin-terminal-state, x-kin-usage, x-kin-model, x-kin-stop-reason')
+    res.write('data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001"}}\n\n')
+    res.write('data: {"type":"message_stop"}\n\n')
+    res.addTrailers({
+      'x-kin-terminal-state': 'verified',
+      'x-kin-usage': JSON.stringify({
+        input_tokens: 12,
+        output_tokens: 4,
+        cache_read_input_tokens: 3,
+        cache_creation_input_tokens: 5,
+        cache_creation: { ephemeral_5m_input_tokens: 5 },
+      }),
+      'x-kin-model': 'claude-haiku-4-5-20251001',
+      'x-kin-stop-reason': 'end_turn',
+    })
+    res.end()
+  })
+  try {
+    const result = await streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-haiku-4-5-20251001', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      onEvent: () => {},
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.usage.input_tokens, 12)
+    assert.equal(result.usage.cache_read_input_tokens, 3)
+    assert.equal(result.usage.cache_creation.ephemeral_5m_input_tokens, 5)
+    assert.equal(result.model, 'claude-haiku-4-5-20251001')
+    assert.equal(result.stopReason, 'end_turn')
+    assert.ok(result.ttftMs != null && result.ttftMs >= 0)
+  } finally {
+    await fx.close()
+  }
+})
+
 test('workerHealth fails closed when socket is absent', async () => {
   const result = await workerHealth({
     homeDir: '/tmp/not-present/cli-home',

@@ -23,6 +23,8 @@ function rowToAccount(row) {
     requests: row.requests || 0,
     tokens_in: row.tokens_in || 0,
     tokens_out: row.tokens_out || 0,
+    cache_read_tokens: row.cache_read_tokens || 0,
+    cache_creation_tokens: row.cache_creation_tokens || 0,
     unified: parse(row.unified_json, {
       '5h': { utilization: 0, reset: null, status: 'active' },
       '7d': { utilization: 0, reset: null, status: 'active' },
@@ -43,11 +45,13 @@ export class AccountsRepo {
     this._list = db.prepare('SELECT * FROM accounts ORDER BY account_id')
     this._insert = db.prepare(`
       INSERT INTO accounts (account_id, vm_id, email, max_concurrency, requests, tokens_in, tokens_out,
+                            cache_read_tokens, cache_creation_tokens,
                             unified_json, last_blocked_json, last_cli_rate_limit_json, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     this._update = db.prepare(`
       UPDATE accounts SET vm_id = ?, email = ?, max_concurrency = ?, requests = ?, tokens_in = ?, tokens_out = ?,
+                          cache_read_tokens = ?, cache_creation_tokens = ?,
                           unified_json = ?, last_blocked_json = ?, last_cli_rate_limit_json = ?, updated_at = ?
       WHERE account_id = ?
     `)
@@ -85,6 +89,8 @@ export class AccountsRepo {
       acc.requests ?? 0,
       acc.tokens_in ?? 0,
       acc.tokens_out ?? 0,
+      acc.cache_read_tokens ?? 0,
+      acc.cache_creation_tokens ?? 0,
       JSON.stringify(acc.unified ?? null),
       acc.last_blocked != null ? JSON.stringify(acc.last_blocked) : null,
       acc.last_cli_rate_limit != null ? JSON.stringify(acc.last_cli_rate_limit) : null,
@@ -102,6 +108,8 @@ export class AccountsRepo {
       acc.requests ?? 0,
       acc.tokens_in ?? 0,
       acc.tokens_out ?? 0,
+      acc.cache_read_tokens ?? 0,
+      acc.cache_creation_tokens ?? 0,
       JSON.stringify(acc.unified ?? null),
       acc.last_blocked != null ? JSON.stringify(acc.last_blocked) : null,
       acc.last_cli_rate_limit != null ? JSON.stringify(acc.last_cli_rate_limit) : null,

@@ -90,6 +90,23 @@ test('update reset_quota and remove', () => {
   assert.equal(store.authenticate(rec.key).ok, false)
 })
 
+test('recordUsage accumulates cache token columns', () => {
+  const store = tmpStore()
+  const rec = store.create({ name: 'cache' })
+  store.recordUsage(rec.id, {
+    input_tokens: 10,
+    output_tokens: 5,
+    cache_read_input_tokens: 3,
+    cache_creation_input_tokens: 7,
+  })
+  store.recordUsage(rec.id, { input_tokens: 1, output_tokens: 1, cache_read_tokens: 2 })
+  const saved = store.getById(rec.id)
+  assert.equal(saved.tokens_in, 11)
+  assert.equal(saved.tokens_out, 6)
+  assert.equal(saved.cache_read_tokens, 5)
+  assert.equal(saved.cache_creation_tokens, 7)
+})
+
 test('custom key rejected when duplicate', () => {
   const store = tmpStore()
   store.create({ name: 'a', key: 'sk-kin-customkey0001' })

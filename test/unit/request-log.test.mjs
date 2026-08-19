@@ -56,6 +56,53 @@ test('normal mode writes jsonl without body', () => {
   assert.equal(store.listDebug({ limit: 5 }).length, 0)
 })
 
+test('summary persists protocol usage detail (cache/model/ttft/stop_reason)', () => {
+  const store = tmpStore('normal')
+  const ctx = store.start({ method: 'POST', headers: {}, socket: {} }, { protocol: 'anthropic.messages', pathName: '/v1/messages' })
+  const sum = store.finish(ctx, {
+    status: 200,
+    model: 'sonnet',
+    requested_model: 'sonnet',
+    upstream_model: 'claude-sonnet-5',
+    first_token_ms: 42,
+    stop_reason: 'end_turn',
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: 7,
+      cache_creation: { ephemeral_5m_input_tokens: 4, ephemeral_1h_input_tokens: 3 },
+    },
+  })
+  assert.equal(sum.cache_read_tokens, 3)
+  assert.equal(sum.cache_creation_tokens, 7)
+  assert.equal(sum.cache_creation_5m_tokens, 4)
+  assert.equal(sum.cache_creation_1h_tokens, 3)
+  assert.equal(sum.requested_model, 'sonnet')
+  assert.equal(sum.upstream_model, 'claude-sonnet-5')
+  assert.equal(sum.model_mismatch, 1)
+  assert.equal(sum.first_token_ms, 42)
+  assert.equal(sum.stop_reason, 'end_turn')
+  const row = store.queryNormal({ limit: 1 }).items[0]
+  assert.equal(row.cache_creation_5m_tokens, 4)
+  assert.equal(row.upstream_model, 'claude-sonnet-5')
+  assert.equal(row.stop_reason, 'end_turn')
+})
+
+test('cache breakdown falls back to the 5m bucket (sub2api normalization)', () => {
+  const store = tmpStore('normal')
+  const ctx = store.start({ method: 'POST', headers: {}, socket: {} }, { protocol: 'anthropic.messages', pathName: '/v1/messages' })
+  const sum = store.finish(ctx, {
+    status: 200,
+    model: 'claude-sonnet-5',
+    upstream_model: 'claude-sonnet-5',
+    usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 9 },
+  })
+  assert.equal(sum.cache_creation_5m_tokens, 9)
+  assert.equal(sum.cache_creation_1h_tokens, 0)
+  assert.equal(sum.model_mismatch, 0)
+})
+
 test('debug mode stores full redacted body', () => {
   const store = tmpStore('normal')
   const req = { method: 'POST', headers: { 'x-kin-debug': '1', authorization: 'Bearer sk-kin-abc' }, socket: {} }

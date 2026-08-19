@@ -58,6 +58,8 @@ export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig,
       requests: accounts.reduce((s, a) => s + (a.requests || 0), 0),
       tokens_in: accounts.reduce((s, a) => s + (a.tokens_in || 0), 0),
       tokens_out: accounts.reduce((s, a) => s + (a.tokens_out || 0), 0),
+      cache_read_tokens: accounts.reduce((s, a) => s + (a.cache_read_tokens || 0), 0),
+      cache_creation_tokens: accounts.reduce((s, a) => s + (a.cache_creation_tokens || 0), 0),
     },
     vms,
     routing: {
@@ -103,11 +105,32 @@ export function buildVmDetail({ cfg, accountQuota, id }) {
           requests: acc.requests,
           tokens_in: acc.tokens_in,
           tokens_out: acc.tokens_out,
+          cache_read_tokens: acc.cache_read_tokens || 0,
+          cache_creation_tokens: acc.cache_creation_tokens || 0,
           last_blocked: acc.last_blocked,
           recent: (acc.recent_allocations || []).slice(-10),
+          runtime_window: runtimeWindow(accountQuota, acc.account_id),
         }
       : null,
   })
+}
+
+/** Structured session-window / rate-limit state from account_runtime_states. */
+function runtimeWindow(accountQuota, accountId) {
+  try {
+    const state = accountQuota?.runtimeRepo?.get?.(accountId)
+    if (!state) return null
+    return {
+      rate_limited_at: state.rate_limited_at,
+      rate_limit_reset_at: state.rate_limit_reset_at,
+      overload_until: state.overload_until,
+      session_window_start: state.session_window_start,
+      session_window_end: state.session_window_end,
+      session_window_status: state.session_window_status,
+    }
+  } catch {
+    return null
+  }
 }
 
 export async function buildProbeOne({ cfg, accountQuota, id }) {
@@ -191,6 +214,8 @@ export function buildUsage({ accountQuota, cfg }) {
     requests: a.requests,
     tokens_in: a.tokens_in,
     tokens_out: a.tokens_out,
+    cache_read_tokens: a.cache_read_tokens || 0,
+    cache_creation_tokens: a.cache_creation_tokens || 0,
     near_limit:
       Number(a.unified?.['5h']?.utilization || 0) >= (snap.safety_ratio || 0.95) ||
       Number(a.unified?.['7d']?.utilization || 0) >= (snap.safety_ratio || 0.95),
@@ -202,6 +227,8 @@ export function buildUsage({ accountQuota, cfg }) {
       requests: accounts.reduce((s, a) => s + (a.requests || 0), 0),
       tokens_in: accounts.reduce((s, a) => s + (a.tokens_in || 0), 0),
       tokens_out: accounts.reduce((s, a) => s + (a.tokens_out || 0), 0),
+      cache_read_tokens: accounts.reduce((s, a) => s + (a.cache_read_tokens || 0), 0),
+      cache_creation_tokens: accounts.reduce((s, a) => s + (a.cache_creation_tokens || 0), 0),
       peak_5h: Math.max(0, ...accounts.map((a) => a.utilization_5h), 0),
       peak_7d: Math.max(0, ...accounts.map((a) => a.utilization_7d), 0),
       near_limit: accounts.filter((a) => a.near_limit).length,

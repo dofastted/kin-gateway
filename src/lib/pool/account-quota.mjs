@@ -30,6 +30,28 @@ export class AccountQuota {
     this.repo = new AccountsRepo(db)
   }
 
+  /**
+   * Optional structured window write-through target (AccountRuntimeRepo).
+   * Mirrors the 5h session window + rate-limit resets into queryable columns.
+   */
+  attachRuntimeRepo(runtimeRepo) {
+    this.runtimeRepo = runtimeRepo || null
+  }
+
+  _writeSessionWindow(acc) {
+    if (!this.runtimeRepo?.updateWindow || !acc) return
+    const endIso = acc.unified?.['5h']?.reset || null
+    const endMs = endIso ? Date.parse(endIso) : NaN
+    try {
+      this.runtimeRepo.updateWindow(acc.account_id, {
+        vmId: acc.vm_id || null,
+        sessionWindowEnd: Number.isFinite(endMs) ? endMs : null,
+        sessionWindowStart: Number.isFinite(endMs) ? endMs - 5 * 3600_000 : null,
+        sessionWindowStatus: acc.unified?.['5h']?.status || null,
+      })
+    } catch {}
+  }
+
   ensure(account) {
     const id = account.account_id || account.account_uuid || account.id
     if (!id) return
@@ -91,6 +113,10 @@ export class AccountQuota {
     if (usageBody?.input_tokens != null) {
       acc.tokens_in += Number(usageBody.input_tokens) || 0
       acc.tokens_out += Number(usageBody.output_tokens) || 0
+      acc.cache_read_tokens = (acc.cache_read_tokens || 0) +
+        (Number(usageBody.cache_read_input_tokens ?? usageBody.cache_read_tokens) || 0)
+      acc.cache_creation_tokens = (acc.cache_creation_tokens || 0) +
+        (Number(usageBody.cache_creation_input_tokens ?? usageBody.cache_creation_tokens) || 0)
     }
     acc.requests += 1
 
@@ -103,7 +129,9 @@ export class AccountQuota {
       tokens_out: usageBody?.output_tokens ?? null,
     })
 
-    return this.repo.save(acc)
+    const saved = this.repo.save(acc)
+    this._writeSessionWindow(saved)
+    return saved
   }
 
   /**
@@ -152,7 +180,9 @@ export class AccountQuota {
       ok: !!probe.ok,
       source: probe.source || 'vm-oauth-usage',
     }
-    return this.repo.save(acc)
+    const saved = this.repo.save(acc)
+    this._writeSessionWindow(saved)
+    return saved
   }
 
   /**
@@ -312,6 +342,8 @@ export class AccountQuota {
         requests: a.requests,
         tokens_in: a.tokens_in,
         tokens_out: a.tokens_out,
+        cache_read_tokens: a.cache_read_tokens || 0,
+        cache_creation_tokens: a.cache_creation_tokens || 0,
         unified: a.unified,
         last_blocked: a.last_blocked,
         recent_allocations: this.repo.recentAllocations(a.account_id, 5),

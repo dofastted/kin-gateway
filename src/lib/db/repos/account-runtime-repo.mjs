@@ -21,6 +21,12 @@ function rowToState(row) {
     refresh_status: row.refresh_status || null,
     worker_heartbeat_at: row.worker_heartbeat_at == null ? null : Number(row.worker_heartbeat_at),
     worker_status: parse(row.worker_status_json),
+    rate_limited_at: row.rate_limited_at == null ? null : Number(row.rate_limited_at),
+    rate_limit_reset_at: row.rate_limit_reset_at == null ? null : Number(row.rate_limit_reset_at),
+    overload_until: row.overload_until == null ? null : Number(row.overload_until),
+    session_window_start: row.session_window_start == null ? null : Number(row.session_window_start),
+    session_window_end: row.session_window_end == null ? null : Number(row.session_window_end),
+    session_window_status: row.session_window_status || null,
     updated_at: row.updated_at,
   }
 }
@@ -35,8 +41,11 @@ export class AccountRuntimeRepo {
       INSERT INTO account_runtime_states (
         account_id, vm_id, status, priority, weight, cooldown_until,
         cooldown_reason, model_states_json, last_used_at, credential_generation,
-        refresh_status, worker_heartbeat_at, worker_status_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        refresh_status, worker_heartbeat_at, worker_status_json,
+        rate_limited_at, rate_limit_reset_at, overload_until,
+        session_window_start, session_window_end, session_window_status,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id) DO UPDATE SET
         vm_id = excluded.vm_id,
         status = excluded.status,
@@ -50,6 +59,12 @@ export class AccountRuntimeRepo {
         refresh_status = excluded.refresh_status,
         worker_heartbeat_at = excluded.worker_heartbeat_at,
         worker_status_json = excluded.worker_status_json,
+        rate_limited_at = excluded.rate_limited_at,
+        rate_limit_reset_at = excluded.rate_limit_reset_at,
+        overload_until = excluded.overload_until,
+        session_window_start = excluded.session_window_start,
+        session_window_end = excluded.session_window_end,
+        session_window_status = excluded.session_window_status,
         updated_at = excluded.updated_at
     `)
   }
@@ -88,9 +103,45 @@ export class AccountRuntimeRepo {
       next.refresh_status ?? null,
       next.worker_heartbeat_at ?? null,
       next.worker_status != null ? JSON.stringify(next.worker_status) : null,
+      next.rate_limited_at ?? null,
+      next.rate_limit_reset_at ?? null,
+      next.overload_until ?? null,
+      next.session_window_start ?? null,
+      next.session_window_end ?? null,
+      next.session_window_status ?? null,
       next.updated_at,
     )
     return this.get(next.account_id)
+  }
+
+  /**
+   * Structured rate-limit / session-window write-through
+   * (sub2api account.rate_limited_at / rate_limit_reset_at / overload_until /
+   *  session_window_* counterpart). Only provided fields are updated.
+   */
+  updateWindow(accountId, {
+    vmId = null,
+    rateLimitedAt,
+    rateLimitResetAt,
+    overloadUntil,
+    sessionWindowStart,
+    sessionWindowEnd,
+    sessionWindowStatus,
+  } = {}) {
+    const current = this.get(accountId) || {
+      account_id: accountId,
+      vm_id: vmId,
+      model_states: {},
+    }
+    if (!current.vm_id && vmId) current.vm_id = vmId
+    if (!current.vm_id) return null
+    if (rateLimitedAt !== undefined) current.rate_limited_at = rateLimitedAt
+    if (rateLimitResetAt !== undefined) current.rate_limit_reset_at = rateLimitResetAt
+    if (overloadUntil !== undefined) current.overload_until = overloadUntil
+    if (sessionWindowStart !== undefined) current.session_window_start = sessionWindowStart
+    if (sessionWindowEnd !== undefined) current.session_window_end = sessionWindowEnd
+    if (sessionWindowStatus !== undefined) current.session_window_status = sessionWindowStatus
+    return this.upsert(current)
   }
 
   markCooldown(accountId, {
@@ -117,6 +168,14 @@ export class AccountRuntimeRepo {
       current.status = status
       current.cooldown_until = Number(until) || null
       current.cooldown_reason = reason || null
+      // Structured mirror of the protocol-level limit (sub2api account columns).
+      if (/rate_limited|quota_exhausted/i.test(String(reason || ''))) {
+        current.rate_limited_at = Date.now()
+        current.rate_limit_reset_at = Number(until) || null
+      }
+      if (/overload/i.test(String(reason || ''))) {
+        current.overload_until = Number(until) || null
+      }
     }
     return this.upsert(current)
   }

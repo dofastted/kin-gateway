@@ -55,6 +55,33 @@ function summarizeBody(body) {
   }
 }
 
+/**
+ * Cache-creation TTL breakdown, normalized like Sub2API:
+ * prefer usage.cache_creation.ephemeral_5m/1h; when the breakdown is absent
+ * but cache_creation_input_tokens > 0, attribute everything to the 5m bucket.
+ */
+function cacheCreationBreakdown(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return { cache_creation_5m_tokens: null, cache_creation_1h_tokens: null }
+  }
+  const nested = usage.cache_creation
+  let five = Number(nested?.ephemeral_5m_input_tokens) || 0
+  let hour = Number(nested?.ephemeral_1h_input_tokens) || 0
+  const total = Number(usage.cache_creation_input_tokens ?? usage.cache_creation_tokens) || 0
+  if (five === 0 && hour === 0 && total > 0) five = total
+  if (five === 0 && hour === 0) {
+    return { cache_creation_5m_tokens: null, cache_creation_1h_tokens: null }
+  }
+  return { cache_creation_5m_tokens: five, cache_creation_1h_tokens: hour }
+}
+
+/** Tri-state model mismatch: null = upstream did not declare a model. */
+function modelMismatch(requested, upstream) {
+  if (!requested || !upstream) return null
+  const norm = (m) => String(m).split('/').filter(Boolean).pop().replace(/\[1m\]$/i, '').toLowerCase()
+  return norm(requested) === norm(upstream) ? 0 : 1
+}
+
 function redactHeaders(headers = {}) {
   const out = {}
   for (const [k, v] of Object.entries(headers)) {
@@ -235,6 +262,12 @@ export class RequestLogStore {
       via: extra.via || extra.hop_meta?.via || null,
       cache_read_tokens: extra.cache_read_tokens ?? extra.usage?.cache_read_input_tokens ?? extra.usage?.cache_read_tokens ?? null,
       cache_creation_tokens: extra.cache_creation_tokens ?? extra.usage?.cache_creation_input_tokens ?? extra.usage?.cache_creation_tokens ?? null,
+      ...cacheCreationBreakdown(extra.usage),
+      requested_model: extra.requested_model || extra.model || null,
+      upstream_model: extra.upstream_model || null,
+      model_mismatch: modelMismatch(extra.requested_model || extra.model, extra.upstream_model),
+      first_token_ms: extra.first_token_ms ?? null,
+      stop_reason: extra.stop_reason || extra.usage?.stop_reason || null,
       attempt_count: extra.attempt_count ?? null,
       final_state: extra.final_state || null,
       final_account_id: extra.final_account_id || extra.account_id || null,

@@ -8,7 +8,8 @@ import { getDb } from '../database.mjs'
 const COLUMNS = [
   'id', 'name', 'key', 'status', 'max_concurrency', 'quota_requests', 'quota_used',
   'rpm', 'expires_at', 'created_at', 'updated_at', 'last_used_at',
-  'requests', 'tokens_in', 'tokens_out', 'key_hash', 'key_prefix', 'key_suffix',
+  'requests', 'tokens_in', 'tokens_out', 'cache_read_tokens', 'cache_creation_tokens',
+  'key_hash', 'key_prefix', 'key_suffix',
 ]
 
 function rowToRec(row) {
@@ -34,6 +35,8 @@ export class ApiKeysRepo {
         quota_used = quota_used + 1,
         tokens_in = tokens_in + ?,
         tokens_out = tokens_out + ?,
+        cache_read_tokens = COALESCE(cache_read_tokens, 0) + ?,
+        cache_creation_tokens = COALESCE(cache_creation_tokens, 0) + ?,
         last_used_at = ?,
         updated_at = ?
       WHERE id = ?
@@ -74,9 +77,17 @@ export class ApiKeysRepo {
     return info.changes > 0
   }
 
-  recordUsage(id, { tokens_in = 0, tokens_out = 0 } = {}) {
+  recordUsage(id, { tokens_in = 0, tokens_out = 0, cache_read_tokens = 0, cache_creation_tokens = 0 } = {}) {
     const now = new Date().toISOString()
-    this._recordUsage.run(Number(tokens_in) || 0, Number(tokens_out) || 0, now, now, id)
+    this._recordUsage.run(
+      Number(tokens_in) || 0,
+      Number(tokens_out) || 0,
+      Number(cache_read_tokens) || 0,
+      Number(cache_creation_tokens) || 0,
+      now,
+      now,
+      id,
+    )
     return this.getById(id)
   }
 

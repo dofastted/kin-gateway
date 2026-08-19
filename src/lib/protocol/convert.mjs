@@ -291,12 +291,34 @@ export function fromClaudeToOpenAIChat(claude, requestedModel, vmId, mode = 'con
     created: Math.floor(Date.now() / 1000),
     model: requestedModel || claude.model,
     choices: [{ index: 0, message, finish_reason: finish }],
-    usage: {
-      prompt_tokens: claude.usage?.input_tokens || 0,
-      completion_tokens: claude.usage?.output_tokens || 0,
-      total_tokens: (claude.usage?.input_tokens || 0) + (claude.usage?.output_tokens || 0),
-    },
+    usage: chatUsage(claude.usage),
   }
+}
+
+/**
+ * Claude usage → OpenAI Chat usage with cache detail
+ * (sub2api apicompat ChatTokenDetails counterpart: cached_tokens / cache_creation_tokens).
+ * Token totals keep the Anthropic input_tokens meaning — details are additive only.
+ */
+function chatUsage(usage) {
+  const out = {
+    prompt_tokens: usage?.input_tokens || 0,
+    completion_tokens: usage?.output_tokens || 0,
+    total_tokens: (usage?.input_tokens || 0) + (usage?.output_tokens || 0),
+  }
+  const details = promptTokensDetails(usage)
+  if (details) out.prompt_tokens_details = details
+  return out
+}
+
+function promptTokensDetails(usage) {
+  const cached = Number(usage?.cache_read_input_tokens ?? usage?.cache_read_tokens) || 0
+  const created = Number(usage?.cache_creation_input_tokens ?? usage?.cache_creation_tokens) || 0
+  if (!cached && !created) return null
+  const details = {}
+  if (cached) details.cached_tokens = cached
+  if (created) details.cache_creation_tokens = created
+  return details
 }
 
 export function fromClaudeToResponses(claude, requestedModel, vmId, mode = 'convert') {
@@ -325,12 +347,20 @@ export function fromClaudeToResponses(claude, requestedModel, vmId, mode = 'conv
     model: requestedModel || claude.model,
     output,
     output_text: text,
-    usage: {
-      input_tokens: claude.usage?.input_tokens || 0,
-      output_tokens: claude.usage?.output_tokens || 0,
-      total_tokens: (claude.usage?.input_tokens || 0) + (claude.usage?.output_tokens || 0),
-    },
+    usage: responsesUsage(claude.usage),
   }
+}
+
+/** Claude usage → OpenAI Responses usage with input_tokens_details cache breakdown. */
+function responsesUsage(usage) {
+  const out = {
+    input_tokens: usage?.input_tokens || 0,
+    output_tokens: usage?.output_tokens || 0,
+    total_tokens: (usage?.input_tokens || 0) + (usage?.output_tokens || 0),
+  }
+  const details = promptTokensDetails(usage)
+  if (details) out.input_tokens_details = details
+  return out
 }
 
 // ---------- Streaming: Claude SSE → OpenAI Chat chunks ----------
@@ -438,11 +468,7 @@ export function claudeSSELineToOpenAIChatChunks(line, state) {
     chunks.push({
       ...base,
       choices: [{ index: 0, delta: {}, finish_reason: finish }],
-      usage: evt.usage ? {
-        prompt_tokens: evt.usage.input_tokens || 0,
-        completion_tokens: evt.usage.output_tokens || 0,
-        total_tokens: (evt.usage.input_tokens || 0) + (evt.usage.output_tokens || 0),
-      } : undefined,
+      usage: evt.usage ? chatUsage(evt.usage) : undefined,
     })
   }
 
