@@ -40,7 +40,16 @@ function message({ text, stop = 'end_turn', content = null }) {
     model: process.env.KIN_MOCK_MODEL || 'claude-haiku-4-5-20251001',
     content: content || [{ type: 'text', text }],
     stop_reason: stop,
-    usage: { input_tokens: 12, output_tokens: 4 },
+    usage: {
+      input_tokens: 12,
+      output_tokens: 4,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: 5,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 5,
+        ephemeral_1h_input_tokens: 0,
+      },
+    },
   }
 }
 

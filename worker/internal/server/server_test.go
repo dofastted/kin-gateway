@@ -61,7 +61,8 @@ func TestRealtimeStreamReportsVerifiedTrailer(t *testing.T) {
 	anthropic := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		_, _ = writer.Write([]byte(
-			"data: {\"type\":\"message_start\",\"message\":{}}\n\n" +
+			"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":3}}}\n\n" +
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n" +
 				"data: {\"type\":\"message_stop\"}\n\n",
 		))
 	}))
@@ -79,6 +80,16 @@ func TestRealtimeStreamReportsVerifiedTrailer(t *testing.T) {
 	result := recorder.Result()
 	if result.Trailer.Get("X-Kin-Terminal-State") != "verified" {
 		t.Fatalf("terminal trailer=%q headers=%v", result.Trailer.Get("X-Kin-Terminal-State"), result.Header)
+	}
+	if result.Trailer.Get("X-Kin-Model") != "claude-haiku-4-5-20251001" {
+		t.Fatalf("model trailer=%q", result.Trailer.Get("X-Kin-Model"))
+	}
+	if result.Trailer.Get("X-Kin-Stop-Reason") != "end_turn" {
+		t.Fatalf("stop-reason trailer=%q", result.Trailer.Get("X-Kin-Stop-Reason"))
+	}
+	usageTrailer := result.Trailer.Get("X-Kin-Usage")
+	if !strings.Contains(usageTrailer, "\"input_tokens\":12") || !strings.Contains(usageTrailer, "\"output_tokens\":4") {
+		t.Fatalf("usage trailer=%q", usageTrailer)
 	}
 }
 

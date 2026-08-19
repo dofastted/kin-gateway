@@ -110,6 +110,19 @@ function publicHeaders(headers = {}) {
   return result
 }
 
+/** Parse the X-Kin-Usage / X-Kin-Model / X-Kin-Stop-Reason worker metadata. */
+function streamMetaFromHeaders(headers = {}) {
+  let usage = null
+  if (headers['x-kin-usage']) {
+    try { usage = JSON.parse(headers['x-kin-usage']) } catch {}
+  }
+  return {
+    usage,
+    model: headers['x-kin-model'] || null,
+    stopReason: headers['x-kin-stop-reason'] || null,
+  }
+}
+
 function workerEnvelope({ body, reqHeaders, exec, identity, stream, deliveryMode }) {
   return {
     body,
@@ -140,7 +153,14 @@ export async function callGoWorker({
     const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
     writeCrsTrace({ body, headers, stream: false })
     const mock = mockCrsPayload({ scenario: mockScenario(exec) })
-    return { ...mock, via: 'go-worker-mock', terminalState: mock.ok ? 'verified' : 'error' }
+    return {
+      ...mock,
+      via: 'go-worker-mock',
+      terminalState: mock.ok ? 'verified' : 'error',
+      usage: mock.body?.usage || null,
+      model: mock.body?.model || null,
+      stopReason: mock.body?.stop_reason || null,
+    }
   }
   try {
     const response = await workerRequest(exec, {
@@ -159,6 +179,9 @@ export async function callGoWorker({
       via: 'go-worker',
       body: parsed,
       headers,
+      usage: parsed?.usage || null,
+      model: parsed?.model || null,
+      stopReason: parsed?.stop_reason || null,
       terminalState: headers['x-kin-terminal-state'] || null,
       transportError: false,
     }
@@ -190,6 +213,7 @@ export async function streamGoWorker({
     const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
     writeCrsTrace({ body, headers, stream: true })
     const scenario = mockScenario(exec)
+    const mockStartedAt = Date.now()
     if (scenario === 'incomplete_stream') {
       if (deliveryMode === 'verified') {
         return {
@@ -233,8 +257,12 @@ export async function streamGoWorker({
         committed: false,
       }
     }
+    let mockTtftMs = null
     await emitMockSse(async (line) => {
-      if (line.startsWith('data:') && typeof onCommit === 'function') onCommit()
+      if (line.startsWith('data:')) {
+        if (mockTtftMs == null) mockTtftMs = Date.now() - mockStartedAt
+        if (typeof onCommit === 'function') onCommit()
+      }
       if (onEvent) await onEvent(line)
     }, payload)
     return {
@@ -242,9 +270,15 @@ export async function streamGoWorker({
       via: 'go-worker-mock-stream',
       terminalState: payload.ok ? 'verified' : 'error',
       committed: !!payload.ok,
+      usage: payload.body?.usage || null,
+      model: payload.body?.model || null,
+      stopReason: payload.body?.stop_reason || null,
+      ttftMs: mockTtftMs,
     }
   }
   let committed = false
+  const startedAt = Date.now()
+  let ttftMs = null
   try {
     const response = await workerRequest(exec, {
       method: 'POST',
@@ -284,6 +318,7 @@ export async function streamGoWorker({
           } catch {}
           if (!committed) {
             committed = true
+            ttftMs = Date.now() - startedAt
             if (typeof onCommit === 'function') onCommit()
           }
         }
@@ -295,12 +330,17 @@ export async function streamGoWorker({
     const terminalState = trailers['x-kin-terminal-state']
       || headers['x-kin-terminal-state']
       || (sawTerminal ? 'verified' : 'incomplete')
+    const meta = streamMetaFromHeaders({ ...headers, ...trailers })
     return {
       ok: response.statusCode === 200 && !lastError && terminalState === 'verified',
       status: response.statusCode || 0,
       via: 'go-worker-stream',
       body: lastError || { type: 'message', role: 'assistant', content: [] },
       headers: { ...headers, ...trailers },
+      usage: meta.usage,
+      model: meta.model,
+      stopReason: meta.stopReason,
+      ttftMs,
       committed,
       terminalState,
       transportError: false,
@@ -312,6 +352,7 @@ export async function streamGoWorker({
       via: 'go-worker-stream',
       body: { type: 'error', error: { type: 'worker_error', code: error.code || 'worker_transport_error', message: String(error.message || error).slice(0, 300) } },
       headers: {},
+      ttftMs,
       committed,
       terminalState: committed ? 'incomplete' : 'transport_error',
       transportError: true,

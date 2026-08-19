@@ -13,12 +13,14 @@ import (
 )
 
 type Event struct {
-	Raw      []byte
-	Name     string
-	Data     []byte
-	Type     string
-	Terminal bool
-	Usage    map[string]any
+	Raw        []byte
+	Name       string
+	Data       []byte
+	Type       string
+	Terminal   bool
+	Usage      map[string]any
+	Model      string
+	StopReason string
 }
 
 type Result struct {
@@ -26,6 +28,8 @@ type Result struct {
 	SawTerminal bool
 	EventCount  int
 	Usage       map[string]any
+	Model       string
+	StopReason  string
 }
 
 type Options struct {
@@ -35,10 +39,12 @@ type Options struct {
 }
 
 type state struct {
-	started  bool
-	terminal bool
-	count    int
-	usage    map[string]any
+	started    bool
+	terminal   bool
+	count      int
+	usage      map[string]any
+	model      string
+	stopReason string
 }
 
 func Pump(
@@ -208,6 +214,17 @@ func parseEvent(raw []byte) (Event, error) {
 		if usage, ok := message["usage"].(map[string]any); ok {
 			event.Usage = usage
 		}
+		if model, ok := message["model"].(string); ok {
+			event.Model = model
+		}
+		if reason, ok := message["stop_reason"].(string); ok && reason != "" {
+			event.StopReason = reason
+		}
+	}
+	if delta, ok := payload["delta"].(map[string]any); ok {
+		if reason, ok := delta["stop_reason"].(string); ok && reason != "" {
+			event.StopReason = reason
+		}
 	}
 	return event, nil
 }
@@ -234,6 +251,12 @@ func (s *state) observe(event Event) error {
 	if event.Usage != nil {
 		s.usage = mergeUsage(s.usage, event.Usage)
 	}
+	if event.Model != "" {
+		s.model = event.Model
+	}
+	if event.StopReason != "" {
+		s.stopReason = event.StopReason
+	}
 	return nil
 }
 
@@ -243,6 +266,8 @@ func (s *state) result() Result {
 		SawTerminal: s.terminal,
 		EventCount:  s.count,
 		Usage:       s.usage,
+		Model:       s.model,
+		StopReason:  s.stopReason,
 	}
 }
 

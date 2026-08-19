@@ -228,14 +228,32 @@ func (s *Server) verifiedStream(writer http.ResponseWriter, ctx context.Context,
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("X-Kin-Terminal-State", "verified")
 	writer.Header().Set("X-Kin-Event-Count", fmt.Sprint(result.EventCount))
+	setStreamMeta(writer.Header(), result)
 	writer.WriteHeader(response.Status)
 	_, _ = writer.Write(output.Bytes())
+}
+
+// setStreamMeta exposes the merged protocol metadata collected by the SSE
+// validator (usage JSON, upstream model, stop reason) as X-Kin-* headers or
+// trailers so the gateway can persist them for stream requests too.
+func setStreamMeta(header http.Header, result kinstream.Result) {
+	if result.Usage != nil {
+		if data, err := json.Marshal(result.Usage); err == nil {
+			header.Set("X-Kin-Usage", string(data))
+		}
+	}
+	if result.Model != "" {
+		header.Set("X-Kin-Model", result.Model)
+	}
+	if result.StopReason != "" {
+		header.Set("X-Kin-Stop-Reason", result.StopReason)
+	}
 }
 
 func (s *Server) realtimeStream(writer http.ResponseWriter, ctx context.Context, response *upstream.Response) {
 	copyResponseHeaders(writer.Header(), response.Header)
 	writer.Header().Set("Content-Type", "text/event-stream")
-	writer.Header().Set("Trailer", "X-Kin-Terminal-State, X-Kin-Event-Count")
+	writer.Header().Set("Trailer", "X-Kin-Terminal-State, X-Kin-Event-Count, X-Kin-Usage, X-Kin-Model, X-Kin-Stop-Reason")
 	committed := false
 	result, err := kinstream.Pump(ctx, response.Body, s.streamOptions(), func(event kinstream.Event) error {
 		if !committed {
@@ -262,10 +280,12 @@ func (s *Server) realtimeStream(writer http.ResponseWriter, ctx context.Context,
 		_, _ = fmt.Fprintf(writer, "event: error\ndata: %s\n\n", errorPayload)
 		writer.Header().Set("X-Kin-Terminal-State", "incomplete")
 		writer.Header().Set("X-Kin-Event-Count", fmt.Sprint(result.EventCount))
+		setStreamMeta(writer.Header(), result)
 		return
 	}
 	writer.Header().Set("X-Kin-Terminal-State", "verified")
 	writer.Header().Set("X-Kin-Event-Count", fmt.Sprint(result.EventCount))
+	setStreamMeta(writer.Header(), result)
 }
 
 func (s *Server) models(writer http.ResponseWriter, request *http.Request) {
