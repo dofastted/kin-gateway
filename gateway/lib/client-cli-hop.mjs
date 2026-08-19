@@ -13,9 +13,47 @@ import { fileURLToPath } from 'node:url'
 import { writeCliHome } from './cli-runner.mjs'
 import { consumeCliNdjson } from './cli-probe.mjs'
 import { spawnClaudeProcess } from './cli-launcher.mjs'
+import { formatClientEnvPrompt, clientEnvSettingsPatch } from './client-env.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BRIDGE = path.join(__dirname, 'mcp-bridge.mjs')
+
+const DOCKER_NODE = '/usr/local/lib/nodejs/current/bin/node'
+const DOCKER_BRIDGE = '/opt/kin/lib/mcp-bridge.mjs'
+const DOCKER_HOME = '/home/kincli'
+
+export function prepareMcpWorkspace(workHome, tools) {
+  const docker = process.env.KIN_VM_RUNTIME === 'docker'
+  const hostRun = path.join(workHome, '.kin-run')
+  fs.mkdirSync(hostRun, { recursive: true })
+  try { fs.chmodSync(hostRun, 0o777) } catch {}
+  const toolsFileHost = path.join(hostRun, 'tools.json')
+  const callFileHost = path.join(hostRun, 'call.json')
+  const mcpCfgHost = path.join(hostRun, 'mcp.json')
+  const toolsFileGuest = docker ? `${DOCKER_HOME}/.kin-run/tools.json` : toolsFileHost
+  const callFileGuest = docker ? `${DOCKER_HOME}/.kin-run/call.json` : callFileHost
+  const mcpCfgGuest = docker ? `${DOCKER_HOME}/.kin-run/mcp.json` : mcpCfgHost
+  fs.writeFileSync(toolsFileHost, JSON.stringify(Array.isArray(tools) ? tools : []))
+  try { fs.unlinkSync(callFileHost) } catch {}
+  fs.writeFileSync(mcpCfgHost, JSON.stringify({
+    mcpServers: {
+      kinclient: {
+        command: docker ? DOCKER_NODE : process.execPath,
+        args: [docker ? DOCKER_BRIDGE : BRIDGE],
+        env: {
+          KIN_MCP_TOOLS_FILE: toolsFileGuest,
+          KIN_MCP_CALL_FILE: callFileGuest,
+        },
+      },
+    },
+  }))
+  for (const p of [toolsFileHost, mcpCfgHost]) {
+    try { fs.chmodSync(p, 0o666) } catch {}
+  }
+  try { fs.chmodSync(BRIDGE, 0o755) } catch {}
+  return { toolsFile: toolsFileHost, callFile: callFileHost, mcpCfg: mcpCfgGuest }
+}
+
 
 // Defense-in-depth denylist. The real guard is permission-mode=default (T5):
 // in non-interactive `-p`, any tool that is not pre-approved fails closed.
@@ -44,7 +82,7 @@ function ensureDir(p) { fs.mkdirSync(p, { recursive: true }) }
  * T8: record system-prompt truncation instead of a silent slice.
  * T4: forward what `claude -p` supports (model, thinking via env); record the rest.
  */
-export function buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial = false }) {
+export function buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial = false, clientEnv = null }) {
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose']
   if (includePartial) args.push('--include-partial-messages')
   args.push('--model', mdl, '--mcp-config', mcpCfg)
@@ -54,18 +92,18 @@ export function buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includ
   if (allow.length) args.push('--allowedTools', allow.join(','))
   args.push('--permission-mode', 'default')
 
-  const sysMeta = { truncated: false }
-  const sys = systemToPrompt(body?.system)
-  if (sys) {
-    sysMeta.orig_len = sys.length
-    let kept = sys
-    if (sys.length > MAX_SYSTEM_CHARS) {
-      kept = sys.slice(0, MAX_SYSTEM_CHARS)
-      sysMeta.truncated = true
-      sysMeta.kept_len = kept.length
-    }
-    args.push('--append-system-prompt', kept)
-  }
+  const sysMeta = { truncated: false, client_env: !!(clientEnv && clientEnv.source === 'caller'), passthrough: true }
+  const userSys = systemToPrompt(body?.system)
+  sysMeta.orig_len = userSys.length
+  // Official / user system is the request. Do not rewrite or truncate it.
+  if (userSys) args.push('--system-prompt', userSys)
+  const hint = []
+  if (clientEnv?.cwd) hint.push(`caller cwd=${clientEnv.cwd}`)
+  if (clientEnv?.os) hint.push(`caller os=${clientEnv.os}`)
+  if (clientEnv?.home) hint.push(`caller home=${clientEnv.home}`)
+  if (clientEnv?.user) hint.push(`caller user=${clientEnv.user}`)
+  hint.push('File tools execute on the caller via mcp__kinclient__*. Do not use /home/kincli paths.')
+  args.push('--append-system-prompt', hint.join('\n'))
 
   const paramMeta = { dropped: [], thinking_budget: null }
   for (const k of UNMAPPABLE_PARAMS) {
@@ -248,6 +286,60 @@ function renderHistoryTranscript(history) {
  *
  * Returns { lines: string[], meta: { turns, had_images, had_tool_results, history_flattened } }
  */
+
+function fulfilledToolKeys(messages = []) {
+  const idToSig = new Map()
+  const ids = new Set()
+  const sigs = new Set()
+  for (const m of messages) {
+    for (const b of messageToBlocks(m)) {
+      if (b.type === 'tool_use') {
+        const name = normalizeToolName(b.name)
+        const pth = b.input?.path || b.input?.file_path || b.input?.filePath || ''
+        idToSig.set(b.id, `${name}::${pth}`)
+      }
+    }
+  }
+  for (const m of messages) {
+    for (const b of messageToBlocks(m)) {
+      if (b.type === 'tool_result' && b.tool_use_id) {
+        ids.add(b.tool_use_id)
+        if (idToSig.has(b.tool_use_id)) sigs.add(idToSig.get(b.tool_use_id))
+      }
+    }
+  }
+  return { ids, sigs }
+}
+
+function toolSig(tu) {
+  const name = normalizeToolName(tu?.name)
+  const pth = tu?.input?.path || tu?.input?.file_path || tu?.input?.filePath || tu?.arguments?.path || ''
+  return `${name}::${pth}`
+}
+
+function isFulfilledTool(tu, fulfilled) {
+  if (!tu || !fulfilled) return false
+  if (tu.id && fulfilled.ids.has(tu.id)) return true
+  const sig = toolSig(tu)
+  return sig !== '::' && fulfilled.sigs.has(sig)
+}
+
+function shouldStopHop(acc, callFile, fulfilled) {
+  if ((acc.tool_uses || []).some((tu) => !isFulfilledTool(tu, fulfilled))) return true
+  if (callFile && fs.existsSync(callFile)) {
+    try {
+      const rec = JSON.parse(fs.readFileSync(callFile, 'utf8'))
+      const tu = { name: rec.name, input: rec.arguments || rec.input || {}, id: rec.id }
+      if (isFulfilledTool(tu, fulfilled)) {
+        try { fs.unlinkSync(callFile) } catch {}
+        return false
+      }
+    } catch {}
+    return true
+  }
+  return false
+}
+
 export function buildStreamJsonTurns(messages = [], { resumeSessionId = null } = {}) {
   const list = (Array.isArray(messages) ? messages : []).filter((m) => m && m.role !== 'system' && m.role !== 'developer')
   const meta = { turns: 0, had_images: false, had_tool_results: false, history_flattened: false }
@@ -292,7 +384,41 @@ export function buildStreamJsonTurns(messages = [], { resumeSessionId = null } =
     return { lines: [userLine(blocks)], meta }
   }
 
-  // Multi-turn: flatten prior context to text, keep trailing native blocks.
+  // Tool rounds: keep native assistant/user/tool_result lines so the CLI
+  // can pair tool_result with the matching tool_use. Flatten only plain text chats.
+  const allBlocks = []
+  for (const m of list) allBlocks.push(...messageToBlocks(m))
+  const hasTools = allBlocks.some((b) => b.type === 'tool_use' || b.type === 'tool_result')
+  if (hasTools) {
+    const lines = []
+    let hadResult = false
+    for (const m of list) {
+      const blocks = messageToBlocks(m).map((b) => {
+        if (b.type === 'tool_use' && b.name && !String(b.name).startsWith('mcp__')) {
+          return { ...b, name: 'mcp__kinclient__' + b.name }
+        }
+        return b
+      })
+      if (!blocks.length) continue
+      markMedia(blocks)
+      if (blocks.some((b) => b.type === 'tool_result')) {
+        hadResult = true
+        const txt = blocks.filter((b) => b.type === 'tool_result').map((b) => {
+          const c = typeof b.content === 'string' ? b.content : JSON.stringify(b.content || '')
+          return `Caller already executed this tool. Result:\n${c}`
+        }).join('\n')
+        if (txt) blocks.push({ type: 'text', text: txt + '\nDo not call the same file tool again. Answer using this result.' })
+      }
+      const role = m.role === 'assistant' ? 'assistant' : 'user'
+      lines.push(JSON.stringify({ type: role, message: { role, content: blocks } }))
+    }
+    if (!lines.length) lines.push(userLine([{ type: 'text', text: 'Hello' }]))
+    meta.turns = lines.length
+    meta.history_flattened = false
+    return { lines, meta }
+  }
+
+  // Multi-turn text: flatten prior context, keep trailing native blocks.
   meta.history_flattened = true
   const transcript = renderHistoryTranscript(history)
   const blocks = []
@@ -318,6 +444,8 @@ export async function callClientWorkspaceCli({
   resumeSessionId = null,
   timeoutMs = 180000,
   onRateLimit,
+  clientEnv = null,
+  inboundBody = null,
 }) {
   if (!accessToken) {
     return {
@@ -329,35 +457,13 @@ export async function callClientWorkspaceCli({
   }
 
   const workHome = homeDir || path.join(os.tmpdir(), 'kin-cli-home')
-  writeCliHome({ homeDir: workHome, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy })
+  writeCliHome({ homeDir: workHome, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy: { ...(seedPolicy || {}), extra_env: { ...((seedPolicy && seedPolicy.extra_env) || {}), ...clientEnvSettingsPatch(clientEnv || {}) } } })
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-mcp-'))
   const tools = Array.isArray(body?.tools) ? body.tools : []
-  const toolsFile = path.join(tmp, 'tools.json')
-  const callFile = path.join(tmp, 'call.json')
-  const mcpCfg = path.join(tmp, 'mcp.json')
-  fs.writeFileSync(toolsFile, JSON.stringify(tools))
-  fs.writeFileSync(mcpCfg, JSON.stringify({
-    mcpServers: {
-      kinclient: {
-        command: process.execPath,
-        args: [BRIDGE],
-        env: {
-          KIN_MCP_TOOLS_FILE: toolsFile,
-          KIN_MCP_CALL_FILE: callFile,
-        },
-      },
-    },
-  }))
-  try {
-    fs.chmodSync(tmp, 0o777)
-    fs.chmodSync(toolsFile, 0o666)
-    fs.chmodSync(mcpCfg, 0o666)
-    fs.chmodSync(BRIDGE, 0o755)
-  } catch {}
+  const { toolsFile, callFile, mcpCfg } = prepareMcpWorkspace(workHome, tools)
 
   const mdl = body?.model || 'claude-haiku-4-5-20251001'
-  const { args, sysMeta, paramMeta } = buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial: false })
+  const { args, sysMeta, paramMeta } = buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial: false, clientEnv })
 
   const env = {
     ...process.env,
@@ -367,12 +473,37 @@ export async function callClientWorkspaceCli({
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DO_NOT_TRACK: '1',
   }
+  if (clientEnv?.cwd) env.KIN_CLIENT_CWD = clientEnv.cwd
+  if (clientEnv?.os) env.KIN_CLIENT_OS = clientEnv.os
+  if (clientEnv?.home) env.KIN_CLIENT_HOME = clientEnv.home
+  if (clientEnv?.user) env.KIN_CLIENT_USER = clientEnv.user
+  if (clientEnv?.hostname) env.KIN_CLIENT_HOSTNAME = clientEnv.hostname
+  if (clientEnv?.arch) env.KIN_CLIENT_ARCH = clientEnv.arch
   if (paramMeta.thinking_budget) env.MAX_THINKING_TOKENS = String(paramMeta.thinking_budget)
-  if (proxyUrl) {
-    // SOCKS hangs the claude binary historically — leave unset unless explicitly enabled
-  }
+  // SOCKS is applied outside the VM (netns redirect). Do not set in-guest proxy env.
+  void proxyUrl
 
   const { lines: stdinLines, meta: turnMeta } = buildStreamJsonTurns(body?.messages || [], { resumeSessionId })
+  const fulfilled = fulfilledToolKeys(body?.messages || [])
+  try {
+    const dir = '/opt/kin-gateway/gateway/captures/client-diff'
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `full-${Date.now()}-hop.json`), JSON.stringify({
+      at: new Date().toISOString(),
+      args,
+      sysMeta,
+      paramMeta,
+      turnMeta,
+      clientEnv: clientEnv || null,
+      stdin: stdinLines,
+      inbound_keys: inboundBody && typeof inboundBody === 'object' ? Object.keys(inboundBody) : [],
+      inbound_system: inboundBody?.system ?? null,
+      inbound_tools: (inboundBody?.tools || []).map((t) => t?.name || t?.function?.name),
+      body_system: body?.system ?? null,
+      body_tools: (body?.tools || []).map((t) => t?.name || t?.function?.name),
+      message_roles: (body?.messages || []).map((m) => m.role),
+    }))
+  } catch {}
 
   const acc = {
     session_id: resumeSessionId || null,
@@ -399,12 +530,13 @@ export async function callClientWorkspaceCli({
       if (obj.type === 'system' && obj.subtype === 'init' && obj.session_id) acc.session_id = obj.session_id
       if (obj.session_id && !acc.session_id) acc.session_id = obj.session_id
       for (const tu of collectToolUses(obj)) {
-        acc.tool_uses.push({
+        const rec = {
           type: 'tool_use',
           id: tu.id || `toolu_${Date.now().toString(36)}`,
           name: normalizeToolName(tu.name),
           input: tu.input || {},
-        })
+        }
+        if (!isFulfilledTool(rec, fulfilled)) acc.tool_uses.push(rec)
       }
       if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
         for (const b of obj.message.content) {
@@ -416,7 +548,7 @@ export async function callClientWorkspaceCli({
         acc.usage = obj.usage || acc.usage
       }
     },
-    shouldStop: () => acc.tool_uses.length > 0 || fs.existsSync(callFile),
+    shouldStop: () => shouldStopHop(acc, callFile, fulfilled),
   })
 
   let mcpCall = null
@@ -512,6 +644,8 @@ export async function streamClientWorkspaceCli({
   onEvent,
   onHeaders,
   onRateLimit,
+  clientEnv = null,
+  inboundBody = null,
 }) {
   if (!accessToken) {
     return {
@@ -523,35 +657,13 @@ export async function streamClientWorkspaceCli({
   }
 
   const workHome = homeDir || path.join(os.tmpdir(), 'kin-cli-home')
-  writeCliHome({ homeDir: workHome, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy })
+  writeCliHome({ homeDir: workHome, accessToken, refreshToken, expiresAt, timezone, locale, kernel, seedPolicy: { ...(seedPolicy || {}), extra_env: { ...((seedPolicy && seedPolicy.extra_env) || {}), ...clientEnvSettingsPatch(clientEnv || {}) } } })
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-mcp-'))
   const tools = Array.isArray(body?.tools) ? body.tools : []
-  const toolsFile = path.join(tmp, 'tools.json')
-  const callFile = path.join(tmp, 'call.json')
-  const mcpCfg = path.join(tmp, 'mcp.json')
-  fs.writeFileSync(toolsFile, JSON.stringify(tools))
-  fs.writeFileSync(mcpCfg, JSON.stringify({
-    mcpServers: {
-      kinclient: {
-        command: process.execPath,
-        args: [BRIDGE],
-        env: {
-          KIN_MCP_TOOLS_FILE: toolsFile,
-          KIN_MCP_CALL_FILE: callFile,
-        },
-      },
-    },
-  }))
-  try {
-    fs.chmodSync(tmp, 0o777)
-    fs.chmodSync(toolsFile, 0o666)
-    fs.chmodSync(mcpCfg, 0o666)
-    fs.chmodSync(BRIDGE, 0o755)
-  } catch {}
+  const { toolsFile, callFile, mcpCfg } = prepareMcpWorkspace(workHome, tools)
 
   const mdl = body?.model || 'claude-haiku-4-5-20251001'
-  const { args, sysMeta, paramMeta } = buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial: true })
+  const { args, sysMeta, paramMeta } = buildHopArgs({ mdl, mcpCfg, tools, body, resumeSessionId, includePartial: true, clientEnv })
 
   const env = {
     ...process.env,
@@ -561,9 +673,35 @@ export async function streamClientWorkspaceCli({
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DO_NOT_TRACK: '1',
   }
+  if (clientEnv?.cwd) env.KIN_CLIENT_CWD = clientEnv.cwd
+  if (clientEnv?.os) env.KIN_CLIENT_OS = clientEnv.os
+  if (clientEnv?.home) env.KIN_CLIENT_HOME = clientEnv.home
+  if (clientEnv?.user) env.KIN_CLIENT_USER = clientEnv.user
+  if (clientEnv?.hostname) env.KIN_CLIENT_HOSTNAME = clientEnv.hostname
+  if (clientEnv?.arch) env.KIN_CLIENT_ARCH = clientEnv.arch
   if (paramMeta.thinking_budget) env.MAX_THINKING_TOKENS = String(paramMeta.thinking_budget)
 
   const { lines: stdinLines, meta: turnMeta } = buildStreamJsonTurns(body?.messages || [], { resumeSessionId })
+  const fulfilled = fulfilledToolKeys(body?.messages || [])
+  try {
+    const dir = '/opt/kin-gateway/gateway/captures/client-diff'
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `full-${Date.now()}-hop.json`), JSON.stringify({
+      at: new Date().toISOString(),
+      args,
+      sysMeta,
+      paramMeta,
+      turnMeta,
+      clientEnv: clientEnv || null,
+      stdin: stdinLines,
+      inbound_keys: inboundBody && typeof inboundBody === 'object' ? Object.keys(inboundBody) : [],
+      inbound_system: inboundBody?.system ?? null,
+      inbound_tools: (inboundBody?.tools || []).map((t) => t?.name || t?.function?.name),
+      body_system: body?.system ?? null,
+      body_tools: (body?.tools || []).map((t) => t?.name || t?.function?.name),
+      message_roles: (body?.messages || []).map((m) => m.role),
+    }))
+  } catch {}
 
   if (typeof onHeaders === 'function') {
     try {
@@ -607,12 +745,14 @@ export async function streamClientWorkspaceCli({
         const ev = obj.event
         if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
           const name = normalizeToolName(ev.content_block.name || '')
-          acc.tool_uses.push({
+          const rec = {
             type: 'tool_use',
             id: ev.content_block.id,
             name,
             input: ev.content_block.input || {},
-          })
+          }
+          if (isFulfilledTool(rec, fulfilled)) return
+          acc.tool_uses.push(rec)
           emit({
             ...ev,
             content_block: { ...ev.content_block, name },
@@ -639,7 +779,7 @@ export async function streamClientWorkspaceCli({
         if (obj.usage) acc.usage = obj.usage
       }
     },
-    shouldStop: () => acc.tool_uses.length > 0 || fs.existsSync(callFile),
+    shouldStop: () => shouldStopHop(acc, callFile, fulfilled),
   })
 
   try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}

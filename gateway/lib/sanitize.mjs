@@ -1,23 +1,26 @@
 /**
- * Sanitize Anthropic Messages body for api.anthropic.com OAuth path.
- * Claude CLI injects fields/betas that pure API may reject.
+ * Sanitize Anthropic Messages body for official API (CRS-style allowlist).
+ * Official Claude Code fields stay; junk / client-private keys drop.
  */
-
 const ALLOWED_TOP = new Set([
   'model', 'messages', 'max_tokens', 'system', 'temperature', 'top_p', 'top_k',
-  'stop_sequences', 'stream', 'metadata', 'tools', 'tool_choice', 'thinking',
+  'stop_sequences', 'stop', 'stream', 'metadata', 'tools', 'tool_choice',
+  'thinking', 'context_management',
 ])
 
 export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) {
   if (!body || typeof body !== 'object') return body
-  if (strictPassthrough) return { ...body }
+  if (strictPassthrough) {
+    const out = { ...body }
+    normalizeStop(out)
+    return out
+  }
 
   const out = {}
   for (const [k, v] of Object.entries(body)) {
     if (ALLOWED_TOP.has(k)) out[k] = v
   }
 
-  // system: keep official Claude Code text-block array (type/text/cache_control)
   if (Array.isArray(out.system)) {
     const blocks = out.system
       .map((b) => {
@@ -33,16 +36,20 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
     out.system = blocks
   }
 
-  // tools: empty array → omit (cleaner)
   if (Array.isArray(out.tools) && out.tools.length === 0) delete out.tools
-
-  if (typeof out.max_tokens === 'number' && out.max_tokens > 64000) {
-    out.max_tokens = 64000
-  }
+  if (typeof out.max_tokens === 'number' && out.max_tokens > 64000) out.max_tokens = 64000
   if (!out.max_tokens) out.max_tokens = 4096
-
-  // Strip tool_choice if no tools
   if (out.tool_choice && !out.tools) delete out.tool_choice
-
+  normalizeStop(out)
   return out
+}
+
+function normalizeStop(out) {
+  if (out.stop_sequences) {
+    delete out.stop
+    return
+  }
+  if (out.stop == null) return
+  out.stop_sequences = Array.isArray(out.stop) ? out.stop : [out.stop]
+  delete out.stop
 }

@@ -157,7 +157,7 @@ function openaiMessagesToClaude(messages) {
 export function toClaudeMessages(protocol, body, opts = { rewrite: false, model_map: true }) {
   if (protocol === 'anthropic.messages' && !opts.rewrite) {
     const out = sanitizeAnthropicBody(body, { strictPassthrough: opts.strict_passthrough })
-    if (!out.max_tokens) out.max_tokens = 1024
+    if (!out.max_tokens) out.max_tokens = 4096
     return { claude: out, mode: 'passthrough' }
   }
 
@@ -175,6 +175,9 @@ export function toClaudeMessages(protocol, body, opts = { rewrite: false, model_
   if (protocol === 'openai.chat') {
     return { claude: openaiToClaude(body, opts), mode: opts.rewrite ? 'rewrite' : 'convert' }
   }
+  if (protocol === 'openai.completions') {
+    return { claude: completionsToClaude(body, opts), mode: opts.rewrite ? 'rewrite' : 'convert' }
+  }
   if (protocol === 'openai.responses') {
     return { claude: responsesToClaude(body, opts), mode: opts.rewrite ? 'rewrite' : 'convert' }
   }
@@ -185,11 +188,14 @@ function openaiToClaude(body, opts) {
   const { systemParts, messages } = openaiMessagesToClaude(body.messages || [])
   const out = {
     model: mapModel(body.model, { allowMap: opts.model_map !== false }),
-    max_tokens: body.max_tokens || body.max_completion_tokens || 1024,
+    max_tokens: body.max_tokens || body.max_completion_tokens || 4096,
     messages,
   }
   if (systemParts.length) out.system = systemParts.join('\n\n')
   if (body.temperature != null) out.temperature = body.temperature
+  if (body.top_p != null) out.top_p = body.top_p
+  if (body.stop != null) out.stop_sequences = Array.isArray(body.stop) ? body.stop : [body.stop]
+  if (Array.isArray(body.stop_sequences) && body.stop_sequences.length) out.stop_sequences = body.stop_sequences
   const tools = openaiToolsToClaude(body.tools)
   if (tools?.length) out.tools = tools
   const tc = openaiToolChoiceToClaude(body.tool_choice)
@@ -197,6 +203,19 @@ function openaiToClaude(body, opts) {
   const thinking = openaiReasoningToClaudeThinking(body)
   if (thinking) out.thinking = thinking
   return out
+}
+
+/** Legacy OpenAI /v1/completions (prompt, not messages). */
+function completionsToClaude(body, opts) {
+  const prompt = Array.isArray(body.prompt)
+    ? body.prompt.map((p) => (typeof p === 'string' ? p : String(p ?? ''))).join('\n')
+    : (body.prompt == null ? '' : String(body.prompt))
+  const suffix = body.suffix ? String(body.suffix) : ''
+  const user = suffix ? `${prompt}${suffix}` : prompt
+  return openaiToClaude({
+    ...body,
+    messages: [{ role: 'user', content: user || 'Hello' }],
+  }, opts)
 }
 
 function responsesToClaude(body, opts) {
@@ -535,3 +554,48 @@ export function claudeSSELineToResponsesEvents(line, state) {
   }
   return out
 }
+
+export function fromClaudeToOpenAICompletions(claude, requestedModel) {
+  const text = (claude.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('')
+  let finish = 'stop'
+  if (claude.stop_reason === 'max_tokens') finish = 'length'
+  else if (claude.stop_reason === 'stop_sequence') finish = 'stop'
+  return {
+    id: 'cmpl-' + (claude.id || 'kin'),
+    object: 'text_completion',
+    created: Math.floor(Date.now() / 1000),
+    model: requestedModel || claude.model,
+    choices: [{ text, index: 0, finish_reason: finish, logprobs: null }],
+    usage: {
+      prompt_tokens: claude.usage?.input_tokens || 0,
+      completion_tokens: claude.usage?.output_tokens || 0,
+      total_tokens: (claude.usage?.input_tokens || 0) + (claude.usage?.output_tokens || 0),
+    },
+  }
+}
+
+export function createOpenAICompletionStreamState(model, vmId) {
+  return {
+    id: 'cmpl-' + Math.random().toString(36).slice(2, 12),
+    model,
+    vmId,
+    chat: createOpenAIChatStreamState(model, vmId),
+  }
+}
+
+export function claudeSSELineToOpenAICompletionChunks(line, state) {
+  const chats = claudeSSELineToOpenAIChatChunks(line, state.chat)
+  return chats.map((c) => ({
+    id: state.id,
+    object: 'text_completion',
+    created: c.created,
+    model: state.model,
+    choices: [{
+      text: c.choices?.[0]?.delta?.content || '',
+      index: 0,
+      finish_reason: c.choices?.[0]?.finish_reason ?? null,
+      logprobs: null,
+    }],
+  })).filter((c) => c.choices[0].text || c.choices[0].finish_reason)
+}
+

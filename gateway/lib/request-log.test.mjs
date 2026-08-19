@@ -160,3 +160,24 @@ test('jsonl mirror writes legacy format when enabled', () => {
   const rec = JSON.parse(fs.readFileSync(file, 'utf8').trim())
   assert.equal(rec.model, 'mm')
 })
+
+test('sanitizeRequestBodySnapshot redacts secrets and summarizes tools', async () => {
+  const { sanitizeRequestBodySnapshot } = await import('./request-log.mjs')
+  const snap = sanitizeRequestBodySnapshot({
+    model: 'claude-haiku-4-5-20251001',
+    authorization: 'Bearer secret',
+    tools: [{ name: 'Read', type: 'custom' }, { function: { name: 'write' } }],
+    messages: [{ role: 'user', content: 'x'.repeat(200) }],
+  })
+  assert.equal(snap.authorization, '[REDACTED]')
+  assert.equal(snap.tools[0].name, 'Read')
+  assert.ok(String(snap.messages[0].content).includes('…'))
+})
+
+test('setConfig hot-updates mode', () => {
+  const s = tmpStore('normal')
+  s.setConfig({ mode: 'debug', retainDays: 3 })
+  const snap = s.snapshot()
+  assert.equal(snap.mode, 'debug')
+  assert.equal(snap.retain_days, 3)
+})

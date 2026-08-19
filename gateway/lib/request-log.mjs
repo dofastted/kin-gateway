@@ -70,6 +70,48 @@ function redactHeaders(headers = {}) {
   return out
 }
 
+
+const SENSITIVE_KEY = /authorization|token|password|secret|cookie|api[_-]?key/i
+const SNAP_MAX_STRING = 80
+const SNAP_MAX_ARRAY = 24
+const SNAP_MAX_DEPTH = 6
+const SNAP_MAX_TOTAL = 12000
+
+export function sanitizeRequestBodySnapshot(value, opts = {}, seen = new WeakSet(), depth = 0) {
+  const maxString = opts.maxStringChars ?? SNAP_MAX_STRING
+  const maxArray = opts.maxArrayItems ?? SNAP_MAX_ARRAY
+  const maxDepth = opts.maxDepth ?? SNAP_MAX_DEPTH
+  if (value == null) return value
+  if (typeof value === 'string') {
+    return value.length > maxString ? value.slice(0, maxString) + `…[${value.length}]` : value
+  }
+  if (typeof value !== 'object') return value
+  if (seen.has(value)) return '[Circular]'
+  if (depth >= maxDepth) return '[MaxDepth]'
+  seen.add(value)
+  if (Array.isArray(value)) {
+    const items = value.slice(0, maxArray).map((v) => sanitizeRequestBodySnapshot(v, opts, seen, depth + 1))
+    if (value.length > maxArray) items.push(`…[${value.length - maxArray} more]`)
+    return items
+  }
+  const out = {}
+  for (const [k, v] of Object.entries(value)) {
+    if (SENSITIVE_KEY.test(k)) { out[k] = '[REDACTED]'; continue }
+    if (k === 'encrypted_content') { out[k] = `…[${String(v || '').length} chars]`; continue }
+    if (k === 'tools' && Array.isArray(v)) {
+      out[k] = v.slice(0, maxArray).map((t) => ({ type: t?.type || 'function', name: t?.name || t?.function?.name || null }))
+      continue
+    }
+    out[k] = sanitizeRequestBodySnapshot(v, opts, seen, depth + 1)
+  }
+  let raw = ''
+  try { raw = JSON.stringify(out) } catch { return out }
+  if (raw.length > (opts.maxTotalChars ?? SNAP_MAX_TOTAL)) {
+    return { _truncated: true, _chars: raw.length, preview: raw.slice(0, opts.maxTotalChars ?? SNAP_MAX_TOTAL) }
+  }
+  return out
+}
+
 function clampBody(obj, maxChars = 200_000) {
   let raw
   try {
@@ -116,6 +158,18 @@ export class RequestLogStore {
     this.jsonlMirror = !!jsonlMirror
     this._mem = [] // recent normal summaries for panel hot path
     this._memMax = 200
+  }
+
+  setConfig({ mode, retainDays } = {}) {
+    if (mode != null) {
+      const m = String(mode).trim().toLowerCase()
+      if (MODES.has(m)) this.mode = m
+    }
+    if (retainDays != null) {
+      const n = Number(retainDays)
+      if (Number.isFinite(n) && n > 0) this.retainDays = n
+    }
+    return this.snapshot()
   }
 
   /** Kept for API compat + post-restore hook (state lives in DB). */
@@ -178,6 +232,9 @@ export class RequestLogStore {
       user_agent: ctx.user_agent,
       ip: ctx.ip,
       has_tools: extra.has_tools ?? null,
+      via: extra.via || extra.hop_meta?.via || null,
+      cache_read_tokens: extra.cache_read_tokens ?? extra.usage?.cache_read_input_tokens ?? extra.usage?.cache_read_tokens ?? null,
+      cache_creation_tokens: extra.cache_creation_tokens ?? extra.usage?.cache_creation_input_tokens ?? extra.usage?.cache_creation_tokens ?? null,
     }
 
     try { this.repo.insertSummaryIfAbsent(summary) } catch {}
@@ -190,8 +247,10 @@ export class RequestLogStore {
         ...summary,
         headers: ctx.headers,
         inbound_summary: extra.inbound_summary || summarizeBody(extra.inbound_body),
+        request_body_snapshot: extra.inbound_body != null ? sanitizeRequestBodySnapshot(extra.inbound_body) : null,
         inbound_body: extra.inbound_body != null ? clampBody(extra.inbound_body, this.maxDebugBodyChars) : null,
         hop_meta: extra.hop_meta || null,
+        via: extra.via || extra.hop_meta?.via || null,
         upstream_status: extra.upstream_status ?? null,
         outbound_summary: extra.outbound_summary || null,
         outbound_body: extra.outbound_body != null ? clampBody(extra.outbound_body, this.maxDebugBodyChars) : null,

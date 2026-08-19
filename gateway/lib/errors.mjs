@@ -283,6 +283,25 @@ export function validateRequestBody(protocol, body) {
     }
   }
 
+  if (protocol === 'openai.completions') {
+    const prompt = body.prompt
+    const ok = typeof prompt === 'string'
+      ? prompt.length > 0
+      : Array.isArray(prompt) && prompt.length > 0
+    if (!ok) {
+      return {
+        ok: false,
+        errorResult: makeError({
+          type: ErrorType.INVALID_REQUEST,
+          code: ErrorCode.MISSING_FIELD,
+          message: 'prompt is required for Completions API',
+          param: 'prompt',
+          status: 400,
+        }),
+      }
+    }
+  }
+
   if (protocol === 'openai.responses') {
     // input can be string or array; or messages
     if (body.input == null && !Array.isArray(body.messages)) {

@@ -11,7 +11,9 @@ test('harness /health 200 and honest capabilities', async () => {
     assert.equal(r.json.capabilities.workspace_default, 'client')
     assert.equal(r.json.capabilities.client_tools, true)
     assert.equal(r.json.capabilities.multi_turn_native, false)
-    assert.match(r.json.limitations.oauth, /never HTTP Claude/i)
+    assert.equal(r.json.capabilities.forward_default, 'relay')
+    assert.match(r.json.limitations.forward, /CRS HTTP/i)
+    assert.match(r.json.limitations.oauth, /CRS reads slot OAuth/i)
     assert.equal(r.json.active_vm, 'vm-sim-01')
   } finally {
     await gw.stop()

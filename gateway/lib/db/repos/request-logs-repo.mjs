@@ -10,6 +10,7 @@ const SUMMARY_COLUMNS = [
   'stream', 'status', 'duration_ms', 'api_key_kind', 'api_key_id', 'vm_id',
   'account_id', 'workspace', 'input_tokens', 'output_tokens', 'error_code',
   'error_message', 'user_agent', 'ip', 'has_tools',
+  'via', 'cache_read_tokens', 'cache_creation_tokens',
 ]
 
 function toRow(rec) {

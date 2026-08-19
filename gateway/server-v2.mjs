@@ -1,8 +1,9 @@
 /**
  * KIN Gateway v2.1
  * Inference: per-request ExecutionContext (scheduled VM + identity).
- * Default workspace=client: official Messages hop, tools execute on the caller.
- * Opt-in workspace=vm: Claude Code CLI on the slot.
+ * Default workspace=client: CRS official Messages HTTP from the VM UID.
+ * CLI process is fallback (x-kin-forward: cli, or transport 5xx/529).
+ * Opt-in workspace=vm: Claude Code CLI agent on the slot.
  */
 import http from 'node:http'
 import fs from 'node:fs'
@@ -17,13 +18,16 @@ import { applyIntercept } from './lib/intercept.mjs'
 import {
   toClaudeMessages,
   fromClaudeToOpenAIChat,
+  fromClaudeToOpenAICompletions,
   fromClaudeToResponses,
   createOpenAIChatStreamState,
   claudeSSELineToOpenAIChatChunks,
+  createOpenAICompletionStreamState,
+  claudeSSELineToOpenAICompletionChunks,
   createResponsesStreamState,
   claudeSSELineToResponsesEvents,
 } from './lib/convert.mjs'
-import { callClaudeCli, streamClaudeCli, sanitizeInboundBody, defaultSeedPolicy, seedCliCredentials } from './lib/cli-runner.mjs'
+import { callClaudeCli, streamClaudeCli, sanitizeInboundBody, defaultSeedPolicy, writeCliHome, seedCliCredentials } from './lib/cli-runner.mjs'
 import { updateVmClaudeCode, fetchLatestClaudeCodeVersion } from './lib/claude-code-update.mjs'
 import { sessionKeyToOAuth } from '../session-to-oauth.mjs'
 import { createOauthGuard, persistOauthToVm, harvestHomeToVm } from './lib/oauth-refresh.mjs'
@@ -53,25 +57,59 @@ import {
 } from './lib/execution-context.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/anthropic-messages.mjs'
-import { loadVmIdentity, persistVmSettings, persistVmFingerprint } from './lib/vm-identity.mjs'
+import { loadVmIdentity, persistVmSettings, persistVmFingerprint, applyClientEnvToIdentity } from './lib/vm-identity.mjs'
 import { withVmLock, atomicWriteJson } from './lib/vm-file.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
 import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm-db-sync.mjs'
 import { BackupService } from './lib/backup-service.mjs'
-import { resolveForwardMode, applyForwardReplace, modeSpec } from './lib/forward-mode.mjs'
+import { resolveForwardMode, applyForwardReplace, modeSpec, shouldFallbackToCli } from './lib/forward-mode.mjs'
+import { callCrsRelay, streamCrsRelay } from './lib/crs-relay.mjs'
 import { callClientWorkspaceCli, streamClientWorkspaceCli } from './lib/client-cli-hop.mjs'
+import { extractClientEnv } from './lib/client-env.mjs'
+import { applyCrsUnofficialPersona } from './lib/crs-persona.mjs'
+import { startVmRuntime, stopVmRuntime, OS_CATALOG, OS_ORDER, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, CLAUDE_VER, STANDARD_LOCALE } from './lib/vm-runtime.mjs'
 
-const FEATURES = ['passthrough', 'stream', 'protocol-convert', 'cli-forward', 'tools', 'client-workspace', 'forward-cli', 'forward-relay']
+
+function applyVmConcurrency(id, n, { override = true } = {}) {
+  const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
+  if (!fs.existsSync(vmPath)) return null
+  const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+  const v = Math.max(0, Math.min(256, Number(n) || 0))
+  vm.policy = { ...(vm.policy || {}), maxConcurrency: v, concurrencyOverride: !!override }
+  vm.updated_at = new Date().toISOString()
+  atomicWriteJson(vmPath, vm, { mode: 0o600 })
+  accountQuota.setMaxConcurrencyForVm(id, v)
+  const uuid = vm.account_uuid || vm.claude?.account_uuid
+  if (uuid) accountQuota.setMaxConcurrency(uuid, v)
+  return vm
+}
+
+function applyRoutingConcurrency(n) {
+  const v = Math.max(0, Math.min(256, Number(n) || 0))
+  const skip = []
+  for (const vm of listVms(cfg.paths.project)) {
+    if (vm.policy?.concurrencyOverride) {
+      skip.push(vm.id)
+      if (vm.account_uuid) skip.push(vm.account_uuid)
+      continue
+    }
+    applyVmConcurrency(vm.id, v, { override: false })
+  }
+  accountQuota.applyDefaultConcurrency(v, { skipIds: skip })
+  return v
+}
+
+const FEATURES = ['passthrough', 'stream', 'protocol-convert', 'crs-relay', 'cli-fallback', 'tools', 'client-workspace', 'forward-cli', 'forward-relay']
 const LIMITATIONS = {
   client_tools: 'kept and forwarded in official Messages; executed on the client. VM tools only with x-kin-workspace: vm',
-  images: 'active-turn image blocks forwarded natively into the CLI hop; images in older turns are flattened to [image] in the context transcript',
+  images: 'CRS forwards official image blocks in Messages. CLI fallback flattens older-turn images to [image]',
   multi_turn_native: 'context preserved: prior turns flattened into a transcript block, or replayed via sticky --resume when a session is bound. Not native per-turn resume without sticky',
   claude_session: 'sticky binds vm+account; Claude session is the client process',
-  kernel: 'metadata-only; start/stop flip JSON flags, no KVM/QEMU',
+  kernel: 'docker container per VM (PID/net/mount/UTS isolated); host has no nested KVM',
   workspace: 'default client; opt-in vm via header x-kin-workspace: vm',
-  forward: 'both modes do full VM-standard identity replace (creds+fingerprint+settings+session). relay is a label: same slot-CLI transport as cli today; no independent HTTP relay (Anthropic HTTP hop is 501)',
-  oauth: 'single writer persistOauthToVm (harvest from CLI or admin sessionKey import). never HTTP Claude with OAuth',
+  forward: 'default CRS HTTP from VM UID (official body + CRS identity). CLI process is fallback via x-kin-forward: cli or transport 5xx/529. Never fallback on 401/403',
+  oauth: 'CRS reads slot OAuth and never writes credential files. CLI fallback still harvests. persistOauthToVm remains the only writer',
 }
 
 const cfg = loadConfig()
@@ -117,7 +155,17 @@ const accountQuota = new AccountQuota({
 })
 
 const apiKeyStore = new ApiKeyStore({ dataDir: cfg.paths.data })
-const requestLog = new RequestLogStore({ dataDir: cfg.paths.data, mode: process.env.KIN_REQUEST_LOG_MODE || 'normal' })
+const requestLog = new RequestLogStore({
+  dataDir: cfg.paths.data,
+  mode: process.env.KIN_REQUEST_LOG_MODE || routingConfig?.logging?.mode || 'normal',
+})
+if (routingConfig?.logging) {
+  requestLog.setConfig({
+    // Env wins at boot so e2e / ops can force off|debug. Panel PUT still hot-updates.
+    mode: process.env.KIN_REQUEST_LOG_MODE || routingConfig.logging.mode,
+    retainDays: routingConfig.logging.retain_days,
+  })
+}
 try { requestLog.cleanup() } catch {}
 
 const proxyPool = new ProxyPool({
@@ -160,7 +208,7 @@ function json(res, status, body) {
   const headers = {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token, x-request-id, x-kin-debug, x-kin-log',
+    'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token, x-request-id, x-kin-debug, x-kin-log, x-kin-vm',
     'access-control-allow-methods': 'GET,POST,OPTIONS,PUT,DELETE,PATCH',
     'x-kin-rewrite': cfg.rewrite.enabled ? 'on' : 'off',
   }
@@ -320,6 +368,8 @@ function capture(entry, logBag = null) {
     if (entry.hop_meta) logBag.hop_meta = entry.hop_meta
     if (entry.upstream_status != null) logBag.upstream_status = entry.upstream_status
     if (entry.workspace) logBag.workspace = entry.workspace
+    if (entry.via) logBag.via = entry.via
+    if (entry.usage) logBag.usage = entry.usage
   }
 }
 
@@ -418,8 +468,11 @@ async function handleProtocol(req, res, protocol, pathName) {
   logBag.has_tools = Array.isArray(inbound?.tools) && inbound.tools.length > 0
   const wantStream = !!inbound.stream
 
+  const hdrVm = String(req.headers['x-kin-vm'] || '').trim() || null
+  const keyVm = req.apiKeyRecord?.name === 'project-host' ? 'vm-01' : null
   const built = buildExecutionContext({
     cfg, inbound, req, protocol, pathName, stickyRouter,
+    preferredVmId: hdrVm || keyVm || null,
   })
   if (!built.ok) {
     stats.errors++
@@ -565,19 +618,26 @@ async function handleProtocol(req, res, protocol, pathName) {
 
   ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: claude })
 
+  const officialClient = isOfficialClaudeClient(fp.client_class)
+  if (!officialClient) {
+    ctx = { ...ctx, body: applyCrsUnofficialPersona(ctx.body, { officialClient: false }) }
+  }
+
   const workspace = resolveWorkspaceMode(req, inbound, fp.client_class)
   logBag.workspace = workspace
   const forwardMode = resolveForwardMode(req, inbound)
   ctx = { ...ctx, workspace, forwardMode }
 
-  // ---- client workspace: official convert, VM CLI forward, tools stay on caller ----
+  // ---- client workspace: CRS HTTP default; CLI is fallback ----
   if (workspace === 'client') {
     const identity = loadVmIdentity(exec)
-    persistVmSettings(exec, identity)
-    persistVmFingerprint(exec, identity)
-    // Preserve full official body; only identity fields were replaced above.
-    const officialBody = applyForwardReplace(forwardMode, officialMessagesBody(ctx.body), identity)
-    const officialClient = isOfficialClaudeClient(fp.client_class)
+    const clientEnv = extractClientEnv(req, inbound)
+    const officialBody = applyForwardReplace(forwardMode, officialMessagesBody(ctx.body), identity, inbound)
+    if (forwardMode === 'cli') {
+      applyClientEnvToIdentity(identity, clientEnv)
+      persistVmSettings(exec, identity)
+      persistVmFingerprint(exec, identity)
+    }
     diffCapture(diffDir, 'client-workspace', {
       client_class: fp.client_class,
       protocol,
@@ -589,33 +649,119 @@ async function handleProtocol(req, res, protocol, pathName) {
       message_roles: (officialBody.messages || []).map((m) => m.role),
       model: officialBody.model,
       stream: !!wantStream,
-      via: 'vm-cli-forward',
+      via: forwardMode === 'cli' ? 'vm-cli-forward' : 'crs-relay',
       vm_id: identity.vmId,
       session_id: identity.sessionId,
       settings_theme: identity.settings?.theme || null,
       timezone: identity.timezone,
       locale: identity.locale,
     })
-    const resumeSessionId = exec.stickyBound?.sessionId || null
+    // Official Claude Code owns the conversation. Never --resume a leftover VM session.
+    const resumeSessionId = officialClient ? null : (exec.stickyBound?.sessionId || null)
     const hopBase = {
       ...buildCliOptsFromExec(exec, officialBody, { timeoutMs: cfg.limits.upstream_timeout_ms }),
       body: officialBody,
       resumeSessionId,
+      clientEnv,
+      inboundBody: inbound,
+    }
+    try {
+      const cap = {
+        at: new Date().toISOString(),
+        client_class: fp.client_class,
+        ua: req.headers?.['user-agent'] || '',
+        inbound_keys: inbound && typeof inbound === 'object' ? Object.keys(inbound) : [],
+        inbound: inbound,
+        official_keys: officialBody && typeof officialBody === 'object' ? Object.keys(officialBody) : [],
+        official: officialBody,
+        client_env: clientEnv,
+        resumeSessionId,
+      }
+      fs.writeFileSync(path.join(diffDir, `full-${Date.now()}-in.json`), JSON.stringify(cap))
+    } catch {}
+
+    const runCrs = forwardMode !== 'cli'
+    const crsBase = {
+      exec,
+      body: officialBody,
+      inbound,
+      reqHeaders: req.headers,
+      timeoutMs: cfg.limits.upstream_timeout_ms,
+      identity,
     }
 
     // ---- streaming (default product path) ----
     if (wantStream) {
       stats.stream++
+      let result
       const releaseStream = () => {
-        try { harvestExecHome(exec) } catch {}
+        if (forwardMode === 'cli' || (result && String(result.via || '').includes('cli'))) {
+          try { harvestExecHome(exec) } catch {}
+        }
         releaseSlots()
         if (managedKey) {
           try { apiKeyStore.recordUsage(managedKey) } catch {}
         }
       }
       writeSSEHeaders(res)
-      let result
       try {
+        if (runCrs) {
+          if (protocol === 'anthropic.messages') {
+            result = await streamCrsRelay({
+              ...crsBase,
+              onEvent: async (line) => {
+                const raw = String(line || '')
+                res.write(raw.endsWith('\n') ? raw : raw + '\n')
+              },
+            })
+          } else if (protocol === 'openai.chat') {
+            const state = createOpenAIChatStreamState(inbound.model || officialBody.model, vmId)
+            result = await streamCrsRelay({
+              ...crsBase,
+              onEvent: async (line) => {
+                const chunks = claudeSSELineToOpenAIChatChunks(line, state)
+                for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
+              },
+            })
+            if (result?.ok) res.write('data: [DONE]\n\n')
+          } else if (protocol === 'openai.completions') {
+            const state = createOpenAICompletionStreamState(inbound.model || officialBody.model, vmId)
+            result = await streamCrsRelay({
+              ...crsBase,
+              onEvent: async (line) => {
+                const chunks = claudeSSELineToOpenAICompletionChunks(line, state)
+                for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
+              },
+            })
+            if (result?.ok) res.write('data: [DONE]\n\n')
+          } else {
+            const state = createResponsesStreamState(inbound.model || officialBody.model, vmId)
+            result = await streamCrsRelay({
+              ...crsBase,
+              onEvent: async (line) => {
+                const events = claudeSSELineToResponsesEvents(line, state)
+                for (const e of events) res.write(`data: ${JSON.stringify(e)}\n\n`)
+              },
+            })
+            if (result?.ok) res.write('data: [DONE]\n\n')
+          }
+          if (result?.headers) {
+            try { accountQuota.ingestHeaders(accountId, result.headers, result.body) } catch {}
+          }
+          if (result?.ok || !shouldFallbackToCli(result)) {
+            ingestCliHopQuota(accountId, result || {}, logBag)
+            capture({
+              protocol, path: pathName, mode, workspace,
+              rewrite_enabled: rewriteEnabled,
+              has_tools: Array.isArray(officialBody.tools) && officialBody.tools.length > 0,
+              upstream_status: result?.status || 0,
+              via: result?.via || 'crs-relay-stream',
+              stream: true,
+              hop_meta: result?.hop_meta || null,
+            }, logBag)
+            return res.end()
+          }
+        }
         if (protocol === 'anthropic.messages') {
           result = await streamClientWorkspaceCli({
             ...hopBase,
@@ -638,6 +784,17 @@ async function handleProtocol(req, res, protocol, pathName) {
             onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
             onEvent: async (line) => {
               const chunks = claudeSSELineToOpenAIChatChunks(line, state)
+              for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
+            },
+          })
+          if (result?.ok) res.write('data: [DONE]\n\n')
+        } else if (protocol === 'openai.completions') {
+          const state = createOpenAICompletionStreamState(inbound.model || officialBody.model, vmId)
+          result = await streamClientWorkspaceCli({
+            ...hopBase,
+            onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
+            onEvent: async (line) => {
+              const chunks = claudeSSELineToOpenAICompletionChunks(line, state)
               for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`)
             },
           })
@@ -683,16 +840,35 @@ async function handleProtocol(req, res, protocol, pathName) {
     // ---- non-stream ----
     let upstream
     try {
+      if (runCrs) {
+        upstream = await callCrsRelay(crsBase)
+        if (upstream?.headers) {
+          try { accountQuota.ingestHeaders(accountId, upstream.headers, upstream.body) } catch {}
+        }
+        if (!(upstream?.ok) && shouldFallbackToCli(upstream)) {
+          applyClientEnvToIdentity(identity, clientEnv)
+          persistVmSettings(exec, identity)
+          persistVmFingerprint(exec, identity)
+          upstream = await callClientWorkspaceCli({
+            ...hopBase,
+            onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
+          })
+          if (upstream) upstream.via = (upstream.via || 'vm-cli-forward') + '+crs-fallback'
+        }
+      } else {
       upstream = await callClientWorkspaceCli({
         ...hopBase,
         onRateLimit: (info) => accountQuota.ingestCliRateLimit(accountId, info, null, { countRequest: false }),
       })
+      }
       ingestCliHopQuota(accountId, upstream, logBag)
       if (stickyKey && upstream.session_id) {
         stickyRouter.bind(stickyKey, { accountId, vmId, sessionId: upstream.session_id })
       }
     } finally {
-      try { harvestExecHome(exec) } catch {}
+      if (forwardMode === 'cli' || (upstream && String(upstream.via || '').includes('cli'))) {
+        try { harvestExecHome(exec) } catch {}
+      }
       releaseSlots()
       if (managedKey) try { apiKeyStore.recordUsage(managedKey) } catch {}
     }
@@ -724,10 +900,12 @@ async function handleProtocol(req, res, protocol, pathName) {
     if (protocol === 'anthropic.messages') {
       out = { ...upstream.body }
       if (String(req.headers['x-kin-debug'] || '') === '1') {
-        out = { ...out, kin: { vm_id: vmId, mode, workspace, session_id: upstream.session_id || identity.sessionId } }
+        out = { ...out, kin: { vm_id: vmId, mode, workspace, session_id: upstream.session_id || identity.sessionId, client_env: clientEnv } }
       }
     } else if (protocol === 'openai.chat') {
       out = fromClaudeToOpenAIChat(upstream.body, inbound.model, vmId, mode)
+    } else if (protocol === 'openai.completions') {
+      out = fromClaudeToOpenAICompletions(upstream.body, inbound.model)
     } else {
       out = fromClaudeToResponses(upstream.body, inbound.model, vmId, mode)
     }
@@ -972,7 +1150,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'access-control-allow-origin': '*',
-        'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token',
+        'access-control-allow-headers': 'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token, x-kin-vm',
         'access-control-allow-methods': 'GET,POST,OPTIONS,PUT,DELETE',
       })
       return res.end()
@@ -1128,10 +1306,13 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/panel/api-keys') {
         const body = await readBody(req, 8192).catch(() => ({}))
         try {
+          const defaultConc = Number(routingConfig?.concurrency?.default_key_concurrency
+            ?? routingConfig?.concurrency?.default_max_per_account ?? 20)
           const rec = apiKeyStore.create({
             name: body?.name,
             key: body?.key || body?.custom_key || undefined,
-            max_concurrency: body?.max_concurrency,
+            max_concurrency: body?.max_concurrency ?? defaultConc,
+            default_concurrency: defaultConc,
             quota_requests: body?.quota_requests ?? body?.quota,
             rpm: body?.rpm ?? body?.rate_limit_rpm,
             expires_at: body?.expires_at || (body?.expires_in_days
@@ -1318,6 +1499,18 @@ const server = http.createServer(async (req, res) => {
         const result = panel.buildVmDetail({ cfg, accountQuota, id })
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
+      }
+      // PATCH /api/panel/vms/:id — hot concurrency (gateway-side, no VM restart)
+      if (req.method === 'PATCH' && /^\/api\/panel\/vms\/[^/]+$/.test(p)) {
+        const id = p.split('/').pop()
+        const body = await readBody(req, 8192).catch(() => ({}))
+        const next = body?.max_concurrency ?? body?.maxConcurrency
+        if (next == null) {
+          return json(res, 400, { ok: false, error: { message: 'max_concurrency required' } })
+        }
+        const vm = applyVmConcurrency(id, next, { override: true })
+        if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        return json(res, 200, panel.buildVmDetail({ cfg, accountQuota, id }))
       }
       // POST /api/panel/vms/:id/probe
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/probe$/.test(p)) {
@@ -1529,7 +1722,9 @@ const server = http.createServer(async (req, res) => {
       // POST /api/panel/vms/create — configurable seed VM + pure Claude Code home
       if (req.method === 'POST' && p === '/api/panel/vms/create') {
         const body = await readBody(req, 32 * 1024)
-        const rawId = body.id || ('vm-' + crypto.randomBytes(3).toString('hex'))
+        const existing = listVms(cfg.paths.project)
+        const idx = nextNumericIndex(existing)
+        const rawId = body.id || ('vm-' + padVm(idx))
         const id = String(rawId).replace(/[^a-zA-Z0-9_-]/g, '')
         if (!id) return json(res, 400, { ok: false, error: { message: 'invalid id' } })
         const vmsDir = path.join(cfg.paths.project, 'vms')
@@ -1538,23 +1733,24 @@ const server = http.createServer(async (req, res) => {
         if (fs.existsSync(vmPath)) {
           return json(res, 409, { ok: false, error: { message: 'vm id exists' } })
         }
-        const startNow = body.start === true || body.status === 'running'
-        let ccVer = body.claude_code_version || null
+        const startNow = body.start !== false && body.status !== 'stopped'
+        let ccVer = body.claude_code_version || CLAUDE_VER
         try {
-          if (!ccVer) ccVer = await fetchLatestClaudeCodeVersion()
-        } catch {}
+          if (!body.claude_code_version) ccVer = (await fetchLatestClaudeCodeVersion()) || CLAUDE_VER
+        } catch { ccVer = CLAUDE_VER }
+        const wantKernel = body.kernel && OS_CATALOG[body.kernel] ? body.kernel : kernelForIndex(idx)
         const vm = {
           id,
-          name: body.name || id,
+          name: body.name || padVm(idx),
           status: startNow ? 'running' : (body.status || 'stopped'),
-          kernel: body.kernel || 'unikernel-min',
-          timezone: body.timezone || 'America/Los_Angeles',
-          locale: body.locale || 'en_US.UTF-8',
+          kernel: wantKernel,
+          timezone: normalizeUsTimezone(body.timezone || timezoneForIndex(idx)),
+          locale: STANDARD_LOCALE,
           region: body.region || body.zone || null,
-          note: body.note || null,
+          note: body.note || `${(OS_CATALOG[wantKernel] || {}).pretty || wantKernel} · Claude Code ${ccVer}`,
           proxy: null,
           policy: {
-            maxConcurrency: Math.max(1, Math.min(32, Number(body.max_concurrency ?? body.maxConcurrency ?? 2))),
+            maxConcurrency: Math.max(1, Math.min(128, Number(body.max_concurrency ?? body.maxConcurrency ?? routingConfig?.concurrency?.default_max_per_account ?? 20))),
             weight: Math.max(1, Math.min(100, Number(body.weight ?? 1))),
             inflight: 0,
           },
@@ -1571,31 +1767,31 @@ const server = http.createServer(async (req, res) => {
         }
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         try {
-          const homeDir = path.join(vmsDir, id, 'cli-home')
-          const claudeDir = path.join(homeDir, '.claude')
-          fs.mkdirSync(claudeDir, { recursive: true })
-          fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
-            env: {
-              DISABLE_TELEMETRY: '1',
-              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-              DO_NOT_TRACK: '1',
-            },
-            theme: 'dark',
-          }, null, 2))
-          fs.writeFileSync(path.join(homeDir, '.claude.json'), JSON.stringify({
-            firstStartTime: new Date().toISOString(),
-            migrationVersion: 13,
-            hasCompletedOnboarding: true,
-          }, null, 2))
-          fs.writeFileSync(path.join(claudeDir, 'kin-seed.json'), JSON.stringify({
-            pure: true,
-            kernel: vm.kernel,
+          writeCliHome({
+            homeDir: path.join(vmsDir, id, 'cli-home'),
             timezone: vm.timezone,
             locale: vm.locale,
-            claude_code_version: ccVer,
-            telemetry: 'disabled',
-            seeded_at: new Date().toISOString(),
-          }, null, 2))
+            kernel: vm.kernel,
+            seedPolicy: defaultSeedPolicy({
+              ...vm.seed_policy,
+              extra_env: {
+                CLAUDE_CODE_DISABLE_AUTOUPDATE: '1',
+                KIN_VM_ID: vm.id,
+                KIN_VM_NAME: vm.name,
+                KIN_VM_OS: vm.kernel,
+              },
+              settings_json_override: {
+                theme: 'dark',
+                autoUpdates: false,
+                env: {
+                  DISABLE_TELEMETRY: '1',
+                  DO_NOT_TRACK: '1',
+                  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+                  CLAUDE_CODE_DISABLE_AUTOUPDATE: '1',
+                },
+              },
+            }),
+          })
         } catch (e) {}
         let allocated = null
         if (body.auto_allocate_proxy) {
@@ -1607,6 +1803,20 @@ const server = http.createServer(async (req, res) => {
         if (body.activate === true) {
           try { activateVmSlot(id) } catch (e) {}
         }
+        if (startNow) {
+          const boot = startVmRuntime(vm, cfg.paths.project)
+          if (!boot.ok) {
+            vm.status = 'error'
+            vm.schedulable = false
+            vm.schedule_disabled_reason = boot.error || 'runtime start failed'
+            vm.updated_at = new Date().toISOString()
+            atomicWriteJson(vmPath, vm, { mode: 0o600 })
+            return json(res, 500, { ok: false, error: { message: boot.error || 'runtime start failed' }, vm: summarizeVm(vm) })
+          }
+          vm.status = 'running'
+          vm.updated_at = new Date().toISOString()
+          atomicWriteJson(vmPath, vm, { mode: 0o600 })
+        }
         const saved = getVm(cfg.paths.project, id) || vm
         return json(res, 200, panel.ok({ vm: summarizeVm(saved), allocated_proxy: allocated }))
       }
@@ -1616,6 +1826,8 @@ const server = http.createServer(async (req, res) => {
         const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
         if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        const boot = startVmRuntime(vm, cfg.paths.project)
+        if (!boot.ok) return json(res, 500, { ok: false, error: { message: boot.error || 'runtime start failed' } })
         vm.status = 'running'
         vm.schedulable = true
         vm.schedule_disabled_reason = null
@@ -1623,8 +1835,9 @@ const server = http.createServer(async (req, res) => {
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         return json(res, 200, panel.ok({
           vm: summarizeVm(vm),
-          runtime: GATEWAY_CAPABILITIES.runtime,
+          runtime: vm.runtime || GATEWAY_CAPABILITIES.runtime,
           kernel: GATEWAY_CAPABILITIES.kernel,
+          boot,
         }))
       }
       // POST /api/panel/vms/:id/stop
@@ -1633,6 +1846,8 @@ const server = http.createServer(async (req, res) => {
         const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
         if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        const halt = stopVmRuntime(vm)
+        if (!halt.ok) return json(res, 500, { ok: false, error: { message: halt.error || 'runtime stop failed' } })
         vm.status = 'stopped'
         vm.schedulable = false
         vm.schedule_disabled_reason = 'stopped'
@@ -1640,8 +1855,9 @@ const server = http.createServer(async (req, res) => {
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         return json(res, 200, panel.ok({
           vm: summarizeVm(vm),
-          runtime: GATEWAY_CAPABILITIES.runtime,
+          runtime: vm.runtime || GATEWAY_CAPABILITIES.runtime,
           kernel: GATEWAY_CAPABILITIES.kernel,
+          halt,
         }))
       }
 
@@ -1814,11 +2030,24 @@ const server = http.createServer(async (req, res) => {
         if (body.sticky) routingConfig.sticky = { ...(routingConfig.sticky || {}), ...body.sticky }
         if (body.quota) routingConfig.quota = { ...(routingConfig.quota || {}), ...body.quota }
         if (body.concurrency) routingConfig.concurrency = { ...(routingConfig.concurrency || {}), ...body.concurrency }
+        if (body.logging) {
+          routingConfig.logging = { ...(routingConfig.logging || {}), ...body.logging }
+          requestLog.setConfig({
+            mode: routingConfig.logging.mode,
+            retainDays: routingConfig.logging.retain_days,
+          })
+        }
         fs.mkdirSync(path.dirname(routingConfigPath), { recursive: true })
         fs.writeFileSync(routingConfigPath, JSON.stringify(routingConfig, null, 2))
         stickyRouter.reloadConfig(routingConfig)
         accountQuota.reloadConfig(routingConfig)
-        return json(res, 200, panel.ok(routingConfig))
+        let applied = null
+        if (body.concurrency && (body.concurrency.default_max_per_account != null || body.concurrency.default_key_concurrency != null)) {
+          applied = applyRoutingConcurrency(
+            body.concurrency.default_max_per_account ?? body.concurrency.default_key_concurrency,
+          )
+        }
+        return json(res, 200, panel.ok({ ...routingConfig, applied_default_concurrency: applied }))
       }
       // ---- Proxy Pool ----
       if (req.method === 'GET' && p === '/api/panel/proxies') {
@@ -1956,6 +2185,9 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && (p === '/v1/chat/completions' || p === '/chat/completions')) {
       return await handleProtocol(req, res, 'openai.chat', p)
+    }
+    if (req.method === 'POST' && (p === '/v1/completions' || p === '/completions')) {
+      return await handleProtocol(req, res, 'openai.completions', p)
     }
     if (req.method === 'POST' && (p === '/v1/responses' || p === '/responses')) {
       return await handleProtocol(req, res, 'openai.responses', p)

@@ -122,7 +122,7 @@ export class ApiKeyStore {
       name,
       key,
       status: 'active',
-      max_concurrency: clampInt(input.max_concurrency, 0, 128, 2),
+      max_concurrency: clampInt(input.max_concurrency, 0, 128, input.default_concurrency ?? 20),
       quota_requests: clampInt(input.quota_requests, 0, 1e9, 0),
       quota_used: 0,
       rpm: clampInt(input.rpm, 0, 1e6, 0),

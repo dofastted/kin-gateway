@@ -5,7 +5,7 @@ import { callAnthropicMessages, streamAnthropicMessages } from '../../lib/anthro
 
 const MODEL = 'claude-haiku-4-5-20251001'
 
-test('HTTP Anthropic hop is 501', async () => {
+test('host-process Anthropic hop stays 501 (CRS is uid/mock)', async () => {
   const a = await callAnthropicMessages({ accessToken: 'sk-ant-oat01-FAKE' })
   const b = await streamAnthropicMessages({ accessToken: 'sk-ant-oat01-FAKE' })
   assert.equal(a.status, 501)
@@ -43,6 +43,7 @@ test('hang scenario times out with 504 and leaves no mock-claude process', async
   const gw = await startGateway({ scenario: 'hang', timeoutMs: 800 })
   try {
     const r = await api(gw, 'POST', '/v1/messages', {
+      headers: { 'x-kin-forward': 'cli' },
       body: { model: MODEL, max_tokens: 8, messages: [{ role: 'user', content: 'x' }] },
     })
     assert.equal(r.status, 504, r.text)

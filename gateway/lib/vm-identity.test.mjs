@@ -41,3 +41,20 @@ test('loadVmIdentity builds settings from seed + timezone', () => {
   assert.equal(id.accountUuid, 'acc-1')
   assert.match(id.userAgent, /claude-cli\/2\.1\.233/)
 })
+
+
+test('default applyForwardReplace uses VM device_id', () => {
+  const id = {
+    deviceId: 'd'.repeat(64),
+    accountUuid: 'u',
+    sessionId: 's',
+    metadataUserId: formatMetadataUserId({ deviceId: 'd'.repeat(64), accountUuid: 'u', sessionId: 's' }),
+  }
+  const inbound = {
+    metadata: { user_id: JSON.stringify({ device_id: 'caller-dev', account_uuid: '', session_id: 'caller-sess' }) },
+  }
+  const out = applyForwardReplace('relay', { model: 'x', metadata: inbound.metadata }, id, inbound)
+  const uid = JSON.parse(out.metadata.user_id)
+  assert.equal(uid.device_id, 'd'.repeat(64))
+  assert.equal(uid.account_uuid, 'u')
+})

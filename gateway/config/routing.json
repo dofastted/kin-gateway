@@ -11,16 +11,29 @@
       "session-id",
       "thread-id"
     ],
-    "body_keys": ["conversation_id", "session_id", "thread_id", "prompt_cache_key"]
+    "body_keys": [
+      "conversation_id",
+      "session_id",
+      "thread_id",
+      "prompt_cache_key"
+    ]
   },
   "concurrency": {
-    "default_max_per_account": 2
+    "default_max_per_account": 20,
+    "default_key_concurrency": 20
   },
   "quota": {
     "safety_ratio": 0.95,
     "block_on_5h": true,
     "block_on_7d": true,
-    "block_statuses": ["rate_limited", "warning"],
+    "block_statuses": [
+      "rate_limited",
+      "warning"
+    ],
     "warn_ratio": 0.85
+  },
+  "logging": {
+    "mode": "normal",
+    "retain_days": 7
   }
 }
