@@ -16,6 +16,7 @@ import { resolveStoreDb } from './db/database.mjs'
 import { ApiKeysRepo } from './db/repos/api-keys-repo.mjs'
 
 const KEY_PREFIX = 'sk-kin-'
+const HASH_MARKER = 'hmac:'
 
 function clampInt(n, min, max, fallback) {
   const v = Number(n)
@@ -39,11 +40,17 @@ export function maskApiKey(key) {
 
 export function publicKeyView(rec, { reveal = false } = {}) {
   if (!rec) return null
+  const plain = rec._plain_key || (
+    rec.key && !String(rec.key).startsWith(HASH_MARKER) ? rec.key : null
+  )
+  const masked = plain
+    ? maskApiKey(plain)
+    : `${rec.key_prefix || KEY_PREFIX}…${rec.key_suffix || 'hidden'}`
   return {
     id: rec.id,
     name: rec.name,
-    key: reveal ? rec.key : maskApiKey(rec.key),
-    key_prefix: String(rec.key || '').slice(0, 10),
+    key: reveal && plain ? plain : masked,
+    key_prefix: rec.key_prefix || String(plain || KEY_PREFIX).slice(0, 10),
     status: rec.status,
     max_concurrency: rec.max_concurrency,
     quota_requests: rec.quota_requests,
@@ -68,9 +75,16 @@ function timingSafeEqualStr(a, b) {
 }
 
 export class ApiKeyStore {
-  constructor({ dataDir, db } = {}) {
+  constructor({ dataDir, db, hashSecret } = {}) {
     this.db = resolveStoreDb({ db, dataDir })
     this.repo = new ApiKeysRepo(this.db)
+    this.hashSecret = String(
+      hashSecret ||
+      process.env.KIN_API_KEY_HASH_SECRET ||
+      process.env.KIN_DB_SECRET ||
+      process.env.KIN_API_KEY ||
+      'kin-development-api-key-hash-secret',
+    )
     this.inflight = new Map() // id → count
     this.rpmBuckets = new Map() // id → number[] timestamps ms
   }
@@ -98,9 +112,18 @@ export class ApiKeyStore {
 
   authenticate(token) {
     if (!token) return { ok: false, reason: 'missing' }
+    const hash = this._hash(token)
+    const indexed = this.repo.getByHash(hash)
+    if (indexed) return { ok: true, record: indexed }
+    // One-time migration for legacy plaintext rows.
     for (const rec of this.repo.list()) {
+      if (String(rec.key || '').startsWith(HASH_MARKER)) continue
       if (timingSafeEqualStr(token, rec.key)) {
-        return { ok: true, record: rec }
+        rec.key_hash = hash
+        rec.key_prefix = String(token).slice(0, 10)
+        rec.key_suffix = String(token).slice(-4)
+        rec.key = HASH_MARKER + hash
+        return { ok: true, record: this.repo.update(rec) }
       }
     }
     return { ok: false, reason: 'invalid' }
@@ -113,14 +136,18 @@ export class ApiKeyStore {
     if (!/^[A-Za-z0-9_-]+$/.test(key)) {
       throw Object.assign(new Error('key has invalid characters'), { code: 'key_invalid' })
     }
-    if (this.repo.getByKey(key)) {
+    const keyHash = this._hash(key)
+    if (this.repo.getByHash(keyHash) || this.repo.getByKey(key)) {
       throw Object.assign(new Error('key already exists'), { code: 'key_exists' })
     }
 
     const rec = {
       id: 'key_' + crypto.randomBytes(6).toString('hex'),
       name,
-      key,
+      key: HASH_MARKER + keyHash,
+      key_hash: keyHash,
+      key_prefix: key.slice(0, 10),
+      key_suffix: key.slice(-4),
       status: 'active',
       max_concurrency: clampInt(input.max_concurrency, 0, 128, input.default_concurrency ?? 20),
       quota_requests: clampInt(input.quota_requests, 0, 1e9, 0),
@@ -137,7 +164,8 @@ export class ApiKeyStore {
     if (rec.expires_at && Number.isNaN(Date.parse(rec.expires_at))) {
       throw Object.assign(new Error('invalid expires_at'), { code: 'invalid_expires_at' })
     }
-    return this.repo.insert(rec)
+    const stored = this.repo.insert(rec)
+    return { ...stored, key, _plain_key: key }
   }
 
   update(id, patch = {}) {
@@ -267,5 +295,12 @@ export class ApiKeyStore {
       active: keys.filter((k) => k.status === 'active').length,
       keys,
     }
+  }
+
+  _hash(token) {
+    return crypto
+      .createHmac('sha256', this.hashSecret)
+      .update(String(token || ''))
+      .digest('hex')
   }
 }

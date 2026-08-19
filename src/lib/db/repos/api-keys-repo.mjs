@@ -8,7 +8,7 @@ import { getDb } from '../database.mjs'
 const COLUMNS = [
   'id', 'name', 'key', 'status', 'max_concurrency', 'quota_requests', 'quota_used',
   'rpm', 'expires_at', 'created_at', 'updated_at', 'last_used_at',
-  'requests', 'tokens_in', 'tokens_out',
+  'requests', 'tokens_in', 'tokens_out', 'key_hash', 'key_prefix', 'key_suffix',
 ]
 
 function rowToRec(row) {
@@ -22,6 +22,7 @@ export class ApiKeysRepo {
     this._list = db.prepare('SELECT * FROM api_keys ORDER BY created_at')
     this._get = db.prepare('SELECT * FROM api_keys WHERE id = ?')
     this._getByKey = db.prepare('SELECT * FROM api_keys WHERE key = ?')
+    this._getByHash = db.prepare('SELECT * FROM api_keys WHERE key_hash = ?')
     this._insert = db.prepare(`
       INSERT INTO api_keys (${COLUMNS.join(', ')})
       VALUES (${COLUMNS.map(() => '?').join(', ')})
@@ -49,6 +50,10 @@ export class ApiKeysRepo {
 
   getByKey(key) {
     return rowToRec(this._getByKey.get(key))
+  }
+
+  getByHash(hash) {
+    return rowToRec(this._getByHash.get(hash))
   }
 
   insert(rec) {
