@@ -155,10 +155,14 @@ const accountQuota = new AccountQuota({
 })
 
 const apiKeyStore = new ApiKeyStore({ dataDir: cfg.paths.data })
-const requestLog = new RequestLogStore({ dataDir: cfg.paths.data, mode: process.env.KIN_REQUEST_LOG_MODE || routingConfig?.logging?.mode || 'normal' })
+const requestLog = new RequestLogStore({
+  dataDir: cfg.paths.data,
+  mode: process.env.KIN_REQUEST_LOG_MODE || routingConfig?.logging?.mode || 'normal',
+})
 if (routingConfig?.logging) {
   requestLog.setConfig({
-    mode: routingConfig.logging.mode || requestLog.mode,
+    // Env wins at boot so e2e / ops can force off|debug. Panel PUT still hot-updates.
+    mode: process.env.KIN_REQUEST_LOG_MODE || routingConfig.logging.mode,
     retainDays: routingConfig.logging.retain_days,
   })
 }
