@@ -103,7 +103,7 @@ export function classifyUpstreamResult(result = {}, {
   if (workerCode === 'selection_cancelled' || /aborted|cancelled|canceled/i.test(workerCode)) {
     return { scope: 'client_lifecycle', action: 'stop', reason: 'client_cancelled', cooldownUntil: null }
   }
-  if (result.committed || result.terminalState === 'incomplete') {
+  if (result.committed) {
     return {
       scope: 'stream',
       action: 'stop',

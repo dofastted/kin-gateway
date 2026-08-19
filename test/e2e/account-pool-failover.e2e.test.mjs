@@ -70,3 +70,101 @@ test('account1 quota exhaustion rotates to account2 and commits sticky final acc
     fs.rmSync(project, { recursive: true, force: true })
   }
 })
+
+test('verified stream buffers incomplete account1 and replays complete account2', async () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-pool-verified-'))
+  const firstVm = seedVm({ project, id: 'vm-sim-01' })
+  firstVm.claude.account_uuid = 'account-1'
+  fs.writeFileSync(path.join(project, 'vms', 'vm-sim-01.json'), JSON.stringify(firstVm, null, 2))
+  const secondVm = seedVm({ project, id: 'vm-sim-02' })
+  secondVm.claude.account_uuid = 'account-2'
+  fs.writeFileSync(path.join(project, 'vms', 'vm-sim-02.json'), JSON.stringify(secondVm, null, 2))
+  const gw = await startGateway({
+    project,
+    env: {
+      KIN_MOCK_ACCOUNT_SCENARIOS: JSON.stringify({
+        'vm-sim-01': 'incomplete_stream',
+        'vm-sim-02': 'text',
+      }),
+    },
+  })
+  try {
+    const response = await fetch(gw.baseUrl + '/v1/messages', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${gw.apiKey}`,
+        'content-type': 'application/json',
+        'x-kin-delivery': 'verified',
+        'x-session-id': 'verified-conversation',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'complete this' }],
+      }),
+    })
+    assert.equal(response.status, 200)
+    const requestId = response.headers.get('x-request-id')
+    assert.ok(requestId, `missing x-request-id headers=${JSON.stringify([...response.headers])}`)
+    const body = await response.text()
+    assert.match(body, /message_stop/)
+    assert.doesNotMatch(body, /partial/)
+    const ledger = await api(gw, 'GET', `/api/panel/request-logs/${requestId}/attempts`)
+    assert.equal(ledger.status, 200, ledger.text)
+    assert.equal(ledger.json.data.attempts.length, 2)
+    assert.equal(ledger.json.data.attempts[0].terminal_state, 'incomplete')
+    assert.equal(ledger.json.data.attempts[1].terminal_state, 'verified')
+  } finally {
+    await gw.stop()
+    fs.rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test('realtime stream never switches after account1 commits partial output', async () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-pool-realtime-'))
+  const firstVm = seedVm({ project, id: 'vm-sim-01' })
+  firstVm.claude.account_uuid = 'account-1'
+  fs.writeFileSync(path.join(project, 'vms', 'vm-sim-01.json'), JSON.stringify(firstVm, null, 2))
+  const secondVm = seedVm({ project, id: 'vm-sim-02' })
+  secondVm.claude.account_uuid = 'account-2'
+  fs.writeFileSync(path.join(project, 'vms', 'vm-sim-02.json'), JSON.stringify(secondVm, null, 2))
+  const gw = await startGateway({
+    project,
+    env: {
+      KIN_MOCK_ACCOUNT_SCENARIOS: JSON.stringify({
+        'vm-sim-01': 'incomplete_stream',
+        'vm-sim-02': 'text',
+      }),
+    },
+  })
+  try {
+    const response = await fetch(gw.baseUrl + '/v1/messages', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${gw.apiKey}`,
+        'content-type': 'application/json',
+        'x-session-id': 'realtime-conversation',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'stream this' }],
+      }),
+    })
+    assert.equal(response.status, 200)
+    const requestId = response.headers.get('x-request-id')
+    const body = await response.text()
+    assert.match(body, /partial/)
+    assert.match(body, /stream incomplete/)
+    const ledger = await api(gw, 'GET', `/api/panel/request-logs/${requestId}/attempts`)
+    assert.equal(ledger.status, 200, ledger.text)
+    assert.equal(ledger.json.data.attempts.length, 1)
+    assert.equal(ledger.json.data.attempts[0].downstream_committed, true)
+    assert.equal(ledger.json.data.attempts[0].terminal_state, 'incomplete')
+  } finally {
+    await gw.stop()
+    fs.rmSync(project, { recursive: true, force: true })
+  }
+})

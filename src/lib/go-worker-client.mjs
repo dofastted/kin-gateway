@@ -189,7 +189,42 @@ export async function streamGoWorker({
   if (isCrsMock()) {
     const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
     writeCrsTrace({ body, headers, stream: true })
-    const payload = mockCrsPayload({ scenario: mockScenario(exec) })
+    const scenario = mockScenario(exec)
+    if (scenario === 'incomplete_stream') {
+      if (deliveryMode === 'verified') {
+        return {
+          ok: false,
+          status: 502,
+          via: 'go-worker-mock-stream',
+          body: { type: 'error', error: { type: 'api_error', message: 'stream closed before message_stop' } },
+          headers: {},
+          terminalState: 'incomplete',
+          committed: false,
+        }
+      }
+      if (typeof onCommit === 'function') onCommit()
+      if (onEvent) {
+        await onEvent('event: message_start')
+        await onEvent('data: {"type":"message_start","message":{"content":[]}}')
+        await onEvent('')
+        await onEvent('event: content_block_delta')
+        await onEvent('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}')
+        await onEvent('')
+        await onEvent('event: error')
+        await onEvent('data: {"type":"error","error":{"type":"api_error","message":"stream incomplete"}}')
+        await onEvent('')
+      }
+      return {
+        ok: false,
+        status: 200,
+        via: 'go-worker-mock-stream',
+        body: { type: 'error', error: { type: 'api_error', message: 'stream incomplete' } },
+        headers: {},
+        terminalState: 'incomplete',
+        committed: true,
+      }
+    }
+    const payload = mockCrsPayload({ scenario })
     if (!payload.ok) {
       return {
         ...payload,

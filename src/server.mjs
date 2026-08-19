@@ -657,6 +657,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           },
           onEvent: async (line) => {
             line = restoreToolNamesInSSELine(line, attemptMeta?.toolNames || {})
+            if (!res.headersSent) writeSSEHeaders(res)
             if (protocol === 'anthropic.messages') {
               res.write(String(line).endsWith('\n') ? String(line) : String(line) + '\n')
               return
