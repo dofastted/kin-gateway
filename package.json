@@ -1,15 +1,14 @@
 {
   "name": "kin-gateway",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "CRS Claude protocol gateway",
+  "type": "module",
+  "main": "src/server.mjs",
   "scripts": {
-    "test": "node --test gateway/lib/*.test.mjs gateway/test/unit/*.test.mjs gateway/test/e2e/*.e2e.test.mjs"
+    "start": "node src/server.mjs",
+    "test": "node --test test/unit/*.test.mjs test/e2e/*.e2e.test.mjs"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
     "node-fetch": "^2.7.0",
     "socks-proxy-agent": "^10.1.0"

@@ -8,7 +8,7 @@
 ## 转发
 
 ```text
-客户端 ──Bearer sk-kin-…──► server-v2.mjs
+客户端 ──Bearer sk-kin-…──► server.mjs
                               │ 选槽 / sticky / 并发
                               │ 协议 → Messages
                               │ 非官方：追加一行官方人设
@@ -50,14 +50,24 @@
 
 额度探测从**槽 UID** 发：`GET /api/oauth/usage`（5h / 7d）+ 1 token `claude-fable-5`。fable 429 只标 fable，不摘整号。
 
-详见 [gateway/OAUTH.md](gateway/OAUTH.md)。
+详见 [docs/OAUTH.md](docs/OAUTH.md)。
+
+## 目录
+
+```text
+src/server.mjs     入口
+src/lib/           运行时
+src/config/        路由等（密钥不入库）
+docs/              OAUTH / PANEL_API
+test/              unit · e2e · fixtures
+scripts/           sessionKey 导入
+```
 
 ## 运行
 
 ```bash
-# 生产
-WorkingDirectory=/opt/kin-gateway/gateway
-ExecStart=/usr/local/bin/node server-v2.mjs
+WorkingDirectory=/opt/kin-gateway
+ExecStart=/usr/local/bin/node src/server.mjs
 
 npm test
 ```
@@ -75,7 +85,7 @@ npm test
 
 数据在 SQLite（WAL）。`vms/*.json` 仍是 OAuth 单写者，写穿入库。本地备份默认 24h，面板可恢复。
 
-面板契约：[gateway/PANEL_API.md](gateway/PANEL_API.md)。
+面板契约：[docs/PANEL_API.md](docs/PANEL_API.md)。
 
 ## 安全
 

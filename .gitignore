@@ -1,16 +1,19 @@
-gateway/config/test.key
-gateway/config/gateway-v2.json
-gateway/gateway.json
-gateway/config/gateway-v2.public.json
-gateway/gateway.public.json
+# runtime
+src/config/test.key
+src/config/gateway-v2.json
+src/config/gateway-v2.public.json
+src/captures/
+src/data/
+data/
+vms/
+hypervisor/*.env
 **/*.key
 **/node_modules/
 **/.credentials.json
 **/credentials.json
 **/.env
 **/.env.*
-!gateway/config/gateway-v2.example.json
-gateway/captures/
-gateway/data/
-vms/
 *.bak*
+
+# keep example
+!src/config/gateway-v2.example.json
