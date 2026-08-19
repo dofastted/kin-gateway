@@ -7,16 +7,23 @@
   "features": [
     "passthrough",
     "stream",
+    "verified-stream",
     "protocol-convert",
-    "cli-forward"
+    "go-slot-worker",
+    "account-pool-failover"
   ],
   "capabilities": {
-    "runtime": "host-cli-slot",
-    "kernel": "metadata-only",
-    "client_tools": false,
-    "images": false,
-    "multi_turn_native": false,
+    "runtime": "docker-container",
+    "worker": "go-slot-worker",
+    "kernel": "mixed-os-docker",
+    "client_tools": true,
+    "images": true,
+    "multi_turn_native": true,
     "sticky": "vm-account",
-    "claude_session": false
+    "claude_session": false,
+    "forward_default": "relay",
+    "stream_delivery_default": "realtime",
+    "stream_delivery_optional": "verified",
+    "proxy_required": true
   }
 }

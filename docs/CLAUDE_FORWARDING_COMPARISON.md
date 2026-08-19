@@ -4,6 +4,8 @@
 > 分析日期：2026-08-19  
 > 结论基于指定源码快照，不代表后续版本。
 
+> **实施更新**：本文静态分析后，KIN 已在本分支完成第一轮目标改造：容器内长驻 Go slot worker、强制槽位 SOCKS5、worker 单一 OAuth refresh owner、priority/load/平滑 WRR/LRU 调度、account/model cooldown、有界 failover、两阶段 sticky、attempt 审计，以及 realtime/verified 两种终态策略。文中“原实现/改造前”风险用于说明改造动机。
+
 ## 1. 结论摘要
 
 四个项目当前都属于 **Claude 直接 HTTP 转发**架构：网关读取 OAuth/API Key，构造 Anthropic Messages 请求，并自行处理协议转换、身份字段、流式响应、调度和凭证生命周期。
@@ -34,8 +36,8 @@
 5. **切换到 HTTP 后，OAuth 刷新所有权成为 KIN 的最高优先级缺口。**  
    最新源码的 relay 只读 access token，临期后仍记录为 `defer_to_cli`。如果生产已不再使用 CLI 刷新，就必须明确新的唯一 refresh owner。
 
-6. **KIN 当前稳定性落后于协议能力。**  
-   主要问题不是“能不能转发”，而是每请求创建进程、无连接池、无成熟队列/冷却/failover、断连不取消、stream 终止校验不足、usage 双计风险和完整请求抓包。
+6. **KIN 改造重点是把协议能力变成稳定的数据面。**
+   本分支已用长驻 Go worker、连接池、refresh singleflight、账号池和 stream 终态审核替换改造前的每请求 Node worker。
 
 ### 1.2 场景化选择
 
@@ -68,7 +70,7 @@
 
 测试文件数不等于测试用例数，也不直接等于代码质量。
 
-本次在 KIN 最新源码上实际运行 `npm test`：共 232 项，230 项通过、0 项失败、2 项 live network 测试跳过。
+本分支实际运行 `npm test`：共 260 项，258 项通过、0 项失败、2 项 live network 测试跳过；Go worker 另通过 `go test -race ./...` 与 `go vet ./...`。
 
 ### 2.2 分析限制
 
@@ -206,29 +208,28 @@ flowchart LR
 flowchart LR
     C[客户端] --> G[Node server.mjs]
     G --> D[(SQLite WAL)]
-    G --> S[slot/sticky/concurrency]
+    G --> S[sticky/priority/load/WRR/LRU]
     S --> B[Messages convert + identity rewrite]
-    B --> P[宿主机 spawn Node child]
-    P -->|setuid/setgid| U[槽位 UID worker]
-    U --> N[Node https.request]
-    N --> X[owner-match/外层 SOCKS]
+    B --> U[容器内长驻 Go slot worker]
+    U --> R[OAuth refresh singleflight + generation lock]
+    U --> N[Go HTTP keep-alive + SSE validator]
+    N --> X[对应槽位 SOCKS5]
     X --> A[api.anthropic.com]
     A --> U
     U --> G
     G --> C
-    V[Docker slot + cli-home] -. token/home/runtime metadata .-> G
 ```
 
-### 必须注意的实际边界
+### 改造后的边界
 
-- `crs-relay.mjs` 没有 `docker exec`。
-- gateway 父进程读取 `cli-home/.claude/credentials.json`。
-- access token 通过 stdin 传给新建的 UID worker。
-- UID worker 在宿主机执行 `https.request`。
-- Docker container 默认使用 host network，并处于 `sleep infinity`。
-- 绑定 SOCKS 的槽位使用 `10000 + VM 序号` UID；不绑定代理时默认复用 UID 999。
+- 每槽唯一 UID、一个容器和一个长驻 Go worker。
+- worker 通过 Unix socket接收业务 request，gateway 不向 RPC传 token。
+- worker 是 `credentials.json` 和 refresh rotation 的唯一 owner。
+- inference、refresh、usage、models使用同一显式 SOCKS5；无代理时 fail closed。
+- 默认 realtime stream；可选 verified缓冲到 `message_stop` 后回放。
+- 每次账号尝试持久化到 `request_attempts`，sticky只在终态成功后提交。
 
-因此，KIN 的当前优势是“按 UID 组织出口策略”，不是“请求在独立 VM 内执行”。
+Docker 槽位仍不是 KVM/microVM，但 worker、凭证和网络数据面已进入槽位容器边界。
 
 ---
 
@@ -242,11 +243,11 @@ flowchart LR
 | system | 非官方请求重构/迁移 | 可透传或详细 mimicry | 可 cloaking/重构 | 保留原 system，追加一行 Claude Code |
 | metadata | 生成/替换 device/session | 按指纹与配置改写 | 稳定 credential identity | VM device + OAuth account + session hash |
 | header | 捕获并统一 UA/beta | 白名单、指纹、beta policy | 版本化细粒度 profile | 存储官方 header或硬编码默认 |
-| TLS | Node TLS/proxy agent | Go HTTP/uTLS profile | uTLS | Node 默认 TLS |
-| 上游 | 进程内连接池 | 进程内 transport | 进程内 transport cache | 每请求新子进程、新连接 |
-| stream | 直接/转换 | 严格事件和 usage 处理 | bootstrap/转换/取消 | 按行转发/转换 |
+| TLS | Node TLS/proxy agent | Go HTTP/uTLS profile | uTLS | Go transport + 显式 SOCKS5 |
+| 上游 | 进程内连接池 | 进程内 transport | 进程内 transport cache | 每槽长驻 keep-alive client |
+| stream | 直接/转换 | 严格事件和 usage 处理 | bootstrap/转换/取消 | SSE状态机 + realtime/verified |
 | usage | Redis 统计 | 完整 billing/usage | usage reporter | SQLite account quota/log |
-| 失败恢复 | 账号状态 + 有限重试 | typed retry/failover | credential rotation/cooldown | 无成熟 HTTP failover；源码残留 CLI fallback |
+| 失败恢复 | 账号状态 + 有限重试 | typed retry/failover | credential rotation/cooldown | typed scope + cooldown + 有界跨槽 failover |
 
 ---
 
@@ -360,18 +361,17 @@ flowchart LR
 - HTTP 路径保持 Messages 业务语义，明显优于旧 CLI flatten。
 - system 策略相对克制：保留调用方内容，仅追加短身份行。
 - UID 出口为 per-slot 网络策略提供了基础。
-- 模型严格白名单、API key/RPM/并发、sticky、请求日志已有基础实现。
+- 长驻 Go worker复用连接并把 credential/refresh/SSE终态收进槽位边界。
+- priority/load/平滑 WRR/LRU、两阶段 sticky 和 account/model cooldown支持账号轮询。
+- managed API key HMAC存储、panel session hash和必填管理员密码收紧安全默认。
 - 代码规模较小，容易针对明确目标重构。
 
-### 缺点
+### 剩余限制
 
-- 每个请求创建 Node 子进程，无法复用 HTTP/TLS 连接。
-- gateway 父进程仍读取所有 raw OAuth，容器不是凭证边界。
-- relay 不在容器内，实际隔离弱于架构名称给人的预期。
-- OAuth 自动续期仍依赖已废弃的 CLI 思路。
-- 调度只按 sticky/active/文件顺序，无负载感知和跨槽 failover。
-- stream 终止、取消、超时和失败域不够严格。
-- 安全默认值和抓包行为不适合直接暴露到生产环境。
+- 单机控制面仍使用同步 SQLite，不是默认多节点 HA。
+- worker inference transport已抽象但尚未达到 CLIProxyAPI 的完整 uTLS/wire profile深度。
+- Docker 槽位共享宿主机内核，不是 microVM。
+- realtime流在业务事件提交后不能安全换号；严格 complete-or-exhausted需使用 verified模式。
 
 ---
 
@@ -379,23 +379,23 @@ flowchart LR
 
 | 维度 | CRS | KIN 当前 |
 |---|---|---|
-| HTTP 执行 | 长驻 Node 服务内 | 每请求新建 UID Node worker |
-| 连接复用 | keep-alive/proxy agent | 无跨请求复用 |
-| 账号状态 | Redis | SQLite + 文件 + 内存 |
-| 账号选择 | priority/LRU/sticky/group | sticky → active → 文件顺序 |
-| 排队 | Redis lock/TTL/backoff | 无 |
-| access refresh | gateway refresh | relay 只读，仍 `defer_to_cli` |
-| refresh 竞争 | Redis distributed lock | 无 HTTP refresh 实现 |
+| HTTP 执行 | 长驻 Node 服务内 | 每槽长驻 Go worker |
+| 连接复用 | keep-alive/proxy agent | Go keep-alive transport |
+| 账号状态 | Redis | SQLite runtime/model states + 内存 reservation |
+| 账号选择 | priority/LRU/sticky/group | sticky + priority + load + WRR + LRU |
+| 排队 | Redis lock/TTL/backoff | 有界取消感知 wait queue |
+| access refresh | gateway refresh | Go slot worker唯一 refresh owner |
+| refresh 竞争 | Redis distributed lock | singleflight + file lock + generation |
 | header | 账号级捕获/统一 UA/beta | stored official header + 硬编码默认 |
-| TLS | Node 默认 TLS | Node 默认 TLS |
-| 工具处理 | 可改写工具名并恢复 | 基本透传 |
-| 代理 | per-account agent | host UID owner-match |
-| 429/529 | 标记账号/模型并临时停用 | 额度记录；无完整 cooldown/failover |
-| 流式 | 较完整错误处理 | 按行转发，terminal/cancel 较弱 |
+| TLS | Node 默认 TLS | Go transport抽象 |
+| 工具处理 | 可改写工具名并恢复 | 清洗、映射和 stream/non-stream恢复 |
+| 代理 | per-account agent | container worker显式 slot SOCKS5 |
+| 429/529 | 标记账号/模型并临时停用 | typed account/model/provider cooldown + failover |
+| 流式 | 较完整错误处理 | SSE terminal validator + commit boundary |
 | 存储备份 | Redis/迁移脚本 | SQLite + 自动本地备份 |
-| 隔离 | 逻辑账号 | UID + Docker slot，但 relay 在宿主机 |
+| 隔离 | 逻辑账号 | 唯一 UID + Docker slot + Unix socket worker |
 
-结论：KIN 不是“CRS 加虚拟机后天然更稳”。它把代理出口和槽位组织做得更明确，但删掉/尚未实现了 CRS 中不少账号池稳定性机制。
+结论：KIN 已把 CRS 类 HTTP 数据面和 Sub2API/CLIProxyAPI 的关键稳定性机制结合到槽位 worker架构；下一阶段重点是多节点状态和更完整的 TLS profile。
 
 ---
 
@@ -427,28 +427,22 @@ flowchart TB
 
     subgraph KIN
       K1[sessionKey import] --> K2[slot credentials]
-      K2 --> K3[relay reads access]
-      K3 --> K4[near expiry: defer_to_cli]
+      K2 --> K3[Go worker singleflight + file lock]
+      K3 --> K4[slot SOCKS5 refresh + atomic generation]
     end
 ```
 
-## 9.2 KIN 当前断点
+## 9.2 KIN 已实现刷新闭环
 
 当前逻辑：
 
-1. sessionKey 导入 access/refresh。
-2. token 写入 VM JSON 和 `credentials.json`。
-3. relay 每请求只读取 access token。
-4. 60 秒 guard 只重新读取/harvest 文件。
-5. 临期状态返回 `defer_to_cli`。
-6. access token 仍存在时，不自动执行 sessionKey recovery。
-7. 401/403 不触发 CLI fallback，也不执行 gateway refresh。
-
-如果生产完全不再运行 CLI，access token 到期后将持续失败，直到人工重新导入或其他外部进程更新文件。
-
-## 9.3 推荐的唯一所有者模型
-
-推荐让**长驻 per-slot relay worker**成为唯一 refresh owner：
+1. sessionKey CookieAuth强制使用槽位 SOCKS5。
+2. 换出的 access/refresh交给 worker原子写入。
+3. worker后台和请求前检查 5 分钟 refresh窗口。
+4. 进程内 singleflight + credential file lock。
+5. 锁内重读、二次检查、refresh、rotation和 generation更新。
+6. 401最多强制刷新并重试一次。
+7. inference、refresh、usage和models共用同一 explicit SOCKS5 transport。
 
 ```text
 临期扫描 / 请求前检查
@@ -461,18 +455,16 @@ flowchart TB
     → 释放锁
 ```
 
-必须具备：
+已实现：
 
-- 3–5 分钟 refresh skew；
+- 5 分钟 refresh skew；
 - 每槽进程内 singleflight；
-- 多实例时 Redis lease 或 DB CAS；
+- credential file lock/generation；
 - 刷新前重读，禁止用请求开始时的旧快照覆盖新 token；
 - `invalid_grant` 后再次读取 version，识别并发刷新竞争；
-- 后台 worker pool、QPS 限制、指数退避和 jitter；
+- 后台刷新、指数退避和 jitter；
 - 401 仅刷新一次，且只在下游响应未提交时重试；
 - 永不同时允许 CLI 和 relay 刷新同一凭证。
-
-如果产品坚持禁止 refresh grant，则必须在 token 临期前主动用 sessionKey CookieAuth 换票，而不能等 access 字段消失。该方案依赖 CookieAuth，稳定性和可维护性较弱。
 
 ---
 
@@ -483,10 +475,10 @@ flowchart TB
 | 能力 | CRS | Sub2API | CLIProxyAPI | KIN |
 |---|---:|---:|---:|---:|
 | sticky | 有 | 有 | 有 | 有 |
-| 原子并发 reservation | 中 | 强 | 中 | 仅单进程计数 |
-| 负载感知 | 中 | 强 | selector 策略 | 无 |
-| 有界等待 | 有 | 强 | cooldown wait | 无 |
-| model cooldown | 有 | 强 | 强 | 额度状态为主 |
+| 原子并发 reservation | 中 | 强 | 中 | 有 |
+| 负载感知 | 中 | 强 | selector 策略 | priority/load/WRR/LRU |
+| 有界等待 | 有 | 强 | cooldown wait | 有 |
+| model cooldown | 有 | 强 | 强 | 有 |
 | request-scoped 错误 | 弱 | 强 | 强 | 无完整分类 |
 | 跨账号 failover | 中 | 强 | 强 | 无 |
 | stream commit 防护 | 中 | 强 | 中/强 | 弱 |
@@ -604,40 +596,40 @@ KIN 的方向是合理的，但应完成最后一步：
 | 维度 | CRS | Sub2API | CLIProxyAPI | KIN | 依据摘要 |
 |---|---:|---:|---:|---:|---|
 | Messages 语义保真 | 4 | 5 | 5 | 4 | KIN 原生路径完整，但跨协议和高级修复较少 |
-| wire 漂移适应 | 2 | 3 | 4 | 2 | KIN/CRS 硬编码多；CLIProxyAPI 跟进最细 |
-| OAuth 生命周期 | 4 | 5 | 4 | 1 | KIN HTTP-only refresh owner 尚未闭环 |
-| 调度/排队 | 3 | 5 | 4 | 2 | KIN 无 load-aware 和 queue |
-| retry/failover | 3 | 5 | 4 | 1 | KIN 主要依赖已废弃 CLI fallback |
-| stream 稳定性 | 3 | 5 | 4 | 2 | KIN 缺 terminal/cancel/commit 约束 |
-| tools/images/thinking/cache | 4 | 5 | 5 | 4 | KIN 可透传，缺高级修复/profile |
-| 持久化/HA | 3 | 5 | 3 | 3 | KIN 单机强，多实例弱 |
-| 槽位隔离 | 2 | 2 | 2 | 3 | KIN 有 UID/container 基础，但热路径仍在 host |
-| 性能效率 | 4 | 5 | 4 | 2 | KIN 每请求进程+TLS |
-| 运维/测试 | 3 | 5 | 5 | 3 | KIN 测试健康但生产故障面覆盖不足 |
+| wire 漂移适应 | 2 | 3 | 4 | 3 | KIN 已分层 header/request policy，完整 profile仍弱于 CLIProxyAPI |
+| OAuth 生命周期 | 4 | 5 | 4 | 4 | slot worker单一 owner、SOCKS、singleflight、lock/generation |
+| 调度/排队 | 3 | 5 | 4 | 4 | sticky/priority/load/WRR/LRU和有界等待 |
+| retry/failover | 3 | 5 | 4 | 4 | typed scope、cooldown、有界跨槽failover |
+| stream 稳定性 | 3 | 5 | 4 | 4 | terminal/cancel/commit边界和verified模式 |
+| tools/images/thinking/cache | 4 | 5 | 5 | 4 | 透传、清洗、tool映射恢复和signature修复 |
+| 持久化/HA | 3 | 5 | 3 | 4 | runtime/attempt持久化；默认仍是单机 |
+| 槽位隔离 | 2 | 2 | 2 | 4 | 唯一 UID、容器内 worker、Unix socket、显式 SOCKS |
+| 性能效率 | 4 | 5 | 4 | 4 | 每槽长驻进程和连接池 |
+| 运维/测试 | 3 | 5 | 5 | 4 | Node+Go测试、attempt审计；仍需生产 canary |
 
 不建议计算总分。Sub2API 高分伴随最高部署复杂度；KIN 的目标不是复制整个 Sub2API。
 
 ---
 
-## 14. KIN 风险矩阵
+## 14. KIN 改造前风险与处理状态
 
-| 风险 | 概率 | 影响 | 优先级 | 说明 |
-|---|---|---|---|---|
-| HTTP-only 无唯一 refresh owner | 高 | 致命 | P0 | access 到期后账号持续 401 |
-| 完整请求无条件抓包 | 高 | 高 | P0 | 隐私泄露和磁盘耗尽 |
-| CRS stream 后拼 CLI fallback | 中 | 高 | P0 | 流腐化/重复输出；源码残留 |
-| downstream 断开不取消 upstream | 高 | 中 | P0 | 浪费额度、FD 和进程 |
-| usage 双计 | 高 | 中 | P0 | `ingestHeaders` 后再次 ingest body usage |
-| 无可用槽仍返回首槽 | 中 | 高 | P0 | fail-closed 不完整 |
-| sticky accountId 与新 VM 不一致 | 中 | 高 | P0 | 额度/日志/身份归属错误 |
-| 默认管理员密码/API key 明文 | 中 | 高 | P0 | 控制面与密钥风险 |
-| 每请求 worker/TLS | 高 | 中 | P1 | TTFT、CPU、峰值并发恶化 |
-| 无队列和跨槽 failover | 高 | 高 | P1 | 单槽故障直接暴露给客户端 |
-| stream 无 terminal 校验 | 中 | 高 | P1 | 截断流可能被当成功 |
-| proxy 脚本不在仓库 | 中 | 高 | P1 | 无法复现/审计 fail-closed |
-| unproxied slots 共用 UID | 中 | 中 | P1 | UID 不再代表唯一槽位 |
-| hard-coded wire profile | 中 | 中 | P2 | Claude 版本升级后兼容性漂移 |
-| 同步 DB/文件 I/O | 中 | 中 | P2 | Node event loop 抖动 |
+| 风险 | 原优先级 | 状态 |
+|---|---|---|
+| HTTP-only 无唯一 refresh owner | P0 | 已由 Go slot worker接管 |
+| 完整请求无条件抓包 | P0 | 新生产 handler不再写 full capture |
+| CRS stream 后拼 CLI fallback | P0 | CLI/Node runtime fallback已从生产 handler移除 |
+| downstream 断开不取消 upstream | P0 | AbortSignal → Unix RPC → Go context |
+| usage 双计 | P0 | 最终成功 attempt单点记账 |
+| 无可用槽仍返回首槽 | P0 | 已 fail closed |
+| sticky accountId 与新 VM 不一致 | P0 | 两阶段 sticky终态提交 |
+| 默认管理员密码/API key 明文 | P0 | 密码必填、API key HMAC、session hash |
+| 每请求 worker/TLS | P1 | 长驻 worker + keep-alive |
+| 无队列和跨槽 failover | P1 | 已实现有界调度/failover |
+| stream 无 terminal 校验 | P1 | 已实现 SSE状态机和两种交付模式 |
+| proxy 脚本不在仓库 | P1 | 改为 worker显式 SOCKS5，不再依赖 direct fallback |
+| unproxied slots 共用 UID | P1 | 所有 slot唯一 UID且 proxy必填 |
+| hard-coded wire profile | P2 | 部分缓解，仍是后续增强项 |
+| 同步 DB/文件 I/O | P2 | 仍是后续性能项 |
 
 ---
 

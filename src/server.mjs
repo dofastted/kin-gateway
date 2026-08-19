@@ -209,6 +209,7 @@ let failoverRunner
 function initPoolRuntime() {
   runtimeRepo = new AccountRuntimeRepo()
   attemptsRepo = new RequestAttemptsRepo()
+  try { attemptsRepo.cleanup(routingConfig?.logging?.retain_days || 7) } catch {}
   poolScheduler = new PoolScheduler({
     projectRoot: cfg.paths.project,
     stickyRouter,
@@ -1566,6 +1567,7 @@ const server = http.createServer(async (req, res) => {
       if (body.quota) routingConfig.quota = { ...(routingConfig.quota || {}), ...body.quota }
       if (body.pool) routingConfig.pool = { ...(routingConfig.pool || {}), ...body.pool }
       if (body.failover) routingConfig.failover = { ...(routingConfig.failover || {}), ...body.failover }
+      if (body.compatibility) routingConfig.compatibility = { ...(routingConfig.compatibility || {}), ...body.compatibility }
       fs.mkdirSync(path.dirname(routingConfigPath), { recursive: true })
       fs.writeFileSync(routingConfigPath, JSON.stringify(routingConfig, null, 2))
       stickyRouter.reloadConfig(routingConfig)
@@ -2311,7 +2313,28 @@ const server = http.createServer(async (req, res) => {
             vm: existing,
             homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
           }
-          const workerImport = await importWorkerCredential(workerExec, importedCredential)
+          if (process.env.KIN_CRS_MOCK !== '1') {
+            const socket = existing.runtime?.worker_socket
+            if (!socket || !fs.existsSync(socket)) {
+              const boot = startVmRuntime(existing, cfg.paths.project, { recreate: true })
+              if (!boot.ok) {
+                return json(res, 502, { ok: false, error: { code: 'worker_start_failed', message: boot.error } })
+              }
+              existing.runtime = boot.runtime
+              existing.status = 'running'
+              existing.schedulable = true
+              existing.schedule_disabled_reason = null
+              atomicWriteJson(vmPath, existing, { mode: 0o600 })
+              workerExec.vm = existing
+            }
+          }
+          let workerImport = null
+          for (let attempt = 0; attempt < 30; attempt++) {
+            workerImport = await importWorkerCredential(workerExec, importedCredential)
+            if (workerImport.ok) break
+            if (process.env.KIN_CRS_MOCK === '1') break
+            await new Promise((resolve) => setTimeout(resolve, 100))
+          }
           if (!workerImport.ok) {
             return json(res, workerImport.status || 502, {
               ok: false,
@@ -2424,6 +2447,7 @@ const server = http.createServer(async (req, res) => {
         if (body.concurrency) routingConfig.concurrency = { ...(routingConfig.concurrency || {}), ...body.concurrency }
         if (body.pool) routingConfig.pool = { ...(routingConfig.pool || {}), ...body.pool }
         if (body.failover) routingConfig.failover = { ...(routingConfig.failover || {}), ...body.failover }
+        if (body.compatibility) routingConfig.compatibility = { ...(routingConfig.compatibility || {}), ...body.compatibility }
         if (body.logging) {
           routingConfig.logging = { ...(routingConfig.logging || {}), ...body.logging }
           requestLog.setConfig({
@@ -2497,12 +2521,24 @@ const server = http.createServer(async (req, res) => {
         const result = proxyPool.bind(id, vmId)
         if (!result.ok) return json(res, 400, { ok: false, error: { type: 'invalid_request_error', code: result.error, message: result.error, details: result } })
         bindVmProxy(cfg.paths.project, vmId, proxyPool.getProxyForVm(vmId))
-        return json(res, 200, panel.ok(result.proxy))
+        let worker = null
+        const vm = getVm(cfg.paths.project, vmId)
+        if (vm?.status === 'running' && process.env.KIN_CRS_MOCK !== '1') {
+          setVmSchedulable(cfg.paths.project, vmId, false, 'proxy_rebind_worker_restart')
+          worker = startVmRuntime(getVm(cfg.paths.project, vmId), cfg.paths.project, { recreate: true })
+          if (worker.ok) setVmSchedulable(cfg.paths.project, vmId, true)
+        }
+        return json(res, 200, panel.ok({ proxy: result.proxy, worker }))
       }
       if (req.method === 'POST' && /^\/api\/panel\/proxies\/[^/]+\/unbind$/.test(p)) {
         const id = p.split('/')[4]
+        const boundVmId = proxyPool.snapshot().proxies.find((proxy) => proxy.id === id)?.bound_vm_id || null
         const result = proxyPool.unbind(id)
         if (!result.ok) return json(res, 404, { ok: false, error: { type: 'not_found_error', code: result.error, message: result.error } })
+        if (boundVmId) {
+          bindVmProxy(cfg.paths.project, boundVmId, null)
+          setVmSchedulable(cfg.paths.project, boundVmId, false, 'proxy_required')
+        }
         return json(res, 200, panel.ok(result.proxy))
       }
       if (req.method === 'DELETE' && /^\/api\/panel\/proxies\/[^/]+$/.test(p)) {
@@ -2517,7 +2553,14 @@ const server = http.createServer(async (req, res) => {
         const allocated = proxyPool.allocateForVm(vmId)
         if (!allocated) return json(res, 409, { ok: false, error: { type: 'api_error', code: 'no_free_proxy', message: 'No free SOCKS5 in pool' } })
         bindVmProxy(cfg.paths.project, vmId, proxyPool.getProxyForVm(vmId))
-        return json(res, 200, panel.ok(allocated))
+        let worker = null
+        const vm = getVm(cfg.paths.project, vmId)
+        if (vm?.status === 'running' && process.env.KIN_CRS_MOCK !== '1') {
+          setVmSchedulable(cfg.paths.project, vmId, false, 'proxy_rebind_worker_restart')
+          worker = startVmRuntime(getVm(cfg.paths.project, vmId), cfg.paths.project, { recreate: true })
+          if (worker.ok) setVmSchedulable(cfg.paths.project, vmId, true)
+        }
+        return json(res, 200, panel.ok({ proxy: allocated, worker }))
       }
 
       return json(res, 404, { ok: false, error: { type: 'not_found_error', code: 'not_found', message: 'panel route not found' } })

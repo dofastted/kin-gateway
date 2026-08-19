@@ -1,24 +1,50 @@
-# 凭证
+# OAuth 凭证生命周期
 
-对照 CRS / sub2api：只借导入换票，不借网关 `refresh_token`。
+每个 VM/槽位的 Go worker 是该账号的**唯一 refresh owner**。
 
 ```text
-sessionKey ──CookieAuth──► access + refresh
-                 │ persistOauthToVm + 槽 credentials.json
-                 ▼
-         relay：读 access，UID HTTP 出站
-         cli ：官方 claude 自己续期，网关只 harvest
+sessionKey
+   │ 对应槽位 SOCKS5（禁止 direct fallback）
+   ▼
+CookieAuth → access + refresh
+   │ /internal/credential/import
+   ▼
+Go slot worker credentials.json
+   │ 临期检查 / 401 refresh-once
+   │ 同一槽位 SOCKS5
+   ▼
+https://platform.claude.com/v1/oauth/token
 ```
 
-| 禁止 | 原因 |
-|------|------|
-| 热路径 `grant_type=refresh_token` | 和 CLI 抢票会废号 |
-| 宿主机带 OAuth 打 Anthropic | 身份不在槽上 |
-| 用探测结果当「过期」去清空凭证 | 拒号 ≠ 文件被清空 |
+## 刷新规则
 
-探测（面板「额度探测」）必须从槽 UID 发出：
+参考 Sub2API：
 
-- `GET /api/oauth/usage` → 5h / 7d / extra
-- `claude-fable-5` 1 token → fable 周限额
+1. access token 到期前 5 分钟进入刷新窗口。
+2. worker 先做进程内 singleflight，再获取 credential file lock。
+3. 锁内重新读取 credential 和 generation，二次确认是否仍需刷新。
+4. refresh 请求必须使用该 VM 绑定的 SOCKS5。
+5. 成功后原子写入 access、轮换后的 refresh、expiry 和新 generation。
+6. context/deadline 已取消的迟到响应不得落盘。
+7. `invalid_grant` 先重读 generation，识别其他 worker 已完成的竞争刷新。
+8. 401 最多强制刷新并重试一次。
 
-`POST /admin/vm/oauth/refresh` 只 harvest，不换票。access 没了且还有 sessionKey 才再走 CookieAuth。
+## 网络不变量
+
+以下请求共用 worker 的同一个显式 SOCKS5 transport：
+
+- `/v1/messages`
+- `/v1/models`
+- `/api/oauth/usage`
+- `/v1/oauth/token`
+- 健康/额度探测
+
+代理缺失或连接失败时槽位 fail closed，不允许 VPS 直连。
+
+## 管理 API
+
+- `POST /api/panel/vms/:id/oauth/refresh`：调用对应 worker ensure/force refresh。
+- `POST /admin/vm/oauth/refresh`：同上，可通过 `vm_id` 指定槽位。
+- `GET /api/panel/oauth`、`GET /admin/vm/oauth`：返回 worker 和脱敏 credential 状态。
+
+Claude CLI 不再参与推理或 token rotation。
