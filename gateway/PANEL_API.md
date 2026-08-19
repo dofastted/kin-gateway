@@ -1,99 +1,44 @@
-# Panel API（shadcn 前端契约）
+# 面板 API
 
-Base: `/api/panel`  
-Auth: `Authorization: Bearer <KIN_API_KEY>`
+基址 `/api/panel`。需要**面板登录会话**或 Master `KIN_API_KEY`。`sk-kin-…` 不能调面板。
 
-## 统一响应
+登录：`POST /api/panel/login` `{ username, password }` → token / Cookie。
 
-成功：
-```json
-{ "ok": true, "data": { ... }, "meta": {} }
-```
+## 槽位 / 用量
 
-失败：
-```json
-{ "ok": false, "error": { "type": "...", "code": "...", "message": "..." } }
-```
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/dashboard` | 总览 |
+| GET | `/vms` | 列表（含 `has_token`、`cred_status`、5h/7d/fable） |
+| GET | `/vms/:id` | 详情 |
+| POST | `/vms/:id/probe` | **槽 UID** 探测 usage + fable |
+| POST | `/probe` | 全量探测 |
+| GET | `/usage` | 用量汇总 |
+| GET | `/models` | CLI 目录 |
+| GET | `/routing` | sticky / 并发 / 额度 / logging |
+| PUT | `/routing` | 热更新；`logging.mode` = off\|normal\|debug |
 
-## 端点
+`cred_status`：`无凭证` / `可用` / `5h 限制` / `7d 限制` / `Fable 限制` / `不可用`。
 
-| Method | Path | 用途 | shadcn 组件建议 |
-|--------|------|------|----------------|
-| GET | `/api/panel/dashboard` | 总览（summary + vms + routing） | Cards + Table |
-| GET | `/api/panel/vms` | VM 列表 `data.items[]` | DataTable |
-| GET | `/api/panel/vms/:id` | VM 详情 + 账号用量 | Sheet / Detail |
-| POST | `/api/panel/vms/:id/probe` | 从 VM 官方 Claude Code 探测（auth status + 可选小 hop） | Button action |
-| POST | `/api/panel/vms/:id/activate` | 设为 active | Button |
-| POST | `/api/panel/probe` | 全量探测 | Button |
-| GET | `/api/panel/usage` | 账号用量汇总 | Progress + Table |
-| GET | `/api/panel/models` | 官方模型列表 | Select / Combobox |
-| GET | `/api/panel/routing` | 粘性/额度配置 | Form |
-| PUT | `/api/panel/routing` | 更新配置 | Form submit |
+## 密钥 / 日志
 
-## Request Logs（SQLite 持久化）
+| 方法 | 路径 |
+|------|------|
+| GET/POST | `/api-keys` |
+| PATCH/DELETE | `/api-keys/:id` |
+| GET | `/request-logs` |
+| GET | `/request-logs/stats` |
+| GET | `/request-logs/:request_id` |
 
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/api/panel/request-logs` | 摘要列表；参数：`limit, offset, api_key_id, vm_id, account_id, model, protocol, status(数字/ok/error), since, until, q`；返回 `items + total` |
-| GET | `/api/panel/request-logs?mode=debug` | debug 全量记录（脱敏） |
-| GET | `/api/panel/request-logs/stats` | 聚合统计；参数：`bucket=day|hour, since, until`；返回 `totals + buckets[]`（requests/errors/tokens/avg_duration_ms） |
-| GET | `/api/panel/request-logs/:request_id` | 单条 debug 详情 |
+日志：`normal` 摘要；`debug` 另存脱敏 body 快照。`X-Request-ID` 回写响应头。
 
-## Backups（本地备份）
+## 备份 / 代理
 
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/api/panel/backups` | 备份列表 + schedule 配置 + `next_auto_at` |
-| POST | `/api/panel/backups` | 立即备份（manual），201 返回记录 |
-| GET | `/api/panel/backups/config` | 读取 `{enabled, interval_hours, retention}` |
-| PUT | `/api/panel/backups/config` | 更新调度配置（默认 24h / 保留 7 份 / 开启） |
-| GET | `/api/panel/backups/:id/download` | 下载 tar.gz（`application/gzip`，头带 `x-kin-backup-sha256`） |
-| POST | `/api/panel/backups/:id/restore` | 恢复；body 必须 `{"confirm": true}`；恢复期间协议请求返回 503 `restore_in_progress` |
-| DELETE | `/api/panel/backups/:id` | 删除记录 + 磁盘文件 |
+| 方法 | 路径 |
+|------|------|
+| GET/POST | `/backups` |
+| GET | `/backups/:id/download` |
+| POST | `/backups/:id/restore` 须 `{ "confirm": true }` |
+| GET/POST/PUT/DELETE | `/proxies…` |
 
-备份记录 row:
-```
-id, created_at, kind(manual|scheduled|pre_restore), status(ok|failed),
-file_name, size_bytes, sha256, db_bytes, includes{db,vms,config}, note, file_exists
-```
-
-## data 字段约定（列表行）
-
-VM row:
-```
-id, name, status, active, email, account_uuid, has_token,
-max_concurrency, claude_code_version, utilization_5h, utilization_7d,
-inflight, requests
-```
-
-Usage account row:
-```
-account_id, vm_id, email, utilization_5h, utilization_7d,
-reset_5h, reset_7d, inflight, max_concurrency, requests,
-tokens_in, tokens_out, near_limit
-```
-
-Model row:
-```
-id, label, max_tokens, max_input_tokens
-```
-
-旧 `/admin/*` 仍可用，新 UI 请只依赖 `/api/panel/*`。
-
-## Proxy Pool
-
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | `/api/panel/proxies` | 池快照（config + totals + list） |
-| POST | `/api/panel/proxies/import` | body `{ text }` 批量导入 |
-| POST | `/api/panel/proxies/probe` | 全量探测 |
-| PUT | `/api/panel/proxies/config` | `{ probe_interval_min: 5\|10\|30\|60 }` |
-| POST | `/api/panel/proxies/:id/probe` | 单条探测 |
-| POST | `/api/panel/proxies/:id/enable` | 启用 |
-| POST | `/api/panel/proxies/:id/disable` | 停用（级联暂停 VM 调度） |
-| POST | `/api/panel/proxies/:id/bind` | `{ vm_id }` 1:1 绑定 |
-| POST | `/api/panel/proxies/:id/unbind` | 解绑 |
-| DELETE | `/api/panel/proxies/:id` | 删除 |
-| POST | `/api/panel/vms/:id/allocate-proxy` | VM 自动领取空闲代理 |
-
-失败策略：连续探测失败 ≥ max_failures → proxy.enabled=false + VM schedulable=false。
+恢复期间协议口 503。SOCKS 绑在槽外层 UID，不是容器内代理。
