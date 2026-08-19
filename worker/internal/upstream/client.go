@@ -17,6 +17,7 @@ import (
 	"github.com/dofastted/kin-gateway/worker/internal/credential"
 	kinoauth "github.com/dofastted/kin-gateway/worker/internal/oauth"
 	kinproxy "github.com/dofastted/kin-gateway/worker/internal/proxy"
+	"github.com/imroc/req/v3"
 )
 
 type Client struct {
@@ -70,6 +71,32 @@ func NewHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (
 			return errors.New("upstream redirects are disabled")
 		},
 	}, nil
+}
+
+// NewOAuthHTTPClient mirrors Sub2API's Claude OAuth transport: Chrome TLS
+// impersonation and the slot-bound SOCKS5. It never creates a direct fallback.
+func NewOAuthHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (*http.Client, error) {
+	if strings.TrimSpace(proxyURL) == "" {
+		if proxyRequired {
+			return nil, errors.New("slot proxy is required for OAuth refresh")
+		}
+		return nil, errors.New("OAuth direct transport is disabled")
+	}
+	if _, err := kinproxy.New(proxyURL, 15*time.Second); err != nil {
+		return nil, err
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	client := req.C().
+		SetTimeout(timeout).
+		ImpersonateChrome().
+		SetCookieJar(nil).
+		SetProxyURL(proxyURL)
+	client.GetClient().CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return errors.New("OAuth redirects are disabled")
+	}
+	return client.GetClient(), nil
 }
 
 func (c *Client) Messages(ctx context.Context, payload json.RawMessage, headers map[string]string) (*Response, error) {

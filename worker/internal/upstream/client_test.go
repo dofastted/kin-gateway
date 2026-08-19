@@ -95,6 +95,12 @@ func TestRefreshAndMessagesUseSameSOCKSProxy(t *testing.T) {
 	}
 }
 
+func TestOAuthTransportNeverAllowsDirectFallback(t *testing.T) {
+	if _, err := NewOAuthHTTPClient("", false, time.Second); err == nil {
+		t.Fatal("OAuth client allowed direct transport without slot SOCKS5")
+	}
+}
+
 func startRelaySOCKS(t *testing.T) (string, *atomic.Int32, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

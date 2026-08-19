@@ -14,9 +14,10 @@ jobs:
           node-version: '22'
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x'
+          go-version: '1.25.x'
       - run: npm ci
       - run: npm run test:node
       - run: npm run test:go
+      - run: cd worker && go test -race ./...
       - run: cd worker && go vet ./...
       - run: npm run build:worker

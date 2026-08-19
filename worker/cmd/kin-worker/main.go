@@ -39,6 +39,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("create slot HTTP client: %v", err)
 	}
+	oauthClient, err := upstream.NewOAuthHTTPClient(cfg.ProxyURL, cfg.ProxyRequired, time.Minute)
+	if err != nil {
+		log.Fatalf("create slot OAuth client: %v", err)
+	}
 	baseURL, err := url.Parse(cfg.AnthropicBaseURL)
 	if err != nil {
 		log.Fatalf("parse Anthropic base URL: %v", err)
@@ -46,7 +50,7 @@ func main() {
 	store := credential.NewStore(cfg.CredentialPath)
 	refresher := &kinoauth.Refresher{
 		Store:    store,
-		Client:   httpClient,
+		Client:   oauthClient,
 		TokenURL: cfg.OAuthTokenURL,
 		ClientID: kinoauth.DefaultClientID,
 		Skew:     cfg.RefreshSkew,
