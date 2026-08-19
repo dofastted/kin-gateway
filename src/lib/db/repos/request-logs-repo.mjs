@@ -11,6 +11,7 @@ const SUMMARY_COLUMNS = [
   'account_id', 'workspace', 'input_tokens', 'output_tokens', 'error_code',
   'error_message', 'user_agent', 'ip', 'has_tools',
   'via', 'cache_read_tokens', 'cache_creation_tokens',
+  'attempt_count', 'final_state', 'final_account_id',
 ]
 
 function toRow(rec) {

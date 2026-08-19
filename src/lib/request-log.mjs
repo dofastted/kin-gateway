@@ -235,6 +235,9 @@ export class RequestLogStore {
       via: extra.via || extra.hop_meta?.via || null,
       cache_read_tokens: extra.cache_read_tokens ?? extra.usage?.cache_read_input_tokens ?? extra.usage?.cache_read_tokens ?? null,
       cache_creation_tokens: extra.cache_creation_tokens ?? extra.usage?.cache_creation_input_tokens ?? extra.usage?.cache_creation_tokens ?? null,
+      attempt_count: extra.attempt_count ?? null,
+      final_state: extra.final_state || null,
+      final_account_id: extra.final_account_id || extra.account_id || null,
     }
 
     try { this.repo.insertSummaryIfAbsent(summary) } catch {}

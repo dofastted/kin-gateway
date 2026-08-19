@@ -28,7 +28,11 @@ test('openDatabase creates db, applies migrations, WAL enabled', () => {
   const mode = db.prepare('PRAGMA journal_mode').get()
   assert.equal(String(Object.values(mode)[0]).toLowerCase(), 'wal')
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name)
-  for (const t of ['settings', 'api_keys', 'accounts', 'account_allocations', 'sticky_sessions', 'proxies', 'vms', 'request_logs', 'request_log_debug', 'backup_records', 'schema_migrations']) {
+  for (const t of [
+    'settings', 'api_keys', 'accounts', 'account_allocations', 'sticky_sessions',
+    'proxies', 'vms', 'request_logs', 'request_log_debug', 'backup_records',
+    'account_runtime_states', 'request_attempts', 'schema_migrations',
+  ]) {
     assert.ok(tables.includes(t), `missing table ${t}`)
   }
 })
