@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,6 +76,40 @@ func TestDialerUsesRemoteHostnameAndAuthentication(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("SOCKS server did not observe target")
+	}
+}
+
+func TestDialerReportsResetDuringGreeting(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		buf := make([]byte, 16)
+		_, _ = conn.Read(buf)
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetLinger(0)
+		}
+		_ = conn.Close()
+	}()
+	dialer, err := New("socks5h://"+listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dialer.DialContext(context.Background(), "tcp", "api.anthropic.com:443")
+	if err == nil {
+		t.Fatal("expected SOCKS greeting reset")
+	}
+	if !strings.Contains(err.Error(), "read SOCKS5 greeting") {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "uid REDIRECT") {
+		t.Fatalf("missing hijack hint: %v", err)
 	}
 }
 

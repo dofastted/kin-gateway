@@ -15,6 +15,7 @@ test('harness /health 200 and honest capabilities', async () => {
     assert.equal(r.json.capabilities.forward_default, 'relay')
     assert.match(r.json.limitations.forward, /Go worker/i)
     assert.match(r.json.limitations.oauth, /sole refresh owner/i)
+    assert.match(r.json.limitations.egress, /RETURN the slot SOCKS/i)
     assert.equal(r.json.active_vm, 'vm-sim-01')
   } finally {
     await gw.stop()

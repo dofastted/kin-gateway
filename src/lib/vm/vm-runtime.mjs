@@ -3,11 +3,16 @@
  * Mixed guest OS: Ubuntu 24.04 / Debian 12 / Arch / Fedora 41.
  * Go relay worker runs inside each container and explicitly dials the
  * slot-bound SOCKS5. A missing/unhealthy proxy fails closed.
+ *
+ * Host uid iptables REDIRECT (legacy gost) is not a second in-guest proxy.
+ * The worker handshake to the real SOCKS listener must RETURN before that
+ * REDIRECT, otherwise SOCKS greeting is reset by gost's redirect port.
  */
 import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { ensureVmSocksExemption } from './socks-egress.mjs'
 
 export const RUNTIME = 'docker'
 const WORKER_BIN = process.env.KIN_WORKER_BIN || '/opt/kin-gateway/bin/kin-worker'
@@ -128,9 +133,12 @@ export function socksUidFor(vm) {
   return String(10000 + n)
 }
 
-export function ensureOuterSocks(vm) {
+export function ensureOuterSocks(vm, opts = {}) {
   if (!vmWantsOuterSocks(vm)) return { ok: false, error: 'slot SOCKS5 proxy is required' }
-  return { ok: true, uid: socksUidFor(vm), transport: 'go-explicit-socks5' }
+  const uid = socksUidFor(vm)
+  const hijack = ensureVmSocksExemption(vm, { uid, run: opts.run, enabled: opts.enabled })
+  if (!hijack.ok) return hijack
+  return { ok: true, uid, transport: 'go-explicit-socks5', hijack }
 }
 
 function runtimeUser(vm) {
@@ -162,6 +170,7 @@ function runtimePatch(vm, info, extra = {}) {
     worker_run_dir: extra.worker_run_dir || vm.runtime?.worker_run_dir || null,
     worker_token_file: extra.worker_token_file || vm.runtime?.worker_token_file || null,
     egress: 'explicit-socks5',
+    egress_uid: runtimeUser(vm).split(':')[0],
     ...extra,
   }
   return vm
@@ -247,6 +256,14 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
     return { ok: false, error: String(error.message || error) }
   }
   try { fs.chownSync(home, runtimeUidNum(vm), Number(GID)) } catch {}
+  const workerExtra = {
+    worker_socket: worker.socket,
+    worker_run_dir: worker.runDir,
+    worker_token_file: worker.token,
+    egress_hijack: proxy.hijack?.applied
+      ? 'socks-dest-return'
+      : (proxy.hijack?.skipped || proxy.hijack?.reason || null),
+  }
 
   let existing = inspectContainer(name)
   const wrongNet = existing && existing.networkMode !== NET
@@ -257,21 +274,13 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
     existing = null
   }
   if (existing?.running) {
-    runtimePatch(vm, existing, {
-      worker_socket: worker.socket,
-      worker_run_dir: worker.runDir,
-      worker_token_file: worker.token,
-    })
+    runtimePatch(vm, existing, workerExtra)
     return { ok: true, action: 'already-running', runtime: vm.runtime }
   }
   if (existing) {
     const r = sh(['docker', 'start', name])
     if (!r.ok) return { ok: false, error: r.stderr || 'docker start failed' }
-    runtimePatch(vm, inspectContainer(name), {
-      worker_socket: worker.socket,
-      worker_run_dir: worker.runDir,
-      worker_token_file: worker.token,
-    })
+    runtimePatch(vm, inspectContainer(name), workerExtra)
     return { ok: true, action: 'started', runtime: vm.runtime }
   }
 
@@ -315,9 +324,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
   if (!r.ok) return { ok: false, error: r.stderr || r.stdout || 'docker run failed' }
   runtimePatch(vm, inspectContainer(name), {
     container_id: r.stdout,
-    worker_socket: worker.socket,
-    worker_run_dir: worker.runDir,
-    worker_token_file: worker.token,
+    ...workerExtra,
   })
   return { ok: true, action: 'created', runtime: vm.runtime }
 }

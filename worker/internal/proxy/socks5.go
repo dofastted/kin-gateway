@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -103,11 +104,11 @@ func (d *Dialer) negotiate(conn net.Conn, target string) error {
 	}
 	greeting := append([]byte{0x05, byte(len(methods))}, methods...)
 	if _, err := conn.Write(greeting); err != nil {
-		return fmt.Errorf("write SOCKS5 greeting: %w", err)
+		return socksProxyError("write SOCKS5 greeting", err, d.Address)
 	}
 	reply := make([]byte, 2)
 	if _, err := io.ReadFull(conn, reply); err != nil {
-		return fmt.Errorf("read SOCKS5 greeting: %w", err)
+		return socksProxyError("read SOCKS5 greeting", err, d.Address)
 	}
 	if reply[0] != 0x05 {
 		return fmt.Errorf("unexpected SOCKS version %d", reply[0])
@@ -165,6 +166,27 @@ func (d *Dialer) authenticate(conn net.Conn) error {
 		return errors.New("SOCKS5 authentication failed")
 	}
 	return nil
+}
+
+func socksProxyError(op string, err error, proxyAddr string) error {
+	if isConnReset(err) {
+		return fmt.Errorf("%s: %w (TCP to %s was reset; host uid REDIRECT to gost does this unless that SOCKS destination is exempted)", op, err, proxyAddr)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+func isConnReset(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && errors.Is(op.Err, syscall.ECONNRESET) {
+		return true
+	}
+	return strings.Contains(err.Error(), "connection reset by peer")
 }
 
 func connectRequest(target string) ([]byte, error) {

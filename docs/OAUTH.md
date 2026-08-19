@@ -39,7 +39,21 @@ https://platform.claude.com/v1/oauth/token
 - `/v1/oauth/token`
 - 健康/额度探测
 
-代理缺失或连接失败时槽位 fail closed，不允许 VPS 直连。
+代理缺失或连接失败时槽位 fail closed，不允许 VPS 直连。容器环境变量里没有 `HTTP_PROXY` / `ALL_PROXY` / `socks`；出站由 worker 自己对槽位 SOCKS 做 CONNECT。
+
+### 不要和宿主机 uid REDIRECT 叠两层
+
+`kin-*` 槽位是 **host 网络或与宿主机同 UID 的 Docker**，不是独立 netns。旧 CLI 路径仍可能在宿主机上用 `iptables` owner-uid + `gost :12345` 劫持该 UID 的全部 TCP。
+
+Go worker 会主动 `Dial` 远程 SOCKS。若那条 TCP 也被 REDIRECT 到 gost 的 redirect 口（那不是 SOCKS 服务端），握手会变成 `read SOCKS5 greeting: connection reset by peer`。旧 HTTP 库路径更糟：CONNECT 目标会变成代理自己。
+
+拆开方式（网关在槽位启动和启动后周期复检）：
+
+1. `127.0.0.0/8` → RETURN
+2. **槽位 SOCKS `host:port` → RETURN**
+3. 其余该 UID 的 TCP → 仍可 REDIRECT 到 gost（留给可能还在的旧 CLI 进程）
+
+推理只由 Go worker 说 SOCKS。gost 通道以后可以拆掉；现在留着是为了不误伤同一 UID 上的其它进程。`KIN_SOCKS_EGRESS_IPTABLES=0` 可关闭这项 iptables 复检。
 
 ## 管理 API
 
