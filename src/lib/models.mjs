@@ -305,10 +305,15 @@ export function validateOfficialModel(model) {
     }
   }
 
-  if (!cache.ids.length && cache.key !== 'test') harvestCliModelCatalog()
+  // Go slot workers own the live model catalog. Request validation remains
+  // fail-closed for non-Claude providers while allowing well-formed official
+  // Claude IDs when the asynchronous worker catalog is not yet cached.
   const resolved = resolveCliModel(m, cache.ids)
   if (resolved.ok) {
     return { ok: true, model: resolved.model, alias: resolved.alias || null }
+  }
+  if (!cache.ids.length && isCatalogModelId(id)) {
+    return { ok: true, model: id, alias: null, source: 'worker_catalog_pending' }
   }
 
   return {

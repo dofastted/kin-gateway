@@ -49,5 +49,9 @@
     "max_total_attempts": 12,
     "total_retry_deadline_ms": 120000,
     "delivery_mode": "realtime"
+  },
+  "compatibility": {
+    "tool_name_rewrite": true,
+    "cache_control_limit": 4
   }
 }

@@ -3,7 +3,7 @@
  * All Anthropic I/O runs as the VM UID (SOCKS egress). Host never calls Anthropic.
  */
 import { isCrsMock } from './crs-mock.mjs'
-import { callVmHttps, readSlotAccessToken } from './crs-relay.mjs'
+import { callGoWorker, callWorkerGet } from './go-worker-client.mjs'
 
 export const FABLE_PROBE_MODEL = 'claude-fable-5'
 export const OAUTH_USAGE_PATH = '/api/oauth/usage'
@@ -98,24 +98,7 @@ export async function probeVmUsage({
       probed_at: new Date().toISOString(),
     }
   }
-  if (!readSlotAccessToken(exec)) {
-    return {
-      ok: false,
-      source: 'vm-oauth-usage',
-      error: 'no_oauth_token',
-      probed_at: new Date().toISOString(),
-    }
-  }
-
-  const usageRes = await callVmHttps({
-    exec,
-    method: 'GET',
-    path: OAUTH_USAGE_PATH,
-    body: null,
-    timeoutMs,
-    identity,
-    reqHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
-  })
+  const usageRes = await callWorkerGet(exec, '/internal/oauth/usage', { timeoutMs })
   const parsed = usageRes.ok ? parseOAuthUsage(usageRes.body) : {
     five_hour: null,
     seven_day: null,
@@ -126,10 +109,8 @@ export async function probeVmUsage({
 
   let fable = null
   if (includeFable) {
-    const fableRes = await callVmHttps({
+    const fableRes = await callGoWorker({
       exec,
-      method: 'POST',
-      path: '/v1/messages',
       timeoutMs,
       identity,
       body: {
@@ -137,6 +118,7 @@ export async function probeVmUsage({
         max_tokens: 1,
         messages: [{ role: 'user', content: 'hi' }],
       },
+      reqHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
     })
     fable = parseFableProbe(fableRes)
   }
@@ -145,7 +127,7 @@ export async function probeVmUsage({
   return {
     ok: !!(usageRes.ok || (includeFable && fable?.ok)) && !usageDenied,
     source: 'vm-oauth-usage',
-    via: usageRes.via || 'crs-uid',
+    via: usageRes.via || 'go-worker',
     usage_status: usageRes.status,
     usage_error: usageRes.ok ? null : (usageRes.body?.error?.message || usageRes.body?.error || `http_${usageRes.status}`),
     ...parsed,

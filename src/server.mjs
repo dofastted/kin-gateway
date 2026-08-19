@@ -69,11 +69,24 @@ import { callClientWorkspaceCli, streamClientWorkspaceCli } from './lib/client-c
 import { extractClientEnv } from './lib/client-env.mjs'
 import { applyCrsUnofficialPersona } from './lib/crs-persona.mjs'
 import { startVmRuntime, stopVmRuntime, OS_CATALOG, OS_ORDER, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, CLAUDE_VER, STANDARD_LOCALE } from './lib/vm-runtime.mjs'
-import { callGoWorker, streamGoWorker, workerHealth, ensureWorkerCredential, importWorkerCredential } from './lib/go-worker-client.mjs'
+import {
+  callGoWorker,
+  streamGoWorker,
+  workerHealth,
+  ensureWorkerCredential,
+  importWorkerCredential,
+  callWorkerGet,
+} from './lib/go-worker-client.mjs'
 import { PoolScheduler } from './lib/pool-scheduler.mjs'
 import { FailoverRunner } from './lib/failover-runner.mjs'
 import { AccountRuntimeRepo } from './lib/db/repos/account-runtime-repo.mjs'
 import { RequestAttemptsRepo } from './lib/db/repos/request-attempts-repo.mjs'
+import {
+  prepareAnthropicRequest,
+  rewriteToolNames,
+  restoreToolNames,
+  restoreToolNamesInSSELine,
+} from './lib/anthropic-policy.mjs'
 
 
 function applyVmConcurrency(id, n, { override = true } = {}) {
@@ -595,11 +608,18 @@ async function handleProtocol(req, res, protocol, pathName) {
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        return applyForwardReplace('relay', officialMessagesBody(body), identity, inbound)
+        const identified = applyForwardReplace('relay', officialMessagesBody(body), identity, inbound)
+        const cleaned = prepareAnthropicRequest(identified, {
+          cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
+        })
+        const tools = rewriteToolNames(cleaned, {
+          enabled: routingConfig?.compatibility?.tool_name_rewrite !== false,
+        })
+        return { body: tools.body, meta: { toolNames: tools.reverse } }
       },
-      callAttempt: async ({ candidate, body, stream, deliveryMode: attemptDelivery, signal, onCommit }) => {
+      callAttempt: async ({ candidate, body, attemptMeta, stream, deliveryMode: attemptDelivery, signal, onCommit }) => {
         if (!stream) {
-          return callGoWorker({
+          const workerResult = await callGoWorker({
             exec: candidate.exec,
             body,
             reqHeaders: req.headers,
@@ -607,6 +627,10 @@ async function handleProtocol(req, res, protocol, pathName) {
             identity: loadVmIdentity(candidate.exec),
             signal,
           })
+          if (workerResult?.body) {
+            workerResult.body = restoreToolNames(workerResult.body, attemptMeta?.toolNames || {})
+          }
+          return workerResult
         }
         let state
         if (protocol === 'openai.chat') {
@@ -629,6 +653,7 @@ async function handleProtocol(req, res, protocol, pathName) {
             onCommit()
           },
           onEvent: async (line) => {
+            line = restoreToolNamesInSSELine(line, attemptMeta?.toolNames || {})
             if (protocol === 'anthropic.messages') {
               res.write(String(line).endsWith('\n') ? String(line) : String(line) + '\n')
               return
@@ -1442,24 +1467,57 @@ function activateVmSlot(id) {
   }
 }
 
-async function oauthStatusWithCli() {
-  const homeDir = vmCliHome()
-  await oauthGuard.ensureFresh({ homeDir })
-  const cli = await runClaudeAuthStatus({ homeDir })
+function workerExecForVm(id) {
+  const vm = getVm(cfg.paths.project, id)
+  if (!vm) return null
   return {
-    ...oauthGuard.status(),
-    cli: {
-      source: 'claude_auth_status',
-      ok: !!cli.ok,
-      loggedIn: cli.loggedIn ?? null,
-      authMethod: cli.authMethod ?? null,
-      apiProvider: cli.apiProvider ?? null,
-      email: cli.email ?? null,
-      orgId: cli.orgId ?? null,
-      orgName: cli.orgName ?? null,
-      subscriptionType: cli.subscriptionType ?? null,
-      error: cli.error || null,
-    },
+    vmId: id,
+    accountId: vm.claude?.account_uuid || id,
+    vm,
+    homeDir: path.join(cfg.paths.project, 'vms', id, 'cli-home'),
+  }
+}
+
+async function oauthStatusWithWorker(id = null) {
+  const vmId = id || getActiveVmId(cfg.paths.project)
+  const exec = workerExecForVm(vmId)
+  if (!exec) return { ok: false, vm_id: vmId, error: 'vm_not_found' }
+  const health = await workerHealth(exec)
+  return {
+    ok: !!health.ok,
+    vm_id: vmId,
+    refresh_owner: 'go-slot-worker',
+    proxy_required: true,
+    worker: health,
+    credential: health.credential || null,
+  }
+}
+
+async function fetchWorkerModels() {
+  const active = getActiveVmId(cfg.paths.project)
+  const order = [
+    active,
+    ...listVms(cfg.paths.project).map((vm) => vm.id).filter((id) => id !== active),
+  ].filter(Boolean)
+  let last = null
+  for (const id of order) {
+    const exec = workerExecForVm(id)
+    if (!exec) continue
+    const result = await callWorkerGet(exec, '/internal/v1/models')
+    last = result
+    if (result.ok) {
+      return {
+        ...(result.body || {}),
+        source: 'go-slot-worker',
+        vm_id: id,
+      }
+    }
+  }
+  return {
+    object: 'list',
+    data: [],
+    source: 'go-slot-worker',
+    error: last?.body?.error?.message || 'No healthy slot worker can fetch models',
   }
 }
 
@@ -1489,7 +1547,12 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/admin/routing' && req.method === 'GET') {
       if (!requireAuth(req, res)) return
-      return json(res, 200, { routing: routingConfig, sticky: stickyRouter.stats() })
+      return json(res, 200, {
+        routing: routingConfig,
+        sticky: stickyRouter.stats(),
+        pool: poolScheduler.snapshot(),
+        account_runtime: runtimeRepo.list(),
+      })
     }
     if (p === '/admin/routing' && (req.method === 'PUT' || req.method === 'POST')) {
       if (!requireAuth(req, res)) return
@@ -1731,6 +1794,13 @@ const server = http.createServer(async (req, res) => {
           totals: requestLog.totals(),
           buckets: requestLog.aggregate({ since, until, bucket }),
         })
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/request-logs\/[^/]+\/attempts$/.test(p)) {
+        const requestId = p.split('/')[4]
+        return json(res, 200, panel.ok({
+          request_id: requestId,
+          attempts: attemptsRepo.list(requestId),
+        }))
       }
       if (req.method === 'GET' && /^\/api\/panel\/request-logs\/[^/]+$/.test(p)) {
         const id = p.split('/').pop()
@@ -2055,10 +2125,7 @@ const server = http.createServer(async (req, res) => {
           return json(res, 409, { ok: false, error: { message: 'vm id exists' } })
         }
         const startNow = body.start !== false && body.status !== 'stopped'
-        let ccVer = body.claude_code_version || CLAUDE_VER
-        try {
-          if (!body.claude_code_version) ccVer = (await fetchLatestClaudeCodeVersion()) || CLAUDE_VER
-        } catch { ccVer = CLAUDE_VER }
+        const ccVer = 'removed'
         const wantKernel = body.kernel && OS_CATALOG[body.kernel] ? body.kernel : kernelForIndex(idx)
         const vm = {
           id,
@@ -2068,7 +2135,7 @@ const server = http.createServer(async (req, res) => {
           timezone: normalizeUsTimezone(body.timezone || timezoneForIndex(idx)),
           locale: STANDARD_LOCALE,
           region: body.region || body.zone || null,
-          note: body.note || `${(OS_CATALOG[wantKernel] || {}).pretty || wantKernel} · Claude Code ${ccVer}`,
+          note: body.note || `${(OS_CATALOG[wantKernel] || {}).pretty || wantKernel} · Go slot worker`,
           proxy: null,
           policy: {
             maxConcurrency: Math.max(1, Math.min(128, Number(body.max_concurrency ?? body.maxConcurrency ?? routingConfig?.concurrency?.default_max_per_account ?? 20))),
@@ -2083,43 +2150,29 @@ const server = http.createServer(async (req, res) => {
           updated_at: new Date().toISOString(),
           schedulable: !!startNow,
           schedule_disabled_reason: startNow ? null : 'stopped',
-          proxy_cli_enabled: body.proxy_cli_enabled === true,
+          proxy_cli_enabled: true,
           seed_policy: defaultSeedPolicy(body.seed_policy || {}),
         }
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         try {
-          writeCliHome({
-            homeDir: path.join(vmsDir, id, 'cli-home'),
-            timezone: vm.timezone,
-            locale: vm.locale,
-            kernel: vm.kernel,
-            seedPolicy: defaultSeedPolicy({
-              ...vm.seed_policy,
-              extra_env: {
-                CLAUDE_CODE_DISABLE_AUTOUPDATE: '1',
-                KIN_VM_ID: vm.id,
-                KIN_VM_NAME: vm.name,
-                KIN_VM_OS: vm.kernel,
-              },
-              settings_json_override: {
-                theme: 'dark',
-                autoUpdates: false,
-                env: {
-                  DISABLE_TELEMETRY: '1',
-                  DO_NOT_TRACK: '1',
-                  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-                  CLAUDE_CODE_DISABLE_AUTOUPDATE: '1',
-                },
-              },
-            }),
-          })
+          fs.mkdirSync(path.join(vmsDir, id, 'cli-home', '.claude'), { recursive: true, mode: 0o700 })
         } catch (e) {}
         let allocated = null
-        if (body.auto_allocate_proxy) {
+        if (!vm.proxy?.url) {
           try {
             allocated = proxyPool.allocateForVm(id)
-            if (allocated) bindVmProxy(cfg.paths.project, id, allocated)
+            if (allocated) {
+              bindVmProxy(cfg.paths.project, id, proxyPool.getProxyForVm(id))
+              vm.proxy = getVm(cfg.paths.project, id)?.proxy || vm.proxy
+            }
           } catch (e) {}
+        }
+        if (!vm.proxy?.url) {
+          vm.status = 'stopped'
+          vm.schedulable = false
+          vm.schedule_disabled_reason = 'slot SOCKS5 proxy is required'
+          atomicWriteJson(vmPath, vm, { mode: 0o600 })
+          return json(res, 409, { ok: false, error: { code: 'proxy_required', message: 'No healthy SOCKS5 is available for this VM' }, vm: summarizeVm(vm) })
         }
         if (body.activate === true) {
           try { activateVmSlot(id) } catch (e) {}
@@ -2338,7 +2391,7 @@ const server = http.createServer(async (req, res) => {
         }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
-        return json(res, 200, panel.ok(await oauthStatusWithCli()))
+        return json(res, 200, panel.ok(await oauthStatusWithWorker()))
       }
 
       // POST /api/panel/probe
@@ -2352,8 +2405,7 @@ const server = http.createServer(async (req, res) => {
       }
       // GET /api/panel/models
       if (req.method === 'GET' && p === '/api/panel/models') {
-        const force = String(new URL(req.url, 'http://x').searchParams.get('refresh') || '') === '1'
-        return json(res, 200, await panel.buildModels({ cfg, force }))
+        return json(res, 200, panel.ok(await fetchWorkerModels()))
       }
       // GET /api/panel/routing
       if (req.method === 'GET' && p === '/api/panel/routing') {
@@ -2511,14 +2563,13 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/v1/models') {
       if (!requireAuth(req, res)) return
-      const force = String(new URL(req.url, 'http://x').searchParams.get('refresh') || '') === '1'
-      const result = await fetchOfficialModels(null, { force })
+      const result = await fetchWorkerModels()
       return json(res, 200, result)
     }
-    // Admin: re-harvest models from the VM Claude Code binary
+    // Admin: fetch current models through a healthy Go slot worker.
     if (req.method === 'POST' && p === '/admin/models/refresh') {
       if (!requireAuth(req, res)) return
-      const result = await fetchOfficialModels(null, { force: true })
+      const result = await fetchWorkerModels()
       return json(res, 200, result)
     }
 
@@ -2560,30 +2611,31 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/admin/vm/oauth') {
       if (!requireAuth(req, res)) return
-      return json(res, 200, await oauthStatusWithCli())
+      return json(res, 200, await oauthStatusWithWorker())
     }
     if (req.method === 'POST' && p === '/admin/vm/oauth/refresh') {
       if (!requireAuth(req, res)) return
       const body = await readBody(req, 4096).catch(() => ({}))
-      const result = await oauthGuard.ensureFresh({
-        force: body?.force === true,
-        homeDir: vmCliHome(),
+      const id = body.vm_id || getActiveVmId(cfg.paths.project)
+      const exec = workerExecForVm(id)
+      if (!exec) return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })
+      const result = await ensureWorkerCredential(exec, { force: body.force === true })
+      return json(res, result.ok ? 200 : (result.status || 502), {
+        ...result,
+        vm_id: id,
+        refresh_owner: 'go-slot-worker',
+        proxy_required: true,
       })
-      return json(res, result.ok ? 200 : 401, { ok: result.ok, ...result, ...oauthGuard.status() })
     }
 
-    // ---- Claude Code update ----
+    // Claude CLI inference/update was removed; workers are built and deployed separately.
     if (req.method === 'GET' && p === '/admin/vm/claude-code/version') {
       if (!requireAuth(req, res)) return
-      const latest = await fetchLatestClaudeCodeVersion()
-      return json(res, 200, { vm_id: cfg.vm.id, current: cfg.vm.claude_code_version, latest })
+      return json(res, 410, { error: { code: 'claude_cli_removed', message: 'Claude CLI runtime was replaced by the Go slot worker' } })
     }
     if (req.method === 'POST' && p === '/admin/vm/claude-code/update') {
       if (!requireAuth(req, res)) return
-      const body = await readBody(req, 64 * 1024)
-      const result = await updateVmClaudeCode(cfg.vm.path, { version: body.version || 'latest' })
-      cfg.vm.claude_code_version = result.version
-      return json(res, 200, result)
+      return json(res, 410, { error: { code: 'claude_cli_removed', message: 'Build and roll out the Go slot worker instead' } })
     }
 
     json(res, 404, { error: { message: `not found: ${p}` } })
@@ -2631,7 +2683,6 @@ function shutdown(signal) {
   try { backupService.stopScheduler() } catch {}
   try { proxyPool.stopScheduler() } catch {}
   try { stopVmWatch() } catch {}
-  try { oauthGuard.stopLoop() } catch {}
   try { server.close(() => {}) } catch {}
   try { closeDatabase() } catch {}
   process.exit(0)
@@ -2640,20 +2691,16 @@ process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
 server.listen(cfg.port, cfg.host, () => {
-  oauthGuard.startLoop(60_000)
   const addr = server.address()
   const boundPort = typeof addr === 'object' && addr ? addr.port : cfg.port
-  try {
-    const cat = harvestCliModelCatalog()
+  fetchWorkerModels().then((catalog) => {
     console.log(JSON.stringify({
-      event: 'cli-model-catalog',
-      source: 'claude_cli_catalog',
-      total: cat.ids.length,
-      cli_version: cat.version,
+      event: 'go-worker-model-catalog',
+      source: catalog.source,
+      total: Array.isArray(catalog.data) ? catalog.data.length : 0,
+      vm_id: catalog.vm_id || null,
     }))
-  } catch (e) {
-    console.warn('[cli-models] harvest failed', e.message)
-  }
+  }).catch((error) => console.warn('[worker-models] fetch failed', error.message))
   console.log(JSON.stringify({
     event: 'kin-gateway-v2.1-started',
     port: boundPort,

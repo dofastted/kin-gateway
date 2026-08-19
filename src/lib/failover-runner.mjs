@@ -103,9 +103,14 @@ export class FailoverRunner {
         })
       }
       const attemptStarted = Date.now()
-      const body = typeof applyAttempt === 'function'
+      const prepared = typeof applyAttempt === 'function'
         ? await applyAttempt(clone(requestBody), selected, { attemptNo, repaired })
         : clone(requestBody)
+      const wrappedAttempt = prepared && typeof prepared === 'object' &&
+        Object.prototype.hasOwnProperty.call(prepared, 'body') &&
+        Object.prototype.hasOwnProperty.call(prepared, 'meta')
+      const body = wrappedAttempt ? prepared.body : prepared
+      const attemptMeta = wrappedAttempt ? prepared.meta : null
       this.attemptsRepo?.begin?.({
         requestId,
         attemptNo,
@@ -122,6 +127,7 @@ export class FailoverRunner {
         result = await callAttempt({
           candidate: selected,
           body,
+          attemptMeta,
           attemptNo,
           stream,
           deliveryMode: deliveryMode || this.config.delivery_mode,

@@ -374,6 +374,36 @@ export async function importWorkerCredential(exec, credential, { timeoutMs = 600
 }
 
 export async function callWorkerGet(exec, requestPath, { timeoutMs = 30000, signal } = {}) {
+  if (isCrsMock()) {
+    if (requestPath === '/internal/v1/models') {
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          object: 'list',
+          data: [{
+            id: process.env.KIN_MOCK_MODEL || 'claude-haiku-4-5-20251001',
+            object: 'model',
+            owned_by: 'anthropic',
+          }],
+        },
+        headers: {},
+        via: 'go-worker-mock',
+      }
+    }
+    if (requestPath === '/internal/oauth/usage') {
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          five_hour: { utilization: 0.12, resets_at: '2026-08-19T20:00:00Z' },
+          seven_day: { utilization: 0.34, resets_at: '2026-08-25T00:00:00Z' },
+        },
+        headers: {},
+        via: 'go-worker-mock',
+      }
+    }
+  }
   try {
     const response = await workerRequest(exec, { requestPath, timeoutMs, signal })
     const data = await readAll(response)

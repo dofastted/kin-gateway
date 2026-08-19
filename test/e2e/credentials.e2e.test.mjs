@@ -26,7 +26,7 @@ test('sessionKey import writes via persistOauthToVm (fake oauth)', async () => {
   }
 })
 
-test('harvest refresh reads cli-home credentials, no grant_type', async () => {
+test('Go slot worker owns refresh; gateway no longer harvests CLI credentials', async () => {
   const gw = await startGateway()
   try {
     const home = path.join(gw.project, 'vms', 'vm-sim-01', 'cli-home', '.claude')
@@ -41,8 +41,10 @@ test('harvest refresh reads cli-home credentials, no grant_type', async () => {
     const r = await api(gw, 'POST', '/admin/vm/oauth/refresh', { body: {} })
     assert.equal(r.status, 200, r.text)
     assert.notEqual(r.json.grant_type, 'refresh_token')
+    assert.equal(r.json.refresh_owner, 'go-slot-worker')
+    assert.equal(r.json.proxy_required, true)
     const rec = JSON.parse(fs.readFileSync(path.join(gw.project, 'vms', 'vm-sim-01.json'), 'utf8'))
-    assert.equal(rec.claude.access_token, 'sk-ant-oat01-HARVESTED')
+    assert.equal(rec.claude.access_token, 'sk-ant-oat01-FAKE-SEED')
   } finally {
     await gw.stop()
   }

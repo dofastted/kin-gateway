@@ -77,7 +77,8 @@ export class PoolScheduler {
     for (;;) {
       if (signal?.aborted) throw makeAbortError()
       const candidates = await this.eligibleCandidates({ model, excluded, signal })
-      const selected = this.pick(candidates, { model, stickyKey })
+      const available = candidates.filter((candidate) => !candidate.busy)
+      const selected = this.pick(available, { model, stickyKey })
       if (selected) {
         const reservation = this.reserve(selected)
         if (reservation) {
@@ -143,6 +144,7 @@ export class PoolScheduler {
         loadRatio: inflight / maxConcurrency,
         lastUsedAt: this.lastUsed.get(accountId) || state?.last_used_at || 0,
         workerStatus: eligibility.workerStatus,
+        busy: !!eligibility.busy,
         exec: this.executionContext(vm, accountId),
       })
     }
@@ -159,14 +161,17 @@ export class PoolScheduler {
       return { ok: false, reason: 'model_cooldown' }
     }
     const inflight = this.inflight.get(accountId) || 0
-    if (inflight >= maxConcurrencyOf(vm)) return { ok: false, reason: 'concurrency_limit' }
+    let busy = inflight >= maxConcurrencyOf(vm)
     if (this.accountQuota) {
       const gate = this.accountQuota.canAccept(accountId)
-      if (!gate.ok) return { ok: false, reason: gate.reason || 'quota_gate' }
+      if (!gate.ok) {
+        if (gate.reason === 'concurrency_limit') busy = true
+        else return { ok: false, reason: gate.reason || 'quota_gate' }
+      }
     }
     const workerStatus = await this.getWorkerHealth(this.executionContext(vm, accountId), { signal })
     if (!workerStatus?.ok) return { ok: false, reason: 'worker_unhealthy', workerStatus }
-    return { ok: true, workerStatus }
+    return { ok: true, workerStatus, busy }
   }
 
   executionContext(vm, accountId) {
