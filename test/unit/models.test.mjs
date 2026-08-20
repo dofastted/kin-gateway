@@ -27,6 +27,22 @@ test('alias resolves to latest non-fast catalog id', () => {
   assert.equal(resolveCatalogModel('opus[1m]', ids).model, 'claude-opus-5[1m]')
 })
 
+test('haiku calling aliases resolve to the dated catalog id', () => {
+  setModelCatalog([
+    'claude-sonnet-5',
+    'claude-opus-5',
+    'claude-haiku-4-5-20251001',
+    'claude-fable-5',
+  ])
+  assert.equal(resolveCatalogModel('claude-haiku-4-5').ok, true)
+  assert.equal(resolveCatalogModel('claude-haiku-4-5').model, 'claude-haiku-4-5-20251001')
+  assert.equal(validateOfficialModel('claude-haiku-4-5').ok, true)
+  assert.equal(validateOfficialModel('claude-haiku-4-5').model, 'claude-haiku-4-5-20251001')
+  assert.equal(validateOfficialModel('anthropic/claude-haiku-4-5').model, 'claude-haiku-4-5-20251001')
+  assert.equal(validateOfficialModel('haiku').model, 'claude-haiku-4-5-20251001')
+  clearModelsCache()
+})
+
 test('validateOfficialModel only accepts the loaded catalog', () => {
   setModelCatalog([
     'claude-sonnet-5',

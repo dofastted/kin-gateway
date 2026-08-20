@@ -45,6 +45,28 @@ function redact(s, keep = 12) {
   return s.slice(0, keep) + '…' + s.slice(-8)
 }
 
+function isCloudflareChallenge(s) {
+  const t = String(s || '')
+  return /just a moment/i.test(t)
+    || /cloudflare_challenge/i.test(t)
+    || /cf-mitigated/i.test(t)
+    || /cdn-cgi\/challenge/i.test(t)
+    || /<!doctype html/i.test(t)
+}
+
+function publicImportError(raw) {
+  const s = String(raw || 'session import failed')
+  if (isCloudflareChallenge(s)) {
+    return 'Cloudflare 拦截了该槽位 SOCKS5 出口（Just a moment）。已用 Chrome TLS 重试，不再回落 node-fetch。请换住宅代理或稍后重试。'
+  }
+  const compact = s.replace(/\s+/g, ' ').trim()
+  if (/<!doctype|<html[\s>]/i.test(compact)) {
+    const status = (compact.match(/\b([45]\d\d)\b/) || [])[1] || ''
+    return `导入失败${status ? `: ${status}` : ''} 上游返回了网页而不是 JSON`
+  }
+  return compact.slice(0, 240)
+}
+
 async function fetchJson(url, options = {}, proxyUrl = null) {
   const [{ default: fetch }, { SocksProxyAgent }] = await Promise.all([
     import('node-fetch'),
@@ -91,7 +113,8 @@ async function getOrganizationUUID(sessionKey) {
     },
   })
   if (!ok) {
-    throw new Error(`get organizations failed: ${status} ${typeof body === 'string' ? body.slice(0, 300) : JSON.stringify(body).slice(0, 300)}`)
+    const raw = typeof body === 'string' ? body : JSON.stringify(body)
+    throw new Error(publicImportError(`get organizations failed: ${status} ${raw}`))
   }
   if (!Array.isArray(body) || body.length === 0) {
     throw new Error(`no organizations found: ${JSON.stringify(body).slice(0, 300)}`)
@@ -259,10 +282,10 @@ function spawnCffiImport(sessionKey, { scope = 'full', proxyUrl = null } = {}) {
     child.stderr.on('data', (d) => { stderr += d.toString('utf8') })
     child.on('error', reject)
     child.on('close', (code) => {
-      if (stderr.trim()) console.warn('[cffi-import]', stderr.trim().slice(0, 800))
+      if (stderr.trim()) console.warn('[cffi-import]', publicImportError(stderr))
       if (code !== 0) {
-        const err = new Error(`cffi import exited ${code}: ${stderr.trim().slice(-300)}`)
-        err.code = 'cffi_import_failed'
+        const err = new Error(publicImportError(stderr.trim() || `cffi import exited ${code}`))
+        err.code = isCloudflareChallenge(stderr) ? 'cloudflare_challenge' : 'cffi_import_failed'
         reject(err)
         return
       }
@@ -317,14 +340,15 @@ async function sessionKeyToOAuthNode(sessionKey, { scope = 'full', proxyUrl = nu
 
 /**
  * Full conversion: sessionKey → OAuth credential object.
- * Prefers curl_cffi Chrome TLS (claude.ai is CF-gated). node-fetch is fallback.
+ * Chrome TLS (curl_cffi) only. node-fetch JA3 is CF-challenged on claude.ai
+ * and is used only when the helper is missing.
  */
 export async function sessionKeyToOAuth(sessionKey, {
   scope = 'full',
   proxyUrl = null,
   allowDirectFallback = true,
 } = {}) {
-  const sk = String(sessionKey || '').trim()
+  const sk = String(sessionKey || '').trim().replace(/^["']|["']$/g, '')
   if (!sk.startsWith('sk-ant-sid')) {
     throw new Error(`expected sk-ant-sid* sessionKey, got: ${redact(sk)}`)
   }
@@ -354,11 +378,18 @@ export async function sessionKeyToOAuth(sessionKey, {
       return cred
     } catch (e) {
       lastErr = e
-      console.warn('[import] curl_cffi', p ? 'socks5h' : 'direct', 'failed:', e.message)
+      console.warn('[import] curl_cffi', p ? 'socks5h' : 'direct', 'failed:', publicImportError(e.message))
     }
   }
-  console.warn('[import] curl_cffi exhausted, falling back to node-fetch:', lastErr?.message)
-  return sessionKeyToOAuthNode(sk, { scope, proxyUrl: px })
+  const helperMissing = lastErr?.code === 'no_cffi_helper' || /curl_cffi not installed/i.test(lastErr?.message || '')
+  // node-fetch JA3 is always CF-challenged on claude.ai. Only use it when Chrome TLS cannot run.
+  if (helperMissing && (allowDirectFallback || px)) {
+    console.warn('[import] curl_cffi unavailable, falling back to node-fetch')
+    return sessionKeyToOAuthNode(sk, { scope, proxyUrl: px })
+  }
+  const err = new Error(publicImportError(lastErr?.message || 'session import failed'))
+  err.code = lastErr?.code || 'cffi_import_failed'
+  throw err
 }
 
 import { pathToFileURL } from "node:url"

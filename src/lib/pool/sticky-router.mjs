@@ -26,7 +26,7 @@ export class StickyRouter {
   extractKey(req, body = {}) {
     if (!this.config.enabled) return null
     const headers = req.headers || {}
-    for (const k of this.config.header_keys || []) {
+    for (const k of this.config.header_keys || ['x-session-id']) {
       const v = headers[k.toLowerCase()] || headers[k]
       if (v) return String(v)
     }

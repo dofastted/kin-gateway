@@ -26,44 +26,109 @@ function uid(prefix = 'px') {
   return `${prefix}-${crypto.randomBytes(4).toString('hex')}`
 }
 
+function isSocksPort(value) {
+  const port = Number(value)
+  return Number.isInteger(port) && port >= 1 && port <= 65535
+}
+
+function looksLikeHost(value) {
+  const host = String(value || '').trim()
+  if (!host || /^\d+$/.test(host)) return false
+  return true
+}
+
+function socks5Record({ host, port, username = null, password = null, raw = '' }) {
+  if (!looksLikeHost(host) || !isSocksPort(port)) return null
+  const user = username == null || username === '' ? null : String(username)
+  const pass = user == null
+    ? null
+    : (password == null ? '' : String(password))
+  return {
+    scheme: 'socks5',
+    host: String(host).trim(),
+    port: Number(port),
+    username: user,
+    password: pass,
+    raw: String(raw || `${host}:${port}`),
+  }
+}
+
+/** Structured host / port / username / password import. */
+export function parseSocks5Fields(fields = {}) {
+  return socks5Record({
+    host: fields.host,
+    port: fields.port,
+    username: fields.username ?? fields.user,
+    password: fields.password ?? fields.pass,
+    raw: fields.raw,
+  })
+}
+
 /** Parse line forms:
  *  socks5://user:pass@host:port
+ *  socks5h://user:pass@host:port
+ *  user:pass@host:port
  *  host:port
  *  host:port:user:pass
- *  socks5://host:port
+ *  user:pass:host:port
  */
 export function parseSocks5Line(line) {
-  const raw = String(line || '').trim()
+  let raw = String(line || '').trim()
   if (!raw || raw.startsWith('#')) return null
+  raw = raw.replace(/^['"]|['"]$/g, '').trim()
   try {
-    if (/^socks5:\/\//i.test(raw)) {
-      const u = new URL(raw)
-      return {
-        scheme: 'socks5',
+    if (/^socks5h?:\/\//i.test(raw)) {
+      const u = new URL(raw.replace(/^socks5h:\/\//i, 'socks5://'))
+      return socks5Record({
         host: u.hostname,
-        port: Number(u.port) || 1080,
+        port: u.port || 1080,
         username: u.username ? decodeURIComponent(u.username) : null,
         password: u.password ? decodeURIComponent(u.password) : null,
         raw,
+      })
+    }
+    const at = raw.lastIndexOf('@')
+    if (at > 0) {
+      const cred = raw.slice(0, at)
+      const hostPort = raw.slice(at + 1)
+      const segs = hostPort.split(':')
+      if (segs.length >= 2 && isSocksPort(segs[segs.length - 1])) {
+        const port = segs.pop()
+        const host = segs.join(':')
+        const colon = cred.indexOf(':')
+        return socks5Record({
+          host,
+          port,
+          username: colon >= 0 ? cred.slice(0, colon) : cred,
+          password: colon >= 0 ? cred.slice(colon + 1) : '',
+          raw,
+        })
       }
     }
     const parts = raw.split(':')
     if (parts.length === 2) {
-      return {
-        scheme: 'socks5',
-        host: parts[0],
-        port: Number(parts[1]),
-        username: null,
-        password: null,
-        raw,
-      }
+      return socks5Record({ host: parts[0], port: parts[1], raw })
     }
-    if (parts.length >= 4) {
-      const host = parts[0]
-      const port = Number(parts[1])
-      const username = parts[2]
-      const password = parts.slice(3).join(':')
-      return { scheme: 'socks5', host, port, username, password, raw }
+    if (parts.length === 3 && looksLikeHost(parts[0]) && isSocksPort(parts[1])) {
+      return socks5Record({ host: parts[0], port: parts[1], username: parts[2], password: '', raw })
+    }
+    if (parts.length >= 4 && looksLikeHost(parts[0]) && isSocksPort(parts[1])) {
+      return socks5Record({
+        host: parts[0],
+        port: parts[1],
+        username: parts[2],
+        password: parts.slice(3).join(':'),
+        raw,
+      })
+    }
+    if (parts.length >= 4 && isSocksPort(parts[parts.length - 1]) && looksLikeHost(parts[parts.length - 2])) {
+      return socks5Record({
+        host: parts[parts.length - 2],
+        port: parts[parts.length - 1],
+        username: parts[0],
+        password: parts.slice(1, parts.length - 2).join(':'),
+        raw,
+      })
     }
   } catch {
     return null
@@ -146,20 +211,36 @@ export class ProxyPool {
     }
   }
 
-  importLines(text) {
-    const lines = String(text || '').split(/\r?\n/)
+  importLines(text, extra = {}) {
+    const parsed = []
+    for (const line of String(text || '').split(/\r?\n/)) {
+      if (!String(line || '').trim()) continue
+      parsed.push(parseSocks5Line(line) || { __invalid: String(line).trim() })
+    }
+    const fields = extra.fields || extra.proxies || extra.entries || []
+    for (const item of Array.isArray(fields) ? fields : [fields]) {
+      if (!item || typeof item !== 'object') continue
+      parsed.push(parseSocks5Fields(item) || { __invalid: `${item.host || ''}:${item.port || ''}` })
+    }
+    if (extra.host || extra.port) {
+      parsed.push(parseSocks5Fields(extra) || { __invalid: `${extra.host || ''}:${extra.port || ''}` })
+    }
+    return this.importParsed(parsed)
+  }
+
+  importParsed(records = []) {
     const added = []
     const skipped = []
     const existing = new Set(this.state.proxies.map((p) => `${p.host}:${p.port}:${p.username || ''}`))
-    for (const line of lines) {
-      const parsed = parseSocks5Line(line)
-      if (!parsed || !parsed.host || !parsed.port) {
-        if (line.trim()) skipped.push({ line: line.trim(), reason: 'parse_failed' })
+    for (const parsed of records) {
+      if (!parsed || parsed.__invalid || !parsed.host || !parsed.port) {
+        const label = parsed?.__invalid || ''
+        if (label) skipped.push({ line: label, reason: 'parse_failed' })
         continue
       }
       const key = `${parsed.host}:${parsed.port}:${parsed.username || ''}`
       if (existing.has(key)) {
-        skipped.push({ line: line.trim(), reason: 'duplicate' })
+        skipped.push({ line: `${parsed.host}:${parsed.port}`, reason: 'duplicate' })
         continue
       }
       existing.add(key)
@@ -185,6 +266,21 @@ export class ProxyPool {
     }
     this.save()
     return { added: added.length, skipped: skipped.length, items: added, skip_details: skipped.slice(0, 20) }
+  }
+
+  /**
+   * Restore pool↔VM binding after start/restart.
+   * Prefer an existing bind, then the VM's last proxy id, then a free allocate.
+   */
+  ensureBoundToVm(vmId, preferredId = null) {
+    if (!vmId) return null
+    const existing = this.getProxyForVm(vmId)
+    if (existing) return existing
+    if (preferredId) {
+      const bound = this.bind(preferredId, vmId)
+      if (bound.ok) return this.getProxyForVm(vmId)
+    }
+    return this.allocateForVm(vmId)
   }
 
   /** Allocate one free healthy (or unknown) proxy and bind to vmId */
@@ -293,8 +389,6 @@ export class ProxyPool {
   /**
    * Runtime SOCKS5 failure from a live request.
    * When disconnect_on_error is off this is a no-op (existing cooldown/failover stays).
-   * When on: write the failure into the pool, unschedulable the bound VM, and
-   * ask the control plane to tear the slot worker's SOCKS connections.
    */
   reportRuntimeFailure(vmId, error = 'runtime_socks_failure') {
     if (!this.disconnectOnErrorEnabled()) {
@@ -313,24 +407,24 @@ export class ProxyPool {
     return { ok: true, skipped: false, proxy: this.publicProxy(p) }
   }
 
-  _cascadeDisableVm(proxy, reason) {
-    if (!proxy.bound_vm_id) return
-    const vmId = proxy.bound_vm_id
-    if (typeof this.onDisableVm === 'function') {
-      try {
-        this.onDisableVm(vmId, reason, proxy.id)
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
   _cascadeDisconnectVm(proxy, reason) {
     if (!proxy.bound_vm_id) return
     const cb = this.onDisconnectVm || this.onDisableVm
     if (typeof cb === 'function') {
       try {
         cb(proxy.bound_vm_id, reason, proxy.id)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  _cascadeDisableVm(proxy, reason) {
+    if (!proxy.bound_vm_id) return
+    const vmId = proxy.bound_vm_id
+    if (typeof this.onDisableVm === 'function') {
+      try {
+        this.onDisableVm(vmId, reason, proxy.id)
       } catch {
         /* ignore */
       }

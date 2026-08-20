@@ -83,10 +83,67 @@ test('summary persists protocol usage detail (cache/model/ttft/stop_reason)', ()
   assert.equal(sum.model_mismatch, 1)
   assert.equal(sum.first_token_ms, 42)
   assert.equal(sum.stop_reason, 'end_turn')
+  // Sonnet 5 official: $2/$10/cache 5m $2.50/1h $4/read $0.20 per MTok
+  assert.equal(sum.pricing_model, 'sonnet-5')
+  assert.ok(Math.abs(sum.total_cost - 0.0000926) < 1e-12)
   const row = store.queryNormal({ limit: 1 }).items[0]
   assert.equal(row.cache_creation_5m_tokens, 4)
   assert.equal(row.upstream_model, 'claude-sonnet-5')
   assert.equal(row.stop_reason, 'end_turn')
+  assert.equal(row.total_cost, 0.0000926)
+})
+
+test('backfillMissingCosts prices historical rows that predate cost columns', () => {
+  const store = tmpStore('normal')
+  store.db.prepare(`
+    INSERT INTO request_logs (id, request_id, ts, model, upstream_model, status, input_tokens, output_tokens, vm_id, account_id)
+    VALUES ('log_old_bill', 'rid_old_bill', ?, 'claude-opus-5', 'claude-opus-5', 200, 1000000, 0, 'vm-01', 'acc-old')
+  `).run(new Date().toISOString())
+  assert.equal(store.repo.backfillMissingCosts(), 1)
+  const row = store.db.prepare("SELECT total_cost, pricing_model FROM request_logs WHERE id = 'log_old_bill'").get()
+  assert.equal(row.pricing_model, 'opus-5')
+  assert.equal(row.total_cost, 5)
+})
+
+test('billingStats aggregates official cost per account and today', () => {
+  const store = tmpStore('normal')
+  const ctx = store.start({ method: 'POST', headers: {}, socket: {} }, { protocol: 'anthropic.messages', pathName: '/v1/messages' })
+  store.finish(ctx, {
+    status: 200,
+    model: 'claude-opus-5',
+    upstream_model: 'claude-opus-5',
+    vm_id: 'vm-01',
+    account_id: 'acc-1',
+    usage: { input_tokens: 1_000_000, output_tokens: 0 },
+  })
+  const bill = store.billingStats()
+  assert.equal(bill.currency, 'USD')
+  assert.equal(bill.total.total_cost, 5)
+  assert.equal(bill.today.total_cost, 5)
+  assert.equal(bill.accounts[0].account_id, 'acc-1')
+  assert.equal(bill.accounts[0].total_cost, 5)
+  assert.equal(bill.accounts[0].window_5h_cost, 5)
+  assert.ok(bill.window_5h)
+  assert.equal(bill.window_5h.total_cost, 5)
+})
+
+test('finish prices OpenAI-shaped usage from third-party clients', () => {
+  const store = tmpStore('normal')
+  const ctx = store.start({ method: 'POST', headers: { 'user-agent': 'OpenAI/Python 1.70.0' }, socket: {} }, { protocol: 'openai.chat', pathName: '/v1/chat/completions' })
+  const sum = store.finish(ctx, {
+    status: 200,
+    protocol: 'openai.chat',
+    model: 'claude-sonnet-5',
+    upstream_model: 'claude-sonnet-5',
+    usage: {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 0,
+      prompt_tokens_details: { cached_tokens: 1_000_000 },
+    },
+  })
+  assert.equal(sum.input_tokens, 1_000_000)
+  assert.equal(sum.cache_read_tokens, 1_000_000)
+  assert.equal(sum.total_cost, 2.2)
 })
 
 test('cache breakdown falls back to the 5m bucket (sub2api normalization)', () => {
@@ -164,6 +221,55 @@ test('queryNormal filters + pagination + total', () => {
   const page = store.queryNormal({ limit: 2, offset: 2 })
   assert.equal(page.total, 3)
   assert.equal(page.items.length, 1)
+})
+
+test('windowStats computes ttft percentiles, sla and qps', () => {
+  const store = tmpStore('normal')
+  logOne(store, { status: 200, first_token_ms: 100, duration_ms: 200, input_tokens: 10, output_tokens: 20, model: 'claude-sonnet-5' })
+  logOne(store, { status: 200, first_token_ms: 300, duration_ms: 400, input_tokens: 10, output_tokens: 20, model: 'claude-sonnet-5' })
+  logOne(store, { status: 503, error_code: 'overloaded', duration_ms: 50, model: 'claude-fable-5' })
+  const w = store.windowStats({ since: new Date(Date.now() - 60_000).toISOString() })
+  assert.equal(w.requests, 3)
+  assert.equal(w.success, 2)
+  assert.equal(w.errors, 1)
+  assert.equal(w.status_503, 1)
+  assert.equal(w.ttft.samples, 2)
+  assert.equal(w.ttft.p50_ms, 100)
+  assert.equal(w.ttft.max_ms, 300)
+  assert.ok(Math.abs(w.sla - 2 / 3) < 1e-9)
+  assert.ok(w.qps.avg > 0)
+  assert.equal(w.by_model.length, 2)
+  assert.equal(w.error_collection.total, 1)
+  assert.equal(w.error_collection.by_class[0].id, 'overloaded')
+  const filtered = store.queryNormal({ error_class: 'overloaded' })
+  assert.equal(filtered.total, 1)
+  assert.equal(filtered.items[0].error_label, '过载排队')
+})
+
+test('windowStats treats 429 quota/rate-limit as SLA success', () => {
+  const store = tmpStore('normal')
+  logOne(store, { status: 200, first_token_ms: 80, duration_ms: 100, model: 'claude-sonnet-5' })
+  logOne(store, { status: 429, error_code: 'upstream_rate_limit', error_message: '5h extra usage', model: 'claude-opus-5' })
+  const w = store.windowStats({ since: new Date(Date.now() - 60_000).toISOString() })
+  assert.equal(w.requests, 2)
+  assert.equal(w.success, 2)
+  assert.equal(w.errors, 0)
+  assert.equal(w.status_429, 1)
+  assert.equal(w.sla, 1)
+  assert.equal(w.error_collection.total, 1)
+  assert.equal(w.error_collection.by_class[0].id, 'rate_limit')
+})
+
+test('windowStats ignores client abort like sub2api ignore_context_canceled', () => {
+  const store = tmpStore('normal')
+  logOne(store, { status: 200, first_token_ms: 80, duration_ms: 100, model: 'claude-sonnet-5' })
+  logOne(store, { status: 200, error_code: 'client_cancelled', error_message: 'ECONNRESET', model: 'claude-sonnet-5' })
+  const w = store.windowStats({ since: new Date(Date.now() - 60_000).toISOString() })
+  assert.equal(w.requests, 2)
+  assert.equal(w.success, 2)
+  assert.equal(w.errors, 0)
+  assert.equal(w.error_collection.total, 0)
+  assert.equal(store.queryNormal({ status: 'error' }).total, 0)
 })
 
 test('aggregate buckets by day with token sums', () => {

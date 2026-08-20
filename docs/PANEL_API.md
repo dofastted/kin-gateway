@@ -44,6 +44,10 @@ attempts 包含每次选中的 VM/账号、错误域、cooldown、响应提交�
 | `cache_creation_5m_tokens` / `cache_creation_1h_tokens` | 缓存写入 TTL 细分（无细分时归入 5m） |
 | `requested_model` / `upstream_model` / `model_mismatch` | 客户端请求模型、上游响应声明模型、三态不一致观测（null=上游未声明） |
 | `first_token_ms` | 首个业务事件延迟（流式实测；由 worker 数据面回传） |
+
+`GET /request-logs/stats` 另返回 `window`：窗口内 SLA、错误率、429/503、QPS/TPS、耗时与 **TTFT** 分位（p50/p90/p95/p99/avg/max）、按模型 `avg_first_token_ms`、**error_collection**（按归类/错误码汇总）。`GET /dashboard.ops` 默认近 1 小时同一形状。
+
+`GET /request-logs` 支持 `status=error` 与 `error_class=`（auth / request / signature / rate_limit / quota / overloaded / timeout / credential / proxy / upstream / other）。每行带 `error_class` / `error_label` / `error_owner`。
 | `stop_reason` | Anthropic 终态 stop_reason（流式来自 `message_delta`） |
 
 流式请求的 usage 由 Go worker SSE 校验器合并后经 `X-Kin-Usage`/`X-Kin-Model`/`X-Kin-Stop-Reason` trailer 回传，与非流式同样只在终态 attempt 记一次。`/dashboard`、`/usage`、`/request-logs/stats` 的汇总均含缓存 token；`/vms/:id` 的 `account.runtime_window` 提供结构化 5h 会话窗口与限流 reset（`rate_limited_at` / `rate_limit_reset_at` / `overload_until` / `session_window_start|end|status`）。

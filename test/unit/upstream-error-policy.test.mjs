@@ -133,10 +133,90 @@ test('signature error has one scoped repair', () => {
     }],
   }, policy)
   assert.equal(body.thinking, undefined)
-  assert.deepEqual(body.messages[0].content, [{ type: 'text', text: 'keep' }])
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'text', text: 'x' },
+    { type: 'text', text: 'keep' },
+  ])
   const second = classifyUpstreamResult({
     status: 400,
     body: { error: { message: 'thinking.signature: Field required' } },
   }, { repaired: true })
   assert.equal(second.action, 'stop')
+})
+
+test('invalid thinking signature converts signed blocks to text', () => {
+  const policy = classifyUpstreamResult({
+    status: 400,
+    body: { error: { message: 'messages.1.content.0: Invalid `signature` in `thinking` block' } },
+  })
+  assert.equal(policy.action, 'repair-and-retry')
+  const body = repairAnthropicRequest({
+    thinking: { type: 'adaptive' },
+    messages: [{
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'draft', signature: 'bad_sig' },
+        { type: 'redacted_thinking', data: 'xx', signature: 'also_bad' },
+        { type: 'text', text: 'visible' },
+      ],
+    }],
+  }, policy)
+  assert.equal(body.thinking, undefined)
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'text', text: 'draft' },
+    { type: 'text', text: 'visible' },
+  ])
+})
+
+test('fable 504 cools only the fable family', () => {
+  const policy = classifyUpstreamResult({
+    status: 504,
+    body: { error: { message: 'timeout awaiting response headers' } },
+  }, { model: 'claude-fable-5', now: 1000 })
+  assert.equal(policy.scope, 'model')
+  assert.equal(policy.model, 'fable')
+  assert.equal(policy.reason, 'fable_timeout')
+})
+
+test('7d_oi 429 cools fable family not the account', () => {
+  const now = 1_700_000_000_000
+  const policy = classifyUpstreamResult({
+    status: 429,
+    body: { error: { type: 'rate_limit_error', message: 'limited' } },
+    headers: {
+      'anthropic-ratelimit-unified-7d_oi-status': 'rejected',
+      'anthropic-ratelimit-unified-7d_oi-reset': String(now + 90_000),
+    },
+  }, { model: 'claude-fable-5[1m]', now })
+  assert.equal(policy.scope, 'model')
+  assert.equal(policy.model, 'fable')
+  assert.equal(policy.cooldownUntil, now + 90_000)
+})
+
+test('assistant prefill 400 is repairable', () => {
+  const policy = classifyUpstreamResult({
+    status: 400,
+    body: { error: { message: 'Conversation must end with a user message' } },
+  })
+  assert.equal(policy.action, 'repair-and-retry')
+  assert.equal(policy.reason, 'prefill_repairable')
+  const body = repairAnthropicRequest({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+    ],
+  }, policy)
+  assert.equal(body.messages.at(-1).role, 'user')
+})
+
+test('empty thinking history after repair gets a placeholder', () => {
+  const body = repairAnthropicRequest({
+    messages: [{
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: '', signature: 'x' }],
+    }],
+  }, { action: 'repair-and-retry' })
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'text', text: '(assistant content removed)' },
+  ])
 })

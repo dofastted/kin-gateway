@@ -225,6 +225,16 @@ function writeWorkerFiles(vm, projectRoot) {
   return paths
 }
 
+/** Running slots survive Node deploy. Only an explicit recreate may docker rm -f. */
+export function shouldReplaceSlotContainer({ existing, recreate = false, network, image } = {}) {
+  if (!existing) return false
+  if (recreate === true) return true
+  if (existing.running) return false
+  const wrongNet = network != null && existing.networkMode && existing.networkMode !== network
+  const wrongImg = image != null && existing.image && existing.image !== image
+  return !!(wrongNet || wrongImg)
+}
+
 export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
   const name = containerName(vm.id)
   const host = displayName(vm.id)
@@ -240,6 +250,19 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
   if (!fs.existsSync(WORKER_BIN)) {
     return { ok: false, error: `Go worker binary not found: ${WORKER_BIN}` }
   }
+
+  let existing = inspectContainer(name)
+  const paths = workerPaths(projectRoot, vm.id)
+  // Node restart / 开机 must not bounce a live slot. Skip config rewrite too.
+  if (existing?.running && !recreate) {
+    runtimePatch(vm, existing, {
+      worker_socket: paths.socket,
+      worker_run_dir: paths.runDir,
+      worker_token_file: paths.token,
+    })
+    return { ok: true, action: 'already-running', runtime: vm.runtime }
+  }
+
   let worker
   try {
     worker = writeWorkerFiles(vm, projectRoot)
@@ -248,11 +271,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
   }
   try { fs.chownSync(home, runtimeUidNum(vm), Number(GID)) } catch {}
 
-  let existing = inspectContainer(name)
-  const wrongNet = existing && existing.networkMode !== NET
-  const wrongImg = existing && existing.image !== image
-  const wrongWorker = existing && !fs.existsSync(worker.socket)
-  if (existing && (recreate || wrongNet || wrongImg || wrongWorker)) {
+  if (shouldReplaceSlotContainer({ existing, recreate, network: NET, image })) {
     sh(['docker', 'rm', '-f', name])
     existing = null
   }

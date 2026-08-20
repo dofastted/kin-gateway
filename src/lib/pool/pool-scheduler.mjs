@@ -462,7 +462,6 @@ export class PoolScheduler {
         cleanup()
         resolve()
       }, remaining)
-      timer.unref?.()
       const onAbort = () => {
         cleanup()
         reject(makeAbortError())

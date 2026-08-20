@@ -4,6 +4,8 @@
  * The gateway never calls Anthropic directly and never reads a CLI binary.
  */
 
+import { isModelEnabled, filterPublicModelIds, getModelEntry, getModelPolicy, loadModelPolicy } from './model-policy.mjs'
+
 const FAMILY_ALIASES = new Map([
   ['sonnet', 'sonnet'],
   ['opus', 'opus'],
@@ -17,6 +19,19 @@ const FAMILY_ALIASES = new Map([
 
 /** @type {{ at: number, ids: string[], aliases: string[], source: string|null }} */
 let cache = { at: 0, ids: [], aliases: [], source: null }
+
+/** Local catalog so GET /v1/models is never empty when Anthropic OAuth /v1/models is unusable. */
+export const SEED_MODEL_IDS = [
+  'claude-opus-4-6',
+  'claude-sonnet-5',
+  'claude-haiku-4-5-20251001',
+  'claude-fable-5',
+]
+
+export function seedModelCatalog() {
+  if (cache.ids.length) return cache
+  return setModelCatalog(SEED_MODEL_IDS, { source: 'go-slot-worker-seed' })
+}
 
 export function isCatalogModelId(id) {
   const s = String(id || '')
@@ -58,6 +73,41 @@ export function latestIdForFamily(family, ids) {
   return preferred[0] || null
 }
 
+/** Anthropic calling alias: claude-haiku-4-5 → claude-haiku-4-5-20251001 */
+export function undatedAliasOf(id) {
+  return String(id || '').replace(/-\d{8}$/, '')
+}
+
+export function latestIdForUndatedAlias(raw, ids) {
+  const lower = String(raw || '').toLowerCase()
+  if (!lower) return null
+  const hits = (ids || []).filter((id) => undatedAliasOf(id).toLowerCase() === lower)
+  hits.sort(cmpRank)
+  return hits[0] || null
+}
+
+function resolvePolicyAliasToCatalog(raw, ids) {
+  try {
+    loadModelPolicy()
+    const policy = getModelPolicy()
+    const lower = String(raw || '').toLowerCase()
+    const candidates = []
+    const top = policy.aliases?.[lower]
+    if (top) candidates.push(String(top))
+    for (const [id, cfg] of Object.entries(policy.models || {})) {
+      if (id.toLowerCase() === lower) candidates.push(id)
+      if ((cfg.aliases || []).some((a) => String(a).toLowerCase() === lower)) candidates.push(id)
+    }
+    for (const c of candidates) {
+      const exact = (ids || []).find((x) => x.toLowerCase() === String(c).toLowerCase())
+      if (exact) return exact
+      const dated = latestIdForUndatedAlias(c, ids)
+      if (dated) return dated
+    }
+  } catch {}
+  return null
+}
+
 export function resolveCatalogModel(raw, ids = cache.ids) {
   const m = String(raw || '').trim()
   if (!m) return { ok: false, reason: 'empty' }
@@ -71,9 +121,14 @@ export function resolveCatalogModel(raw, ids = cache.ids) {
     if (latest) return { ok: true, model: want1m ? `${latest}[1m]` : latest, alias: fam }
   }
   const id = /^claude-/i.test(bare) ? bare : m
-  if (ids.length && ids.some((x) => x.toLowerCase() === id.toLowerCase())) {
-    return { ok: true, model: id }
+  const idBare = id.replace(/\[[1m]+\]$/i, '')
+  if (ids.length && ids.some((x) => x.toLowerCase() === idBare.toLowerCase())) {
+    return { ok: true, model: want1m ? `${idBare}[1m]` : id }
   }
+  const dated = latestIdForUndatedAlias(idBare, ids)
+  if (dated) return { ok: true, model: want1m ? `${dated}[1m]` : dated, alias: idBare }
+  const viaPolicy = resolvePolicyAliasToCatalog(idBare, ids)
+  if (viaPolicy) return { ok: true, model: want1m ? `${viaPolicy}[1m]` : viaPolicy, alias: idBare }
   // Fail closed: empty catalog or unknown id → reject. Never passthrough unverified claude-*.
   return { ok: false, model: id, reason: ids.length ? 'not_in_catalog' : 'catalog_unavailable' }
 }
@@ -101,19 +156,39 @@ export function ingestWorkerModels(list) {
   return setModelCatalog([...new Set([...cache.ids, ...ids])], { source: 'go-slot-worker' })
 }
 
+export function getCatalogIds() {
+  return [...(cache.ids || [])]
+}
+
 export function clearModelsCache() {
   cache = { at: 0, ids: [], aliases: [], source: null }
 }
 
 export function listOfficialModels() {
-  return (cache.ids || []).map((id) => ({
-    id,
-    object: 'model',
-    type: 'model',
-    display_name: id,
-    owned_by: 'anthropic',
-    source: cache.source || 'worker_catalog',
-  }))
+  try { loadModelPolicy() } catch {}
+  const ids = filterPublicModelIds(cache.ids || [])
+  return ids.map((id) => {
+    let display = id
+    let extra = {}
+    try {
+      const e = getModelEntry(id)
+      display = e.display_name || id
+      extra = {
+        family: e.family,
+        enabled: e.enabled !== false,
+        capabilities: e.capabilities,
+      }
+    } catch {}
+    return {
+      id,
+      object: 'model',
+      type: 'model',
+      display_name: display,
+      owned_by: 'anthropic',
+      source: cache.source || 'worker_catalog',
+      ...extra,
+    }
+  })
 }
 
 /**
@@ -154,6 +229,19 @@ export function validateOfficialModel(model) {
   // Claude IDs when the asynchronous worker catalog is not yet cached.
   const resolved = resolveCatalogModel(m, cache.ids)
   if (resolved.ok) {
+    try {
+      if (!isModelEnabled(resolved.model)) {
+        return {
+          ok: false,
+          error: {
+            message: `model '${m}' is disabled by gateway model policy.`,
+            type: 'invalid_request_error',
+            code: 'model_disabled',
+            param: 'model',
+          },
+        }
+      }
+    } catch {}
     return { ok: true, model: resolved.model, alias: resolved.alias || null }
   }
   if (!cache.ids.length && isCatalogModelId(id)) {

@@ -8,6 +8,7 @@ import {
   callGoWorker,
   streamGoWorker,
   workerHealth,
+  usageFromSseEvent,
 } from '../../src/lib/transport/go-worker-client.mjs'
 
 async function fixture(handler) {
@@ -132,6 +133,42 @@ test('streamGoWorker parses usage/model/stop_reason trailers and measures ttft',
   } finally {
     await fx.close()
   }
+})
+
+test('streamGoWorker scrapes usage from SSE when trailers are missing', async () => {
+  const fx = await fixture((req, res) => {
+    res.setHeader('content-type', 'text/event-stream')
+    res.write('data: {"type":"message_start","message":{"model":"claude-sonnet-5","usage":{"input_tokens":80,"cache_read_input_tokens":20}}}\n\n')
+    res.write('data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":6}}\n\n')
+    res.write('data: {"type":"message_stop"}\n\n')
+    res.end()
+  })
+  try {
+    const result = await streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-sonnet-5', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      onEvent: () => {},
+    })
+    assert.equal(result.usage.input_tokens, 80)
+    assert.equal(result.usage.output_tokens, 6)
+    assert.equal(result.usage.cache_read_input_tokens, 20)
+    assert.equal(result.model, 'claude-sonnet-5')
+    assert.equal(result.stopReason, 'end_turn')
+  } finally {
+    await fx.close()
+  }
+})
+
+test('usageFromSseEvent reads Anthropic message_start and message_delta', () => {
+  assert.deepEqual(
+    usageFromSseEvent({ type: 'message_start', message: { usage: { input_tokens: 80, cache_read_input_tokens: 20 } } }),
+    { input_tokens: 80, cache_read_input_tokens: 20 },
+  )
+  assert.deepEqual(
+    usageFromSseEvent({ type: 'message_delta', usage: { output_tokens: 6 } }),
+    { output_tokens: 6 },
+  )
+  assert.equal(usageFromSseEvent({ type: 'content_block_delta' }), null)
 })
 
 test('workerHealth fails closed when socket is absent', async () => {

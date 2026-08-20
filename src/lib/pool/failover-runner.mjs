@@ -159,18 +159,33 @@ export class FailoverRunner {
           last_scope: lastPolicy?.scope || null,
         }), { attemptCount: attemptNo - 1 })
       }
-      const selected = await this.scheduler.selectAndReserve({
-        model,
-        stickyKey,
-        excluded,
-        signal,
-        deadline,
-        allowWait: true,
-      })
+      let selected
+      try {
+        selected = await this.scheduler.selectAndReserve({
+          model,
+          stickyKey,
+          excluded,
+          signal,
+          deadline,
+          allowWait: true,
+        })
+      } catch (error) {
+        if (error?.code === 'selection_cancelled') {
+          return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo - 1 })
+        }
+        if (error?.code === 'pool_wait_queue_full') {
+          return poolError('pool_wait_queue_full', 'Account pool wait queue is full', {
+            reason: 'pool_wait_queue_full',
+            attempt_count: attemptNo - 1,
+          })
+        }
+        throw error
+      }
       if (!selected?.ok) {
         return preferLastResult(lastResult, lastPolicy, poolError('account_pool_exhausted', 'No eligible Claude accounts remain', {
           excluded_accounts: [...excluded],
           reason: selected?.reason || 'no_eligible_accounts',
+          wait_ms: selected?.waitMs || 0,
           attempt_count: attemptNo - 1,
         }), { attemptCount: attemptNo - 1 })
       }

@@ -42,6 +42,7 @@ export function summarizeVm(vm) {
     org_uuid: vm.claude?.org_uuid || null,
     has_token: !!vm.claude?.access_token,
     expires_at: vm.claude?.expires_at || null,
+    refreshed_at: vm.claude?.refreshed_at || null,
     oauth_source: vm.claude?.source || null,
     has_refresh: !!vm.claude?.refresh_token,
     has_session_key: !!vm.claude?.session_key,
@@ -79,6 +80,8 @@ export function setActiveVm(projectRoot, id) {
   atomicWriteJson(file, { active_vm: id, updated_at: new Date().toISOString() })
 }
 
+
+/** Statuses that mean the slot is actually down — not a soft UI pause. */
 const HARD_UNAVAILABLE = new Set(['stopped', 'dead', 'error', 'disabled'])
 
 /**
@@ -98,11 +101,14 @@ export function setVmSchedulable(projectRoot, id, schedulable, reason = null) {
   if (!fs.existsSync(file)) return null
   const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
   vm.schedulable = !!schedulable
-  vm.schedule_disabled_reason = schedulable ? null : (reason || 'disabled')
   vm.schedule_updated_at = new Date().toISOString()
-  if (!schedulable) {
-    // mark soft status for UI
-    vm.status = vm.status === 'running' ? 'paused' : vm.status
+  vm.updated_at = vm.schedule_updated_at
+  if (schedulable) {
+    vm.schedule_disabled_reason = null
+    if (String(vm.status || '').toLowerCase() === 'paused') vm.status = 'running'
+  } else {
+    vm.schedule_disabled_reason = reason || 'disabled'
+    if (String(vm.status || '').toLowerCase() === 'running') vm.status = 'paused'
   }
   atomicWriteJson(file, vm)
   return summarizeVm(vm)
@@ -121,6 +127,7 @@ export function bindVmProxy(projectRoot, id, proxyInfo) {
         url: proxyInfo.url || null,
       }
     : null
+  if (proxyInfo) vm.proxy_cli_enabled = true
   atomicWriteJson(file, vm)
   return summarizeVm(vm)
 }

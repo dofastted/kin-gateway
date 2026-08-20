@@ -20,6 +20,7 @@ import crypto from 'node:crypto'
 import { redactSecrets } from '../core/security.mjs'
 import { resolveStoreDb } from '../db/database.mjs'
 import { RequestLogsRepo } from '../db/repos/request-logs-repo.mjs'
+import { costColumnsFromUsage, normalizeUsage } from './pricing.mjs'
 
 const MODES = new Set(['off', 'normal', 'debug'])
 
@@ -235,6 +236,7 @@ export class RequestLogStore {
   finish(ctx, extra = {}) {
     if (!ctx || ctx.mode === 'off') return null
     const duration_ms = Math.max(0, Date.now() - (ctx.t0 || Date.now()))
+    const usage = normalizeUsage(extra.usage || {})
     const summary = {
       id: 'log_' + crypto.randomBytes(6).toString('hex'),
       request_id: ctx.request_id,
@@ -252,25 +254,34 @@ export class RequestLogStore {
       vm_id: extra.vm_id || null,
       account_id: extra.account_id || null,
       workspace: extra.workspace || null,
-      input_tokens: extra.input_tokens ?? extra.usage?.input_tokens ?? null,
-      output_tokens: extra.output_tokens ?? extra.usage?.output_tokens ?? null,
+      input_tokens: extra.input_tokens ?? usage.input_tokens ?? null,
+      output_tokens: extra.output_tokens ?? usage.output_tokens ?? null,
       error_code: extra.error_code || null,
       error_message: extra.error_message ? String(extra.error_message).slice(0, 300) : null,
       user_agent: ctx.user_agent,
       ip: ctx.ip,
       has_tools: extra.has_tools ?? null,
       via: extra.via || extra.hop_meta?.via || null,
-      cache_read_tokens: extra.cache_read_tokens ?? extra.usage?.cache_read_input_tokens ?? extra.usage?.cache_read_tokens ?? null,
-      cache_creation_tokens: extra.cache_creation_tokens ?? extra.usage?.cache_creation_input_tokens ?? extra.usage?.cache_creation_tokens ?? null,
-      ...cacheCreationBreakdown(extra.usage),
+      cache_read_tokens: extra.cache_read_tokens ?? usage.cache_read_input_tokens ?? usage.cache_read_tokens ?? null,
+      cache_creation_tokens: extra.cache_creation_tokens ?? usage.cache_creation_input_tokens ?? usage.cache_creation_tokens ?? null,
+      ...cacheCreationBreakdown(usage),
       requested_model: extra.requested_model || extra.model || null,
       upstream_model: extra.upstream_model || null,
       model_mismatch: modelMismatch(extra.requested_model || extra.model, extra.upstream_model),
       first_token_ms: extra.first_token_ms ?? null,
-      stop_reason: extra.stop_reason || extra.usage?.stop_reason || null,
+      stop_reason: extra.stop_reason || usage.stop_reason || null,
       attempt_count: extra.attempt_count ?? null,
       final_state: extra.final_state || null,
       final_account_id: extra.final_account_id || extra.account_id || null,
+      ...costColumnsFromUsage({
+        ...usage,
+        input_tokens: extra.input_tokens ?? usage.input_tokens,
+        output_tokens: extra.output_tokens ?? usage.output_tokens,
+        cache_read_tokens: extra.cache_read_tokens ?? usage.cache_read_input_tokens ?? usage.cache_read_tokens,
+        cache_creation_tokens: extra.cache_creation_tokens ?? usage.cache_creation_input_tokens ?? usage.cache_creation_tokens,
+        cache_creation_5m_tokens: extra.cache_creation_5m_tokens ?? usage.cache_creation_5m_tokens,
+        cache_creation: usage.cache_creation,
+      }, extra.upstream_model || extra.model || extra.requested_model),
     }
 
     try { this.repo.insertSummaryIfAbsent(summary) } catch {}
@@ -326,6 +337,15 @@ export class RequestLogStore {
 
   totals() {
     return this.repo.totals()
+  }
+
+  billingStats() {
+    return this.repo.billingStats()
+  }
+
+  /** Windowed SLA / QPS / TTFT snapshot for overview + log analysis. */
+  windowStats(opts = {}) {
+    return this.repo.windowStats(opts)
   }
 
   listDebug({ limit = 20 } = {}) {

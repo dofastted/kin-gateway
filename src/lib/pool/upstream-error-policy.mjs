@@ -1,3 +1,6 @@
+import { normalizeThinkingForModel } from '../protocol/thinking.mjs'
+import { rectifyUnofficialRequest } from '../protocol/request-rectifier.mjs'
+
 const ENTITLEMENT_PATTERNS = [
   /extra usage required/i,
   /usage credits? (?:are )?required/i,
@@ -5,10 +8,35 @@ const ENTITLEMENT_PATTERNS = [
 ]
 
 const SIGNATURE_PATTERNS = [
-  /thinking\.signature/i,
-  /invalid.*signature/i,
-  /function_response.*signature/i,
-  /tool_(?:use|result).*signature/i,
+  /signature/i,
+  /expected[`\s].*thinking/i,
+  /cannot be modified/i,
+  /must contain thinking/i,
+  /each thinking block/i,
+]
+
+const PREFILL_PATTERNS = [
+  /conversation must (?:end|start)/i,
+  /final (?:assistant )?message/i,
+  /messages?:.*(?:end|start).*(?:user|assistant)/i,
+  /must (?:end|start) with a user/i,
+]
+
+const TOOL_PAIR_PATTERNS = [
+  /tool_use.*tool_result/i,
+  /tool_result.*(?:required|missing|expected)/i,
+  /tool_use_id/i,
+]
+
+const SCHEMA_PATTERNS = [
+  /additionalProperties/i,
+  /output_config/i,
+]
+
+const ADAPTIVE_PATTERNS = [
+  /adaptive thinking/i,
+  /thinking\.type.*adaptive/i,
+  /does not support adaptive/i,
 ]
 
 const ORGANIZATION_DISABLED_PATTERNS = [
@@ -86,6 +114,26 @@ export function modelCooldownKeys(model) {
   const keys = [key]
   if (isFableModel(key) && key !== FABLE_FAMILY_KEY) keys.push(FABLE_FAMILY_KEY)
   return keys
+}
+
+function isFableWindowLimit(headers) {
+  const claim = String(header(headers, 'anthropic-ratelimit-unified-representative-claim') || '')
+  const statusOi = String(header(headers, 'anthropic-ratelimit-unified-7d_oi-status') || '').toLowerCase()
+  return /seven_day_overage_included|7d_oi/i.test(claim)
+    || statusOi === 'rejected'
+    || statusOi === 'rate_limited'
+}
+
+function fableResetFromHeaders(headers, now = Date.now()) {
+  const raw = header(headers, 'anthropic-ratelimit-unified-7d_oi-reset')
+  if (raw == null) return null
+  const number = Number(raw)
+  if (Number.isFinite(number)) {
+    const ms = number < 1e12 ? number * 1000 : number
+    return ms > now ? ms : null
+  }
+  const parsed = Date.parse(String(raw))
+  return Number.isFinite(parsed) && parsed > now ? parsed : null
 }
 
 function isUnifiedAccountLimit(headers) {
@@ -168,11 +216,44 @@ export function classifyUpstreamResult(result = {}, {
     })
   }
   if (status === 400) {
-    if (!repaired && SIGNATURE_PATTERNS.some((pattern) => pattern.test(`${code} ${message}`))) {
+    const hay = `${code} ${message}`
+    if (!repaired && SIGNATURE_PATTERNS.some((pattern) => pattern.test(hay))) {
       return {
         scope: 'request',
         action: 'repair-and-retry',
         reason: 'signature_repairable',
+        cooldownUntil: null,
+      }
+    }
+    if (!repaired && PREFILL_PATTERNS.some((pattern) => pattern.test(hay))) {
+      return {
+        scope: 'request',
+        action: 'repair-and-retry',
+        reason: 'prefill_repairable',
+        cooldownUntil: null,
+      }
+    }
+    if (!repaired && TOOL_PAIR_PATTERNS.some((pattern) => pattern.test(hay))) {
+      return {
+        scope: 'request',
+        action: 'repair-and-retry',
+        reason: 'tool_pair_repairable',
+        cooldownUntil: null,
+      }
+    }
+    if (!repaired && SCHEMA_PATTERNS.some((pattern) => pattern.test(hay))) {
+      return {
+        scope: 'request',
+        action: 'repair-and-retry',
+        reason: 'schema_repairable',
+        cooldownUntil: null,
+      }
+    }
+    if (!repaired && ADAPTIVE_PATTERNS.some((pattern) => pattern.test(hay))) {
+      return {
+        scope: 'request',
+        action: 'repair-and-retry',
+        reason: 'thinking_repairable',
         cooldownUntil: null,
       }
     }
@@ -222,6 +303,16 @@ export function classifyUpstreamResult(result = {}, {
         cooldownUntil: reset || now + 5 * 60_000,
       }
     }
+    if (isFableWindowLimit(result.headers) || isFableModel(model)) {
+      const fableReset = fableResetFromHeaders(result.headers, now) || reset
+      return {
+        scope: 'model',
+        action: 'continue-and-cooldown',
+        reason: 'fable_rate_limited',
+        model: FABLE_FAMILY_KEY,
+        cooldownUntil: fableReset || now + 60_000,
+      }
+    }
     const family = modelFamily(model)
     if (family) {
       return {
@@ -248,6 +339,15 @@ export function classifyUpstreamResult(result = {}, {
     }
   }
   if (status === 408 || status === 502 || status === 503 || status === 504 || status >= 500) {
+    if (isFableModel(model) && (status === 408 || status === 504 || /timeout/i.test(message))) {
+      return {
+        scope: 'model',
+        action: 'continue-and-cooldown',
+        reason: 'fable_timeout',
+        model: FABLE_FAMILY_KEY,
+        cooldownUntil: now + 30_000,
+      }
+    }
     return continueWithoutCooldown({
       scope: 'provider',
       reason: isTimeoutFailure(workerCode, message)
@@ -266,20 +366,60 @@ export function normalizeModelKey(model) {
   return String(model || '').trim().toLowerCase()
 }
 
+function placeholderContent(role) {
+  return [{
+    type: 'text',
+    text: role === 'assistant' ? '(assistant content removed)' : '(content removed)',
+  }]
+}
+
+function rectifyMessageContent(content, role) {
+  if (!Array.isArray(content)) return content
+  const next = []
+  for (const block of content) {
+    if (!block || typeof block !== 'object') {
+      next.push(block)
+      continue
+    }
+    if (block.type === 'text' && !String(block.text || '').trim()) continue
+    if (block.type === 'thinking') {
+      const text = String(block.thinking || '').trim()
+      if (text) next.push({ type: 'text', text })
+      continue
+    }
+    if (block.type === 'redacted_thinking') continue
+    if (block.type === 'tool_result' && Array.isArray(block.content)) {
+      next.push({ ...block, content: rectifyMessageContent(block.content, role) })
+      continue
+    }
+    next.push(block)
+  }
+  return next.length ? next : placeholderContent(role)
+}
+
+/** Convert every thinking block to text and disable top-level thinking (sub2api retry). */
 export function repairAnthropicRequest(body = {}, policy = {}) {
   if (policy.action !== 'repair-and-retry') return body
+  const reason = String(policy.reason || '')
+  if (reason === 'prefill_repairable' || reason === 'tool_pair_repairable' || reason === 'schema_repairable') {
+    return rectifyUnofficialRequest(body)
+  }
+  if (reason === 'thinking_repairable') {
+    const next = structuredClone(body)
+    normalizeThinkingForModel(next)
+    return next
+  }
   const out = structuredClone(body)
   if (out.thinking) delete out.thinking
+  if (Array.isArray(out.context_management?.edits)) {
+    const edits = out.context_management.edits.filter((edit) => edit?.type !== 'clear_thinking_20251015')
+    if (edits.length) out.context_management.edits = edits
+    else delete out.context_management.edits
+  }
   if (Array.isArray(out.messages)) {
     out.messages = out.messages.map((message) => {
       if (!Array.isArray(message?.content)) return message
-      const content = message.content
-        .filter((block) => !(block?.type === 'thinking' && !block?.signature))
-        .map((block) => {
-          if (block?.type === 'redacted_thinking') return { type: 'text', text: '[redacted thinking]' }
-          return block
-        })
-      return { ...message, content }
+      return { ...message, content: rectifyMessageContent(message.content, message.role) }
     })
   }
   return out

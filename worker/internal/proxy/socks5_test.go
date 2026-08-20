@@ -92,3 +92,31 @@ func formatPort(port uint16) string {
 	}
 	return string(digits[index:])
 }
+
+func TestDialerRejectsProxyAddressAsTarget(t *testing.T) {
+	proxyURL := "socks5://user:pass@127.0.0.1:6067"
+	dialer, err := New(proxyURL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dialer.DialContext(context.Background(), "tcp", "127.0.0.1:6067")
+	if err == nil {
+		t.Fatal("expected error when CONNECT target is the proxy itself")
+	}
+	if got := err.Error(); !contains(got, "refusing SOCKS CONNECT") {
+		t.Fatalf("error = %q", got)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || search(s, sub))
+}
+
+func search(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

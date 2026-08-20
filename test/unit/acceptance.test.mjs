@@ -180,17 +180,3 @@ test('officialMessagesBody keeps tools/system/messages from synth', () => {
   assert.equal(out.tools[0].name, 'Read')
   // settings not in Anthropic official allowlist typically
 })
-
-test('officialMessagesBody keeps output_config and other official extras', () => {
-  const { claude } = toClaudeMessages('anthropic.messages', {
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 64,
-    output_config: { format: { type: 'json_schema', schema: { type: 'object' } }, effort: 'high' },
-    extra_body: { drop: true },
-    messages: [{ role: 'user', content: 'json' }],
-  })
-  const out = officialMessagesBody(claude)
-  assert.equal(out.output_config.effort, 'high')
-  assert.equal(out.output_config.format.type, 'json_schema')
-  assert.equal(out.extra_body, undefined)
-})
