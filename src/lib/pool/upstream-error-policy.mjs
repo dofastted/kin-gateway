@@ -66,12 +66,26 @@ function resetFromHeaders(headers, now = Date.now()) {
   return resets.length ? Math.min(...resets) : null
 }
 
+export const FABLE_FAMILY_KEY = 'fable'
+
 function modelFamily(model) {
   const value = String(model || '').toLowerCase()
   for (const family of ['opus', 'sonnet', 'haiku', 'fable']) {
     if (value.includes(family)) return family
   }
   return null
+}
+
+export function isFableModel(model) {
+  return String(model || '').toLowerCase().includes('fable')
+}
+
+export function modelCooldownKeys(model) {
+  const key = normalizeModelKey(model)
+  if (!key) return []
+  const keys = [key]
+  if (isFableModel(key) && key !== FABLE_FAMILY_KEY) keys.push(FABLE_FAMILY_KEY)
+  return keys
 }
 
 function isUnifiedAccountLimit(headers) {
@@ -181,7 +195,7 @@ export function classifyUpstreamResult(result = {}, {
         scope: 'model',
         action: 'continue-and-cooldown',
         reason: `${family}_rate_limited`,
-        model: normalizeModelKey(model),
+        model: family === 'fable' ? FABLE_FAMILY_KEY : normalizeModelKey(model),
         cooldownUntil: reset || now + 60_000,
       }
     }
