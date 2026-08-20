@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sanitizeAnthropicBody } from '../../src/lib/protocol/sanitize.mjs'
+import { sanitizeAnthropicBody, normalizeAnthropicMessages } from '../../src/lib/protocol/sanitize.mjs'
+import { officialMessagesBody } from '../../src/lib/protocol/anthropic-messages.mjs'
 import { toClaudeMessages, fromClaudeToOpenAICompletions, fromClaudeToOpenAIChat, fromClaudeToResponses } from '../../src/lib/protocol/convert.mjs'
 import { applyCrsIdentityReplace, uuidFromSeed } from '../../src/lib/identity/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona, CRS_OFFICIAL_SYSTEM } from '../../src/lib/identity/crs-persona.mjs'
@@ -48,6 +49,94 @@ test('sanitize passthrough keeps output_config and drops OpenAI leftovers', () =
   assert.equal(out.settings, undefined)
   assert.equal(out.n, undefined)
   assert.equal(out.response_format, undefined)
+})
+
+test('sanitize remaps unknown Anthropic roles to user (sub2api admin→user)', () => {
+  const out = sanitizeAnthropicBody({
+    model: 'claude-sonnet-5',
+    max_tokens: 1024,
+    messages: [{ role: 'admin', content: 'x' }],
+  })
+  assert.deepEqual(out.messages, [{ role: 'user', content: 'x' }])
+})
+
+test('sanitize lifts system/developer turns and merges consecutive users', () => {
+  const out = sanitizeAnthropicBody({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 32,
+    system: 'base',
+    messages: [
+      { role: 'system', content: 'extra rule' },
+      { role: 'developer', content: 'dev note' },
+      { role: 'user', content: 'one' },
+      { role: 'admin', content: 'two' },
+      { role: 'assistant', content: 'ok' },
+    ],
+  })
+  assert.equal(out.system, 'base\n\nextra rule\n\ndev note')
+  assert.deepEqual(out.messages, [
+    { role: 'user', content: 'one\ntwo' },
+    { role: 'assistant', content: 'ok' },
+  ])
+})
+
+test('sanitize drops empty content and prefixes assistant-first history', () => {
+  const out = sanitizeAnthropicBody({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 16,
+    messages: [
+      { role: 'admin', content: '   ' },
+      { role: 'assistant', content: 'hello' },
+    ],
+  })
+  assert.equal(out.messages[0].role, 'user')
+  assert.equal(out.messages[0].content, '.')
+  assert.equal(out.messages[1].role, 'assistant')
+  assert.equal(out.messages[1].content, 'hello')
+})
+
+test('strict passthrough keeps invalid roles for official wire', () => {
+  const out = sanitizeAnthropicBody({
+    model: 'claude-sonnet-5',
+    max_tokens: 8,
+    messages: [{ role: 'admin', content: 'x' }],
+  }, { strictPassthrough: true })
+  assert.equal(out.messages[0].role, 'admin')
+})
+
+test('toClaudeMessages anthropic passthrough remaps admin role', () => {
+  const { claude, mode } = toClaudeMessages('anthropic.messages', {
+    model: 'claude-sonnet-5',
+    max_tokens: 1024,
+    messages: [{ role: 'admin', content: 'x' }],
+  })
+  assert.equal(mode, 'passthrough')
+  assert.equal(claude.messages[0].role, 'user')
+  assert.equal(claude.messages[0].content, 'x')
+})
+
+test('officialMessagesBody remaps admin before the worker hop', () => {
+  const out = officialMessagesBody({
+    model: 'claude-sonnet-5',
+    max_tokens: 64,
+    messages: [{ role: 'admin', content: 'x' }],
+  })
+  assert.equal(out.messages[0].role, 'user')
+})
+
+test('normalizeAnthropicMessages is idempotent for legal turns', () => {
+  const body = {
+    messages: [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: [{ type: 'text', text: 'yo' }] },
+    ],
+  }
+  normalizeAnthropicMessages(body)
+  normalizeAnthropicMessages(body)
+  assert.deepEqual(body.messages, [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: [{ type: 'text', text: 'yo' }] },
+  ])
 })
 
 test('third-party persona appends official line and keeps caller system', () => {
