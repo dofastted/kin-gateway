@@ -155,6 +155,64 @@ test('committed realtime stream failure never switches accounts', async () => {
   assert.equal(scheduler.selectCalls, 1)
 })
 
+test('cloudflare 403 does not trigger SOCKS disconnect', async () => {
+  const scheduler = new Scheduler([candidate(1), candidate(2)])
+  const failures = []
+  const runner = new FailoverRunner({
+    scheduler,
+    onProxyFailure: (vmId, reason) => failures.push({ vmId, reason }),
+  })
+  const result = await runner.run({
+    requestId: 'req-cf',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    callAttempt: ({ candidate: selected }) => {
+      if (selected.accountId === 'account-1') {
+        return {
+          ok: false,
+          status: 403,
+          terminalState: 'rejected',
+          body: { error: { message: '<html>cloudflare</html>' } },
+        }
+      }
+      return success()
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(failures.length, 0)
+})
+
+test('proxy transport error notifies onProxyFailure then rotates', async () => {
+  const scheduler = new Scheduler([candidate(1), candidate(2)])
+  const failures = []
+  const runner = new FailoverRunner({
+    scheduler,
+    onProxyFailure: (vmId, reason) => failures.push({ vmId, reason }),
+  })
+  const result = await runner.run({
+    requestId: 'req-proxy',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    callAttempt: ({ candidate: selected }) => {
+      if (selected.accountId === 'account-1') {
+        return {
+          ok: false,
+          status: 0,
+          transportError: true,
+          terminalState: 'transport_error',
+          body: { error: { code: 'worker_transport_error', message: 'SOCKS proxy dial failed' } },
+        }
+      }
+      return success()
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.accountId, 'account-2')
+  assert.equal(failures.length, 1)
+  assert.equal(failures[0].vmId, 'vm-01')
+  assert.equal(failures[0].reason, 'proxy_transport_failure')
+})
+
 test('signature error is repaired once on the same account', async () => {
   const scheduler = new Scheduler([candidate(1)])
   const runner = new FailoverRunner({ scheduler })

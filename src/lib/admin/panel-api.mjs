@@ -26,9 +26,43 @@ export function fail(errorResult) {
   }
 }
 
-export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog = null }) {
+export function summarizeProxyPool(proxyPool) {
+  if (!proxyPool || typeof proxyPool.snapshot !== 'function') {
+    return {
+      total: 0,
+      free: 0,
+      bound: 0,
+      ok: 0,
+      dead: 0,
+      probing: false,
+      disconnect_on_error: false,
+    }
+  }
+  const snap = proxyPool.snapshot()
+  return {
+    total: snap.totals?.total || 0,
+    free: snap.totals?.free || 0,
+    bound: snap.totals?.bound || 0,
+    ok: snap.totals?.ok || 0,
+    dead: snap.totals?.dead || 0,
+    probing: !!snap.totals?.probing,
+    disconnect_on_error: !!snap.config?.disconnect_on_error,
+  }
+}
+
+function snapshotPool(proxyPool) {
+  if (!proxyPool || typeof proxyPool.snapshot !== 'function') return null
+  try {
+    return proxyPool.snapshot()
+  } catch {
+    return null
+  }
+}
+
+export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog = null, proxyPool = null }) {
   const active = getActiveVmId(cfg.paths.project)
-  const vms = listVms(cfg.paths.project).map((v) => enrichVm(v, accountQuota, active))
+  const poolSnap = snapshotPool(proxyPool)
+  const vms = listVms(cfg.paths.project).map((v) => enrichVm(v, accountQuota, active, poolSnap))
   const snap = accountQuota.snapshot()
   const accounts = snap.accounts || []
   const peak5 = Math.max(0, ...accounts.map((a) => Number(a.unified?.['5h']?.utilization || 0)), 0)
@@ -38,6 +72,7 @@ export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig,
       Number(a.unified?.['5h']?.utilization || 0) >= (snap.safety_ratio || 0.95) ||
       Number(a.unified?.['7d']?.utilization || 0) >= (snap.safety_ratio || 0.95),
   ).length
+  const proxy_pool = summarizeProxyPool(proxyPool)
 
   return ok({
     health: {
@@ -61,6 +96,7 @@ export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig,
       cache_read_tokens: accounts.reduce((s, a) => s + (a.cache_read_tokens || 0), 0),
       cache_creation_tokens: accounts.reduce((s, a) => s + (a.cache_creation_tokens || 0), 0),
     },
+    proxy_pool,
     vms,
     routing: {
       sticky_enabled: !!routingConfig?.sticky?.enabled,
@@ -73,13 +109,14 @@ export function buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig,
   })
 }
 
-export function buildVmList({ cfg, accountQuota }) {
+export function buildVmList({ cfg, accountQuota, proxyPool = null }) {
   const active = getActiveVmId(cfg.paths.project)
-  const vms = listVms(cfg.paths.project).map((v) => enrichVm(v, accountQuota, active))
-  return ok({ items: vms, active_vm: active, total: vms.length })
+  const poolSnap = snapshotPool(proxyPool)
+  const vms = listVms(cfg.paths.project).map((v) => enrichVm(v, accountQuota, active, poolSnap))
+  return ok({ items: vms, active_vm: active, total: vms.length, proxy_pool: summarizeProxyPool(proxyPool) })
 }
 
-export function buildVmDetail({ cfg, accountQuota, id }) {
+export function buildVmDetail({ cfg, accountQuota, id, proxyPool = null }) {
   const vm = getVm(cfg.paths.project, id)
   if (!vm) {
     return fail(
@@ -92,10 +129,13 @@ export function buildVmDetail({ cfg, accountQuota, id }) {
     )
   }
   const active = getActiveVmId(cfg.paths.project)
-  const summary = enrichVm(summarizeVm(vm), accountQuota, active)
+  const poolSnap = snapshotPool(proxyPool)
+  const summary = enrichVm(summarizeVm(vm), accountQuota, active, poolSnap)
   const acc = findAccount(accountQuota, summary)
   return ok({
     vm: summary,
+    proxy: summary.proxy || null,
+    proxy_pool: summarizeProxyPool(proxyPool),
     account: acc
       ? {
           account_id: acc.account_id,
@@ -327,12 +367,57 @@ function credStatusFromQuota(hasToken, q = {}, expiresAt = null) {
   return { key: 'ok', text: '可用', tone: 'ok' }
 }
 
-function enrichVm(v, accountQuota, active) {
+function poolProxyForVm(v, poolSnap) {
+  const list = poolSnap?.proxies || []
+  if (!list.length) return null
+  const id = v.proxy_id || v.proxy?.id
+  return list.find((p) => (id && p.id === id) || p.bound_vm_id === v.id) || null
+}
+
+function proxyConfigured(v, hit) {
+  const base = v.proxy || {}
+  return !!(base.host || base.url || base.id || v.proxy_id || hit)
+}
+
+function canImportCredential(v, hit) {
+  if (hit) return !!(hit.enabled && hit.status !== 'dead' && hit.status !== 'fail')
+  const base = v.proxy || {}
+  return !!(base.url || (base.host && base.port) || v.proxy_id)
+}
+
+function mergeVmProxy(v, poolSnap) {
+  const hit = poolProxyForVm(v, poolSnap)
+  const base = v.proxy || {}
+  const configured = proxyConfigured(v, hit)
+  if (!configured) {
+    return { proxy: null, proxy_configured: false, can_import_credential: false }
+  }
+  return {
+    proxy: {
+      id: hit?.id || base.id || v.proxy_id || null,
+      host: hit?.host || base.host || null,
+      port: hit?.port || base.port || null,
+      scheme: base.scheme || 'socks5',
+      has_auth: hit?.has_auth ?? !!(base.url && /\/\/[^/@]+@/.test(base.url)),
+      status: hit?.status ?? null,
+      enabled: hit?.enabled ?? null,
+      latency_ms: hit?.latency_ms ?? null,
+      last_error: hit?.last_error || null,
+      last_probe_at: hit?.last_probe_at || null,
+      configured: true,
+    },
+    proxy_configured: true,
+    can_import_credential: canImportCredential(v, hit),
+  }
+}
+
+function enrichVm(v, accountQuota, active, poolSnap = null) {
   const acc = findAccount(accountQuota, v)
   const q = quotaFromAccount(acc)
   const u5 = q.utilization_5h
   const u7 = q.utilization_7d
   const safety = Number(accountQuota?.config?.safety_ratio || 0.95)
+  const merged = mergeVmProxy(v, poolSnap)
   return {
     id: v.id,
     name: v.name,
@@ -351,8 +436,10 @@ function enrichVm(v, accountQuota, active) {
     oauth_source: v.oauth_source || null,
     has_refresh: !!v.has_refresh,
     has_session_key: !!v.has_session_key,
-    proxy: v.proxy || null,
-    proxy_id: v.proxy_id || v.proxy?.id || null,
+    proxy: merged.proxy,
+    proxy_id: merged.proxy?.id || v.proxy_id || v.proxy?.id || null,
+    proxy_configured: merged.proxy_configured,
+    can_import_credential: merged.can_import_credential,
     proxy_cli_enabled: !!v.proxy_cli_enabled,
     seed_policy: v.seed_policy || null,
     max_concurrency: v.max_concurrency,
@@ -388,6 +475,7 @@ function enrichVm(v, accountQuota, active) {
 }
 
 function findAccount(accountQuota, vm) {
+  if (!accountQuota || typeof accountQuota.snapshot !== 'function') return null
   const snap = accountQuota.snapshot()
   return (snap.accounts || []).find(
     (a) => a.vm_id === vm.id || a.account_id === vm.account_uuid,

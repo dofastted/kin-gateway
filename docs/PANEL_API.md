@@ -8,9 +8,9 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/dashboard` | 总览 |
-| GET | `/vms` | 列表（含 `has_token`、`cred_status`、5h/7d/fable） |
-| GET | `/vms/:id` | 详情 |
+| GET | `/dashboard` | 总览（含 `proxy_pool` 摘要） |
+| GET | `/vms` | 列表（含 `has_token`、`cred_status`、`proxy_configured`、`can_import_credential`） |
+| GET | `/vms/:id` | 详情（合并代理池健康 + `proxy_pool`） |
 | POST | `/vms/:id/probe` | 对应 Go worker 经槽位 SOCKS5 探测 usage + fable |
 | POST | `/vms/:id/oauth/refresh` | 对应 Go worker ensure/force refresh |
 | POST | `/probe` | 全量探测 |
@@ -58,3 +58,21 @@ attempts 包含每次选中的 VM/账号、错误域、cooldown、响应提交�
 | GET/POST/PUT/DELETE | `/proxies…` |
 
 恢复期间协议口 503。每个槽位必须绑定 SOCKS5；Go worker 在槽位容器内显式使用该代理，失败时不直连。
+
+### 虚拟机代理字段
+
+`/dashboard`、`/vms`、`/vms/:id` 的 VM 对象含：
+
+| 字段 | 说明 |
+|------|------|
+| `proxy_configured` | 是否已绑定 SOCKS5 |
+| `can_import_credential` | 是否允许 sessionKey 转换（绑定且代理非 fail/dead） |
+| `proxy.status` / `enabled` / `latency_ms` / `last_error` / `last_probe_at` / `has_auth` | 来自代理池的健康快照；**不返回**带账密的 `proxy.url` |
+
+`proxy_pool` 摘要：`{ total, free, bound, ok, dead, probing, disconnect_on_error }`。
+
+sessionKey 导入必须走该槽 SOCKS5。生产忽略 `require_proxy: false`（仅 `KIN_CRS_MOCK=1` 的测试可绕过）。
+
+### 代理池实验开关
+
+`PUT /proxies/config` 可写 `disconnect_on_error`（默认 `false`）。打开后，运行时 SOCKS5 传输错误会立刻停该槽调度、回写代理失败，并重建 worker 以断开半开连接；其它健康槽仍可 failover。
