@@ -2,10 +2,11 @@
  * Official Messages body shaping only.
  * The HTTP hop lives in the per-slot Go worker. This file only sanitizes the body.
  */
-import { copyOfficialAnthropicFields } from './sanitize.mjs'
+import { copyOfficialAnthropicFields, normalizeAnthropicMessages } from './sanitize.mjs'
 
 export function officialMessagesBody(body = {}, { stream = undefined } = {}) {
   const out = copyOfficialAnthropicFields(body)
+  normalizeAnthropicMessages(out)
   if (stream !== undefined) out.stream = !!stream
   if (!out.max_tokens) out.max_tokens = 8192
   if (Array.isArray(out.tools) && out.tools.length === 0) delete out.tools
