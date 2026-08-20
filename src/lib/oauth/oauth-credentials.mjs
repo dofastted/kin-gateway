@@ -9,6 +9,7 @@
  * ONLY `persistOauthToVm` may write access_token/refresh_token into vm.json.
  */
 import fs from 'node:fs'
+import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
 
 /** Kept for status / diagnostics only — refresh scheduling lives in the Go worker. */
@@ -65,6 +66,46 @@ export function applyOauthToCfg(cfg, cred) {
   if (n._token_version) cfg.vm._token_version = n._token_version
   cfg.vm.refresh_error = null
   return cfg
+}
+
+
+/** Read the slot worker credentials.json (claudeAiOauth) without logging secrets. */
+export function readWorkerCredentialFile(homeDir) {
+  if (!homeDir) return null
+  const candidates = [
+    path.join(homeDir, '.claude', 'credentials.json'),
+    path.join(homeDir, '.claude', '.credentials.json'),
+  ]
+  for (const file of candidates) {
+    try {
+      if (!fs.existsSync(file)) continue
+      const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+      const oauth = doc?.claudeAiOauth && typeof doc.claudeAiOauth === 'object' ? doc.claudeAiOauth : doc
+      if (!oauth || typeof oauth !== 'object') continue
+      return {
+        access_token: oauth.accessToken || oauth.access_token || '',
+        refresh_token: oauth.refreshToken || oauth.refresh_token || '',
+        expires_at: oauth.expiresAt || oauth.expires_at || null,
+        email: oauth.email || oauth.emailAddress || oauth.email_address || null,
+        account_uuid: oauth.accountUuid || oauth.account_uuid || null,
+        org_uuid: oauth.orgUuid || oauth.org_uuid || null,
+        scope: Array.isArray(oauth.scopes) ? oauth.scopes.join(' ') : (oauth.scope || null),
+        source: 'go-slot-worker',
+        _token_version: oauth.kinGeneration || oauth.kin_generation || null,
+      }
+    } catch {}
+  }
+  return null
+}
+
+/**
+ * After the Go worker rotates tokens, mirror credentials.json → vm.json
+ * so panel expires_at / has_token stay aligned with the refresh owner.
+ */
+export function mirrorWorkerCredentialsToVm(vmPath, homeDir) {
+  const cred = readWorkerCredentialFile(homeDir)
+  if (!cred?.access_token) return null
+  return persistOauthToVm(vmPath, cred)
 }
 
 export function persistOauthToVm(vmPath, cred) {

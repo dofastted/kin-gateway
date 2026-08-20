@@ -79,6 +79,19 @@ export function setActiveVm(projectRoot, id) {
   atomicWriteJson(file, { active_vm: id, updated_at: new Date().toISOString() })
 }
 
+const HARD_UNAVAILABLE = new Set(['stopped', 'dead', 'error', 'disabled'])
+
+/**
+ * Soft `paused` is only a UI mark written by setVmSchedulable(false).
+ * If schedulable is back on, the account must remain selectable.
+ */
+export function isVmScheduleReady(vm) {
+  if (!vm) return false
+  if (vm.schedulable === false) return false
+  const status = String(vm.status || '').toLowerCase()
+  if (HARD_UNAVAILABLE.has(status)) return false
+  return true
+}
 
 export function setVmSchedulable(projectRoot, id, schedulable, reason = null) {
   const file = path.join(projectRoot, 'vms', `${id}.json`)
