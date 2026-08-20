@@ -42,7 +42,7 @@ function poolError(code, message, details = {}) {
 }
 
 function notifyProxyFailure(onProxyFailure, selected, policy) {
-  if (policy?.scope !== 'proxy') return
+  if (policy?.reason !== 'proxy_transport_failure') return
   if (typeof onProxyFailure !== 'function') return
   try {
     onProxyFailure(selected?.vmId, policy.reason)
