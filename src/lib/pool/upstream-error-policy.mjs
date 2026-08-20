@@ -100,6 +100,32 @@ function resultErrorCode(result) {
   return String(result?.body?.error?.code || result?.body?.error?.type || '')
 }
 
+const TIMEOUT_PATTERNS = /timeout|deadline|response header|timed out/i
+
+function isTimeoutFailure(workerCode, message) {
+  return TIMEOUT_PATTERNS.test(`${workerCode} ${message}`)
+}
+
+function isProxyFailure(workerCode, message) {
+  const hay = `${workerCode} ${message}`
+  if (isTimeoutFailure(workerCode, message)) return false
+  return /proxy|socks|dial|dns|tls|connect/i.test(hay)
+}
+
+function continueWithoutCooldown({
+  scope,
+  reason,
+  retrySameAccount = true,
+} = {}) {
+  return {
+    scope,
+    action: 'continue',
+    reason,
+    cooldownUntil: null,
+    retrySameAccount,
+  }
+}
+
 export function classifyUpstreamResult(result = {}, {
   model = null,
   now = Date.now(),
@@ -126,13 +152,20 @@ export function classifyUpstreamResult(result = {}, {
     }
   }
   if (result.transportError || status === 0) {
-    const proxyFailure = /proxy|socks|dial|dns|tls|connect/i.test(`${workerCode} ${message}`)
-    return {
-      scope: proxyFailure ? 'proxy' : 'worker',
-      action: 'continue-and-cooldown',
-      reason: proxyFailure ? 'proxy_transport_failure' : 'worker_transport_failure',
-      cooldownUntil: now + 60_000,
+    if (isProxyFailure(workerCode, message)) {
+      return {
+        scope: 'proxy',
+        action: 'continue-and-cooldown',
+        reason: 'proxy_transport_failure',
+        cooldownUntil: now + 60_000,
+      }
     }
+    return continueWithoutCooldown({
+      scope: 'worker',
+      reason: isTimeoutFailure(workerCode, message)
+        ? 'worker_timeout'
+        : 'worker_transport_failure',
+    })
   }
   if (status === 400) {
     if (!repaired && SIGNATURE_PATTERNS.some((pattern) => pattern.test(`${code} ${message}`))) {
@@ -215,12 +248,12 @@ export function classifyUpstreamResult(result = {}, {
     }
   }
   if (status === 408 || status === 502 || status === 503 || status === 504 || status >= 500) {
-    return {
+    return continueWithoutCooldown({
       scope: 'provider',
-      action: 'continue-and-cooldown',
-      reason: 'provider_transient_error',
-      cooldownUntil: now + 30_000,
-    }
+      reason: isTimeoutFailure(workerCode, message)
+        ? 'provider_timeout'
+        : 'provider_transient_error',
+    })
   }
   return { scope: 'request', action: 'stop', reason: `http_${status}`, cooldownUntil: null }
 }
