@@ -9,6 +9,9 @@ const DEFAULTS = {
   max_total_attempts: 12,
   total_retry_deadline_ms: 120000,
   delivery_mode: 'realtime',
+  max_same_account_retries: 1,
+  same_account_retry_delay_ms: 500,
+  same_account_retry_max_hop_ms: 10_000,
 }
 
 function clone(value) {
@@ -51,6 +54,62 @@ function notifyProxyFailure(onProxyFailure, selected, policy) {
   }
 }
 
+function sleepWithSignal(ms, signal) {
+  const delay = Number(ms) || 0
+  if (delay <= 0) {
+    if (signal?.aborted) {
+      return Promise.reject(Object.assign(new Error('Request was cancelled'), { code: 'selection_cancelled' }))
+    }
+    return Promise.resolve()
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort)
+      resolve()
+    }, delay)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(Object.assign(new Error('Request was cancelled'), { code: 'selection_cancelled' }))
+    }
+    if (signal?.aborted) {
+      onAbort()
+      return
+    }
+    signal?.addEventListener?.('abort', onAbort, { once: true })
+  })
+}
+
+function preferLastResult(lastResult, lastPolicy, fallback, extras = {}) {
+  if (!lastResult) return fallback
+  return {
+    ...lastResult,
+    via: lastResult.via || 'pool-failover',
+    finalState: lastResult.finalState || lastResult.terminalState || 'exhausted',
+    policy: lastPolicy || lastResult.policy,
+    ...extras,
+  }
+}
+
+function canRetrySameAccount(policy, used, config, hopMs) {
+  const maxRetries = Number(config.max_same_account_retries ?? 0)
+  const maxHopMs = Number(config.same_account_retry_max_hop_ms ?? 10_000)
+  return !!policy?.retrySameAccount
+    && used < maxRetries
+    && hopMs < maxHopMs
+}
+
+function applyCooldown(scheduler, selected, policy, model) {
+  if (policy?.action !== 'continue-and-cooldown' && policy?.action !== 'disable') return
+  scheduler.markCooldown(selected, {
+    until: policy.action === 'disable'
+      ? Number.MAX_SAFE_INTEGER
+      : policy.cooldownUntil,
+    reason: policy.reason,
+    model: policy.scope === 'model' ? (policy.model || model) : null,
+    status: policy.action === 'disable' ? 'disabled' : 'cooldown',
+  })
+}
+
 export class FailoverRunner {
   constructor({
     scheduler,
@@ -83,6 +142,7 @@ export class FailoverRunner {
     const startedAt = Date.now()
     const deadline = startedAt + Number(this.config.total_retry_deadline_ms || 120000)
     const excluded = new Set()
+    const sameAccountRetries = new Map()
     let lastResult = null
     let lastPolicy = null
     let accountSwitches = 0
@@ -94,10 +154,10 @@ export class FailoverRunner {
         return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo - 1 })
       }
       if (Date.now() >= deadline) {
-        return poolError('pool_deadline_exceeded', 'Account pool retry deadline exceeded', {
+        return preferLastResult(lastResult, lastPolicy, poolError('pool_deadline_exceeded', 'Account pool retry deadline exceeded', {
           attempt_count: attemptNo - 1,
           last_scope: lastPolicy?.scope || null,
-        })
+        }), { attemptCount: attemptNo - 1 })
       }
       const selected = await this.scheduler.selectAndReserve({
         model,
@@ -108,11 +168,11 @@ export class FailoverRunner {
         allowWait: true,
       })
       if (!selected?.ok) {
-        return lastResult || poolError('account_pool_exhausted', 'No eligible Claude accounts remain', {
+        return preferLastResult(lastResult, lastPolicy, poolError('account_pool_exhausted', 'No eligible Claude accounts remain', {
           excluded_accounts: [...excluded],
           reason: selected?.reason || 'no_eligible_accounts',
           attempt_count: attemptNo - 1,
-        })
+        }), { attemptCount: attemptNo - 1 })
       }
       const attemptStarted = Date.now()
       const prepared = typeof applyAttempt === 'function'
@@ -187,16 +247,7 @@ export class FailoverRunner {
           requestBody = repairAnthropicRequest(requestBody, policy)
           continue
         }
-        if (policy.action === 'continue-and-cooldown' || policy.action === 'disable') {
-          this.scheduler.markCooldown(selected, {
-            until: policy.action === 'disable'
-              ? Number.MAX_SAFE_INTEGER
-              : policy.cooldownUntil,
-            reason: policy.reason,
-            model: policy.scope === 'model' ? (policy.model || model) : null,
-            status: policy.action === 'disable' ? 'disabled' : 'cooldown',
-          })
-        }
+        applyCooldown(this.scheduler, selected, policy, model)
         if (!shouldContinue(policy)) {
           return {
             ...result,
@@ -207,13 +258,28 @@ export class FailoverRunner {
             policy,
           }
         }
+        const hopMs = Date.now() - attemptStarted
+        const used = sameAccountRetries.get(selected.accountId) || 0
+        if (canRetrySameAccount(policy, used, this.config, hopMs)) {
+          sameAccountRetries.set(selected.accountId, used + 1)
+          try {
+            await sleepWithSignal(this.config.same_account_retry_delay_ms, signal)
+          } catch {
+            return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo })
+          }
+          continue
+        }
         excluded.add(selected.accountId)
         excluded.add(selected.vmId)
         accountSwitches++
         if (accountSwitches > this.config.max_account_switches) {
-          return poolError('max_account_switches_exceeded', 'Maximum account switches exceeded', {
+          return preferLastResult(result, policy, poolError('max_account_switches_exceeded', 'Maximum account switches exceeded', {
             attempt_count: attemptNo,
             last_scope: policy.scope,
+          }), {
+            accountId: selected.accountId,
+            vmId: selected.vmId,
+            attemptCount: attemptNo,
           })
         }
       } catch (error) {
@@ -255,10 +321,18 @@ export class FailoverRunner {
             policy,
           }
         }
-        this.scheduler.markCooldown(selected, {
-          until: policy.cooldownUntil,
-          reason: policy.reason,
-        })
+        applyCooldown(this.scheduler, selected, policy, model)
+        const hopMs = Date.now() - attemptStarted
+        const used = sameAccountRetries.get(selected.accountId) || 0
+        if (canRetrySameAccount(policy, used, this.config, hopMs)) {
+          sameAccountRetries.set(selected.accountId, used + 1)
+          try {
+            await sleepWithSignal(this.config.same_account_retry_delay_ms, signal)
+          } catch {
+            return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo })
+          }
+          continue
+        }
         excluded.add(selected.accountId)
         excluded.add(selected.vmId)
         accountSwitches++

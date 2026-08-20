@@ -213,6 +213,22 @@ test('proxy transport error notifies onProxyFailure then rotates', async () => {
   assert.equal(failures[0].reason, 'proxy_transport_failure')
 })
 
+function badGateway(message = 'net/http: timeout awaiting response headers') {
+  return {
+    ok: false,
+    status: 502,
+    terminalState: 'error',
+    body: {
+      type: 'error',
+      error: {
+        type: 'api_error',
+        code: 'upstream_transport_error',
+        message,
+      },
+    },
+  }
+}
+
 test('signature error is repaired once on the same account', async () => {
   const scheduler = new Scheduler([candidate(1)])
   const runner = new FailoverRunner({ scheduler })
@@ -243,4 +259,93 @@ test('signature error is repaired once on the same account', async () => {
   assert.equal(result.ok, true)
   assert.equal(result.attemptCount, 2)
   assert.equal(calls, 2)
+})
+
+test('fast 502 retries the same account once without cooldown', async () => {
+  const scheduler = new Scheduler([candidate(1)])
+  const runner = new FailoverRunner({
+    scheduler,
+    config: { same_account_retry_delay_ms: 0 },
+  })
+  const seen = []
+  const result = await runner.run({
+    requestId: 'req-502-same',
+    canonicalBody: { model: 'claude-sonnet-test' },
+    model: 'claude-sonnet-test',
+    callAttempt: ({ candidate: selected }) => {
+      seen.push(selected.accountId)
+      return badGateway()
+    },
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 502)
+  assert.equal(result.body.error.code, 'upstream_transport_error')
+  assert.equal(result.via, 'pool-failover')
+  assert.notEqual(result.body.error.code, 'server_overloaded')
+  assert.deepEqual(seen, ['account-1', 'account-1'])
+  assert.equal(scheduler.cooldowns.length, 0)
+  assert.equal(scheduler.selectCalls, 3)
+})
+
+test('502 rotates to another account after one same-account retry', async () => {
+  const scheduler = new Scheduler([candidate(1), candidate(2)])
+  const runner = new FailoverRunner({
+    scheduler,
+    config: { same_account_retry_delay_ms: 0 },
+  })
+  const seen = []
+  const result = await runner.run({
+    requestId: 'req-502-rotate',
+    canonicalBody: { model: 'claude-sonnet-test' },
+    model: 'claude-sonnet-test',
+    callAttempt: ({ candidate: selected }) => {
+      seen.push(selected.accountId)
+      if (selected.accountId === 'account-1') return badGateway()
+      return success('recovered')
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.accountId, 'account-2')
+  assert.deepEqual(seen, ['account-1', 'account-1', 'account-2'])
+  assert.equal(scheduler.cooldowns.length, 0)
+})
+
+test('slow 502 does not stack another same-account hop', async () => {
+  const scheduler = new Scheduler([candidate(1)])
+  const runner = new FailoverRunner({
+    scheduler,
+    config: {
+      same_account_retry_delay_ms: 0,
+      same_account_retry_max_hop_ms: 0,
+    },
+  })
+  let calls = 0
+  const result = await runner.run({
+    requestId: 'req-502-slow',
+    canonicalBody: { model: 'claude-sonnet-test' },
+    model: 'claude-sonnet-test',
+    callAttempt: () => {
+      calls++
+      return badGateway()
+    },
+  })
+  assert.equal(result.status, 502)
+  assert.equal(calls, 1)
+  assert.equal(scheduler.cooldowns.length, 0)
+  assert.equal(result.body.error.code, 'upstream_transport_error')
+})
+
+test('empty pool without a prior hop stays account_pool_exhausted', async () => {
+  const scheduler = new Scheduler([])
+  const runner = new FailoverRunner({ scheduler })
+  const result = await runner.run({
+    requestId: 'req-empty',
+    canonicalBody: { model: 'claude-sonnet-test' },
+    model: 'claude-sonnet-test',
+    callAttempt: () => success(),
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 503)
+  assert.equal(result.body.error.code, 'account_pool_exhausted')
+  assert.equal(result.body.error.message, 'No eligible Claude accounts remain')
 })

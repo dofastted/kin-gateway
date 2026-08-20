@@ -64,6 +64,58 @@ test('transport proxy error rotates with proxy cooldown', () => {
   assert.equal(policy.action, 'continue-and-cooldown')
 })
 
+test('response-header timeout does not cool the account', () => {
+  const policy = classifyUpstreamResult({
+    status: 502,
+    body: {
+      error: {
+        type: 'api_error',
+        code: 'upstream_transport_error',
+        message: 'net/http: timeout awaiting response headers',
+      },
+    },
+  }, { now: 1000 })
+  assert.equal(policy.scope, 'provider')
+  assert.equal(policy.action, 'continue')
+  assert.equal(policy.reason, 'provider_timeout')
+  assert.equal(policy.cooldownUntil, null)
+  assert.equal(policy.retrySameAccount, true)
+  assert.equal(shouldContinue(policy), true)
+})
+
+test('generic 502/5xx can failover without account cooldown', () => {
+  const policy = classifyUpstreamResult({
+    status: 502,
+    body: { error: { type: 'api_error', message: 'Upstream service temporarily unavailable' } },
+  }, { now: 1000 })
+  assert.equal(policy.action, 'continue')
+  assert.equal(policy.cooldownUntil, null)
+  assert.equal(policy.retrySameAccount, true)
+})
+
+test('transport timeout is not treated as a dead proxy', () => {
+  const policy = classifyUpstreamResult({
+    status: 0,
+    transportError: true,
+    body: { error: { code: 'upstream_transport_error', message: 'SOCKS connection timed out' } },
+  }, { now: 1000 })
+  assert.equal(policy.scope, 'worker')
+  assert.equal(policy.action, 'continue')
+  assert.equal(policy.reason, 'worker_timeout')
+  assert.equal(policy.cooldownUntil, null)
+})
+
+test('529 still uses a short provider cooldown', () => {
+  const policy = classifyUpstreamResult({
+    status: 529,
+    body: { error: { type: 'overloaded_error', message: 'Overloaded' } },
+  }, { now: 1000 })
+  assert.equal(policy.scope, 'provider')
+  assert.equal(policy.action, 'continue-and-cooldown')
+  assert.equal(policy.reason, 'provider_overloaded')
+  assert.equal(policy.cooldownUntil, 16_000)
+})
+
 test('signature error has one scoped repair', () => {
   const policy = classifyUpstreamResult({
     status: 400,
