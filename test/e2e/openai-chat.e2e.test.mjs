@@ -21,6 +21,35 @@ test('POST /v1/chat/completions non-stream shape: choices + usage', async () => 
     assert.equal(typeof r.json.usage.prompt_tokens, 'number')
     assert.equal(typeof r.json.usage.completion_tokens, 'number')
     assert.equal(r.json.usage.total_tokens, r.json.usage.prompt_tokens + r.json.usage.completion_tokens)
+    const tr = takeTrace(gw)
+    assert.equal(tr.body.stream, true)
+    assert.notEqual(r.headers.get('content-type'), 'text/event-stream')
+  } finally {
+    await gw.stop()
+  }
+})
+
+test('POST /v1/chat/completions non-stream logs first_token_ms from forced upstream SSE', async () => {
+  const gw = await startGateway({ mockText: 'ttft', env: { KIN_REQUEST_LOG_MODE: 'normal' } })
+  try {
+    const res = await fetch(gw.baseUrl + '/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${gw.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    assert.equal(res.status, 200)
+    const rid = res.headers.get('x-request-id')
+    const json = await res.json()
+    assert.equal(json.choices[0].message.content, 'ttft')
+    await new Promise((r) => setTimeout(r, 80))
+    const logs = await api(gw, 'GET', '/api/panel/request-logs?mode=normal&limit=10')
+    const hit = logs.json.items.find((x) => x.request_id === rid) || logs.json.items[0]
+    assert.equal(hit.protocol, 'openai.chat')
+    assert.equal(hit.stream, false)
+    assert.ok(hit.first_token_ms != null && hit.first_token_ms >= 0, `first_token_ms=${hit.first_token_ms}`)
   } finally {
     await gw.stop()
   }

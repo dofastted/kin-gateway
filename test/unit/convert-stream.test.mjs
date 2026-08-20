@@ -8,6 +8,8 @@ import {
   claudeSSELineToResponsesEvents,
   createOpenAICompletionStreamState,
   claudeSSELineToOpenAICompletionChunks,
+  createClaudeMessageAssembler,
+  applyClaudeSSELineToMessage,
 } from '../../src/lib/protocol/convert.mjs'
 import { officialMessagesBody } from '../../src/lib/protocol/anthropic-messages.mjs'
 
@@ -55,10 +57,20 @@ test('openai.chat convert copies stream:true onto Claude body', () => {
   assert.equal(official.stream, true)
 })
 
-test('openai.chat convert omits stream when inbound is not streaming', () => {
+test('openai.chat convert forces stream:true even when inbound is not streaming', () => {
   const { claude } = toClaudeMessages('openai.chat', {
     model: MODEL,
     messages: [{ role: 'user', content: 'hi' }],
+  })
+  assert.equal(claude.stream, true)
+  const official = officialMessagesBody(claude, { stream: true })
+  assert.equal(official.stream, true)
+})
+
+test('openai.completions still omits stream when inbound is not streaming', () => {
+  const { claude } = toClaudeMessages('openai.completions', {
+    model: MODEL,
+    prompt: 'hi',
   })
   assert.equal(claude.stream, undefined)
 })
@@ -109,6 +121,38 @@ test('pretty-printed SSE converts to Responses events', () => {
   assert.ok(events.some((e) => e.type === 'response.created'))
   assert.ok(events.some((e) => e.type === 'response.output_text.delta' && e.delta === 'pong'))
   assert.ok(events.some((e) => e.type === 'response.completed'))
+})
+
+test('SSE assembler rebuilds a Claude message for buffered chat completions', () => {
+  const state = createClaudeMessageAssembler()
+  for (const line of PRETTY_SSE) applyClaudeSSELineToMessage(line, state)
+  assert.equal(state.message.stop_reason, 'end_turn')
+  assert.equal(state.message.content[0].type, 'text')
+  assert.equal(state.message.content[0].text, 'pong')
+  assert.equal(state.message.usage.output_tokens, 1)
+})
+
+test('SSE assembler rebuilds tool_use input from json deltas', () => {
+  const state = createClaudeMessageAssembler()
+  const lines = [
+    'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[]}}',
+    '',
+    'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}',
+    '',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":"}}',
+    '',
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"/tmp/x\\"}"}}',
+    '',
+    'data: {"type":"content_block_stop","index":0}',
+    '',
+    'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":8}}',
+    '',
+  ]
+  for (const line of lines) applyClaudeSSELineToMessage(line, state)
+  assert.equal(state.message.stop_reason, 'tool_use')
+  assert.equal(state.message.content[0].name, 'read_file')
+  assert.equal(state.message.content[0].input.path, '/tmp/x')
+  assert.equal(state.message.content[0]._inputJson, undefined)
 })
 
 test('pretty-printed SSE converts to completion chunks', () => {

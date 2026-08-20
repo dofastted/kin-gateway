@@ -188,7 +188,11 @@ export function toClaudeMessages(protocol, body, opts = { rewrite: false, model_
   }
 
   if (protocol === 'openai.chat') {
-    return { claude: openaiToClaude(body, opts), mode: opts.rewrite ? 'rewrite' : 'convert' }
+    const claude = openaiToClaude(body, opts)
+    // Chat Completions always hits Anthropic as a true stream (Sub2API-style).
+    // Non-stream clients are reassembled in the gateway after SSE completes.
+    claude.stream = true
+    return { claude, mode: opts.rewrite ? 'rewrite' : 'convert' }
   }
   if (protocol === 'openai.completions') {
     return { claude: completionsToClaude(body, opts), mode: opts.rewrite ? 'rewrite' : 'convert' }
@@ -434,6 +438,81 @@ function takeParsedSseData(state) {
     }
   } catch {}
   return null
+}
+
+export function createClaudeMessageAssembler() {
+  return { message: null, dataBuf: '' }
+}
+
+function ensureAssemblerMessage(state) {
+  if (!state.message || typeof state.message !== 'object') {
+    state.message = { type: 'message', role: 'assistant', content: [] }
+  }
+  if (!Array.isArray(state.message.content)) state.message.content = []
+  return state.message
+}
+
+/** Fold Anthropic SSE into one Messages JSON for non-stream Chat Completions clients. */
+export function applyClaudeSSELineToMessage(line, state) {
+  const evt = consumeClaudeSSEData(line, state)
+  if (!evt) return state.message
+
+  if (evt.type === 'message_start' && evt.message) {
+    const started = evt.message
+    state.message = {
+      ...started,
+      type: started.type || 'message',
+      role: started.role || 'assistant',
+      content: Array.isArray(started.content) ? started.content.map((block) => ({ ...block })) : [],
+    }
+    return state.message
+  }
+
+  const message = ensureAssemblerMessage(state)
+
+  if (evt.type === 'content_block_start' && evt.content_block) {
+    const block = { ...evt.content_block }
+    if (block.type === 'text' && block.text == null) block.text = ''
+    if (block.type === 'thinking' && block.thinking == null) block.thinking = ''
+    const idx = Number.isInteger(evt.index) ? evt.index : message.content.length
+    message.content[idx] = block
+    return message
+  }
+
+  if (evt.type === 'content_block_delta' && evt.delta) {
+    const idx = Number.isInteger(evt.index) ? evt.index : 0
+    const block = message.content[idx]
+    if (!block) return message
+    if (evt.delta.type === 'text_delta') {
+      block.text = (block.text || '') + (evt.delta.text || '')
+    } else if (evt.delta.type === 'thinking_delta') {
+      block.thinking = (block.thinking || '') + (evt.delta.thinking || '')
+    } else if (evt.delta.type === 'signature_delta' && evt.delta.signature) {
+      block.signature = evt.delta.signature
+    } else if (evt.delta.type === 'input_json_delta') {
+      block._inputJson = (block._inputJson || '') + (evt.delta.partial_json || '')
+    }
+    return message
+  }
+
+  if (evt.type === 'content_block_stop') {
+    const idx = Number.isInteger(evt.index) ? evt.index : 0
+    const block = message.content[idx]
+    if (block && typeof block._inputJson === 'string' && block._inputJson) {
+      try { block.input = JSON.parse(block._inputJson) } catch { block.input = block.input || {} }
+      delete block._inputJson
+    }
+    return message
+  }
+
+  if (evt.type === 'message_delta') {
+    if (evt.delta?.stop_reason) message.stop_reason = evt.delta.stop_reason
+    if (evt.delta && Object.prototype.hasOwnProperty.call(evt.delta, 'stop_sequence')) {
+      message.stop_sequence = evt.delta.stop_sequence
+    }
+    if (evt.usage) message.usage = { ...(message.usage || {}), ...evt.usage }
+  }
+  return message
 }
 
 export function claudeSSELineToOpenAIChatChunks(line, state) {

@@ -26,6 +26,8 @@ import {
   claudeSSELineToOpenAICompletionChunks,
   createResponsesStreamState,
   claudeSSELineToResponsesEvents,
+  createClaudeMessageAssembler,
+  applyClaudeSSELineToMessage,
 } from './lib/protocol/convert.mjs'
 import { sanitizeInboundBody, defaultSeedPolicy } from './lib/protocol/seed-policy.mjs'
 import { sessionKeyToOAuth } from '../scripts/session-to-oauth.mjs'
@@ -465,6 +467,40 @@ function reloadRules() {
   return cfg.intercept.rules
 }
 
+async function streamAndAssembleClaudeMessage({
+  candidate,
+  body,
+  reqHeaders,
+  timeoutMs,
+  signal,
+  deliveryMode,
+  toolNames = {},
+}) {
+  const assembler = createClaudeMessageAssembler()
+  const workerResult = await streamGoWorker({
+    exec: candidate.exec,
+    body,
+    reqHeaders,
+    timeoutMs,
+    identity: loadVmIdentity(candidate.exec),
+    signal,
+    deliveryMode,
+    onEvent: async (line) => {
+      applyClaudeSSELineToMessage(restoreToolNamesInSSELine(line, toolNames), assembler)
+    },
+  })
+  if (assembler.message) {
+    workerResult.body = assembler.message
+    if (assembler.message.usage) workerResult.usage = assembler.message.usage
+    if (assembler.message.model) workerResult.model = assembler.message.model
+    if (assembler.message.stop_reason) workerResult.stopReason = assembler.message.stop_reason
+  }
+  if (workerResult?.body) {
+    workerResult.body = restoreToolNames(workerResult.body, toolNames)
+  }
+  return workerResult
+}
+
 async function handleProtocol(req, res, protocol, pathName) {
   if (!requireAuth(req, res)) return
 
@@ -612,8 +648,13 @@ async function handleProtocol(req, res, protocol, pathName) {
   }
   req.once('aborted', onAborted)
 
-  const wantStream = !!inbound.stream
-  const deliveryMode = String(req.headers['x-kin-delivery'] || routingConfig?.failover?.delivery_mode || 'realtime')
+  const clientStream = !!inbound.stream
+  const forceUpstreamStream = protocol === 'openai.chat'
+  const upstreamStream = forceUpstreamStream || clientStream
+  const requestedDelivery = String(req.headers['x-kin-delivery'] || routingConfig?.failover?.delivery_mode || 'realtime')
+  const deliveryMode = (!clientStream && forceUpstreamStream)
+    ? 'verified'
+    : (requestedDelivery === 'verified' ? 'verified' : 'realtime')
   let result
   try {
     result = await failoverRunner.run({
@@ -621,12 +662,12 @@ async function handleProtocol(req, res, protocol, pathName) {
       canonicalBody,
       model: canonicalBody.model,
       stickyKey,
-      stream: wantStream,
-      deliveryMode: deliveryMode === 'verified' ? 'verified' : 'realtime',
+      stream: upstreamStream,
+      deliveryMode,
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        const identified = applyCrsIdentityReplace(officialMessagesBody(body, { stream: wantStream }), identity, inbound)
+        const identified = applyCrsIdentityReplace(officialMessagesBody(body, { stream: upstreamStream }), identity, inbound)
         const cleaned = prepareAnthropicRequest(identified, {
           cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
         })
@@ -649,6 +690,17 @@ async function handleProtocol(req, res, protocol, pathName) {
             workerResult.body = restoreToolNames(workerResult.body, attemptMeta?.toolNames || {})
           }
           return workerResult
+        }
+        if (!clientStream && protocol === 'openai.chat') {
+          return streamAndAssembleClaudeMessage({
+            candidate,
+            body,
+            reqHeaders: req.headers,
+            timeoutMs: cfg.limits.upstream_timeout_ms,
+            signal,
+            deliveryMode: attemptDelivery,
+            toolNames: attemptMeta?.toolNames || {},
+          })
         }
         let state
         if (protocol === 'openai.chat') {
@@ -723,7 +775,7 @@ async function handleProtocol(req, res, protocol, pathName) {
     }
   }
 
-  if (wantStream) {
+  if (clientStream) {
     if (!res.headersSent) {
       stats.errors++
       const mapped = mapUpstreamError(result?.status || 503, result?.body, result?.headers || {})
