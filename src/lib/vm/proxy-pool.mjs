@@ -19,6 +19,7 @@ const DEFAULT_CONFIG = {
   probe_timeout_ms: 8000,
   max_failures: 2, // consecutive failures before disable
   enabled: true,
+  disconnect_on_error: false, // experimental: stop slot + tear SOCKS on runtime errors
 }
 
 function uid(prefix = 'px') {
@@ -71,10 +72,11 @@ export function parseSocks5Line(line) {
 }
 
 export class ProxyPool {
-  constructor({ dataDir, db, onDisableVm } = {}) {
+  constructor({ dataDir, db, onDisableVm, onDisconnectVm } = {}) {
     this.db = resolveStoreDb({ db, dataDir })
     this.repo = new ProxiesRepo(this.db)
-    this.onDisableVm = onDisableVm // (vmId, reason) => void
+    this.onDisableVm = onDisableVm // (vmId, reason, proxyId) => void
+    this.onDisconnectVm = onDisconnectVm // (vmId, reason, proxyId) => void — experimental tear-down
     this.state = { config: { ...DEFAULT_CONFIG }, proxies: [] }
     this._timer = null
     this._probing = false
@@ -278,9 +280,37 @@ export class ProxyPool {
       this.state.config.max_failures = Math.max(1, Number(patch.max_failures) || 2)
     }
     if (patch.enabled != null) this.state.config.enabled = !!patch.enabled
+    if (patch.disconnect_on_error != null) this.state.config.disconnect_on_error = !!patch.disconnect_on_error
     this.save()
     this.restartScheduler()
     return { ok: true, config: this.state.config }
+  }
+
+  disconnectOnErrorEnabled() {
+    return !!this.state.config.disconnect_on_error
+  }
+
+  /**
+   * Runtime SOCKS5 failure from a live request.
+   * When disconnect_on_error is off this is a no-op (existing cooldown/failover stays).
+   * When on: write the failure into the pool, unschedulable the bound VM, and
+   * ask the control plane to tear the slot worker's SOCKS connections.
+   */
+  reportRuntimeFailure(vmId, error = 'runtime_socks_failure') {
+    if (!this.disconnectOnErrorEnabled()) {
+      return { ok: true, skipped: true, reason: 'disconnect_on_error_disabled' }
+    }
+    if (!vmId) return { ok: false, error: 'vm_id_required' }
+    const p = this.state.proxies.find((x) => x.bound_vm_id === vmId)
+    if (!p) return { ok: false, error: 'no_bound_proxy' }
+    this._applyProbeResult(p, {
+      ok: false,
+      latency_ms: p.latency_ms ?? null,
+      error: String(error || 'runtime_socks_failure'),
+    })
+    this._cascadeDisconnectVm(p, `proxy_disconnect:${p.last_error || error}`)
+    this.save()
+    return { ok: true, skipped: false, proxy: this.publicProxy(p) }
   }
 
   _cascadeDisableVm(proxy, reason) {
@@ -289,6 +319,18 @@ export class ProxyPool {
     if (typeof this.onDisableVm === 'function') {
       try {
         this.onDisableVm(vmId, reason, proxy.id)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  _cascadeDisconnectVm(proxy, reason) {
+    if (!proxy.bound_vm_id) return
+    const cb = this.onDisconnectVm || this.onDisableVm
+    if (typeof cb === 'function') {
+      try {
+        cb(proxy.bound_vm_id, reason, proxy.id)
       } catch {
         /* ignore */
       }

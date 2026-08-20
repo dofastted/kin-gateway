@@ -186,6 +186,17 @@ const proxyPool = new ProxyPool({
     setVmSchedulable(cfg.paths.project, vmId, false, `${reason}|proxy=${proxyId}`)
     // unbind is optional — keep binding for audit but mark VM not schedulable
   },
+  onDisconnectVm: (vmId, reason, proxyId) => {
+    setVmSchedulable(cfg.paths.project, vmId, false, `${reason}|proxy=${proxyId}`)
+    if (process.env.KIN_CRS_MOCK === '1') return
+    const vm = getVm(cfg.paths.project, vmId)
+    if (!vm || (vm.status !== 'running' && vm.status !== 'paused')) return
+    try {
+      startVmRuntime(vm, cfg.paths.project, { recreate: true })
+    } catch {
+      /* tear-down is best-effort; slot stays unschedulable */
+    }
+  },
 })
 proxyPool.startScheduler()
 
@@ -211,6 +222,9 @@ function initPoolRuntime() {
     stickyRouter,
     attemptsRepo,
     config: routingConfig.failover || {},
+    onProxyFailure: (vmId, reason) => {
+      proxyPool.reportRuntimeFailure(vmId, reason)
+    },
   })
 }
 initPoolRuntime()
@@ -1183,16 +1197,16 @@ const server = http.createServer(async (req, res) => {
 
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
-        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog }))
+        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog, proxyPool }))
       }
       // GET /api/panel/vms
       if (req.method === 'GET' && p === '/api/panel/vms') {
-        return json(res, 200, panel.buildVmList({ cfg, accountQuota }))
+        return json(res, 200, panel.buildVmList({ cfg, accountQuota, proxyPool }))
       }
       // GET /api/panel/vms/:id
       if (req.method === 'GET' && /^\/api\/panel\/vms\/[^/]+$/.test(p)) {
         const id = p.split('/').pop()
-        const result = panel.buildVmDetail({ cfg, accountQuota, id })
+        const result = panel.buildVmDetail({ cfg, accountQuota, id, proxyPool })
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
@@ -1206,7 +1220,7 @@ const server = http.createServer(async (req, res) => {
         }
         const vm = applyVmConcurrency(id, next, { override: true })
         if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        return json(res, 200, panel.buildVmDetail({ cfg, accountQuota, id }))
+        return json(res, 200, panel.buildVmDetail({ cfg, accountQuota, id, proxyPool }))
       }
       // POST /api/panel/vms/:id/probe
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/probe$/.test(p)) {
@@ -1563,7 +1577,8 @@ const server = http.createServer(async (req, res) => {
               }
             }
           }
-          if (sessionKey && !proxyUrl && body.require_proxy !== false) {
+          const allowProxyBypass = process.env.KIN_CRS_MOCK === '1' && body.require_proxy === false
+          if (sessionKey && !proxyUrl && !allowProxyBypass) {
             return json(res, 400, { ok: false, error: { message: '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证' } })
           }
           let oauth = null

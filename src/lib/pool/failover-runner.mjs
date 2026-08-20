@@ -41,17 +41,29 @@ function poolError(code, message, details = {}) {
   }
 }
 
+function notifyProxyFailure(onProxyFailure, selected, policy) {
+  if (policy?.scope !== 'proxy') return
+  if (typeof onProxyFailure !== 'function') return
+  try {
+    onProxyFailure(selected?.vmId, policy.reason)
+  } catch {
+    /* control-plane disconnect is best-effort */
+  }
+}
+
 export class FailoverRunner {
   constructor({
     scheduler,
     stickyRouter = null,
     attemptsRepo = null,
     config = {},
+    onProxyFailure = null,
   } = {}) {
     this.scheduler = scheduler
     this.stickyRouter = stickyRouter
     this.attemptsRepo = attemptsRepo
     this.config = { ...DEFAULTS, ...(config || {}) }
+    this.onProxyFailure = onProxyFailure
   }
 
   async run({
@@ -138,6 +150,7 @@ export class FailoverRunner {
         policy = classifyUpstreamResult(result, { model, repaired })
         lastResult = result
         lastPolicy = policy
+        notifyProxyFailure(this.onProxyFailure, selected, policy)
         const terminalState = result?.terminalState || (result?.ok ? 'unknown' : 'error')
         this.attemptsRepo?.complete?.(requestId, attemptNo, {
           upstreamStatus: result?.status ?? null,
@@ -222,6 +235,7 @@ export class FailoverRunner {
         policy = classifyUpstreamResult(result, { model, repaired })
         lastResult = result
         lastPolicy = policy
+        notifyProxyFailure(this.onProxyFailure, selected, policy)
         this.attemptsRepo?.complete?.(requestId, attemptNo, {
           upstreamStatus: 0,
           errorScope: policy.scope,

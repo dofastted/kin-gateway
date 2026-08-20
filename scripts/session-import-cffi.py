@@ -165,7 +165,7 @@ def main() -> int:
                     "User-Agent": "axios/1.13.6",
                 },
                 json=token_body,
-                proxies=None,  # token endpoints are not CF-gated; skip SOCKS
+                proxies=proxies,
                 timeout=60,
             )
             if tr.status_code != 200:
