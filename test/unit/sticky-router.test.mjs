@@ -85,3 +85,41 @@ test('proxy remove + unbindVm persist', () => {
   assert.equal(snap.proxies[0].bound_vm_id, null)
   pool2.stopScheduler()
 })
+
+test('disconnect_on_error config persists and runtime failure disables slot', () => {
+  const dir = tmpDir('kin-proxy-')
+  const disabled = []
+  const disconnected = []
+  const pool = new ProxyPool({
+    dataDir: dir,
+    onDisableVm: (vmId, reason, proxyId) => disabled.push({ vmId, reason, proxyId }),
+    onDisconnectVm: (vmId, reason, proxyId) => disconnected.push({ vmId, reason, proxyId }),
+  })
+  pool.importLines('10.2.2.2:1080')
+  const id = pool.snapshot().proxies[0].id
+  pool.bind(id, 'vm-err')
+  assert.equal(pool.snapshot().config.disconnect_on_error, false)
+  const skipped = pool.reportRuntimeFailure('vm-err', 'proxy_transport_failure')
+  assert.equal(skipped.skipped, true)
+  assert.equal(disconnected.length, 0)
+
+  const updated = pool.updateConfig({ disconnect_on_error: true, max_failures: 1 })
+  assert.equal(updated.ok, true)
+  assert.equal(updated.config.disconnect_on_error, true)
+  pool.stopScheduler()
+
+  const pool2 = new ProxyPool({
+    dataDir: dir,
+    onDisableVm: (vmId, reason, proxyId) => disabled.push({ vmId, reason, proxyId }),
+    onDisconnectVm: (vmId, reason, proxyId) => disconnected.push({ vmId, reason, proxyId }),
+  })
+  assert.equal(pool2.snapshot().config.disconnect_on_error, true)
+  const reported = pool2.reportRuntimeFailure('vm-err', 'proxy_transport_failure')
+  assert.equal(reported.ok, true)
+  assert.equal(reported.skipped, false)
+  assert.equal(reported.proxy.status, 'dead')
+  assert.equal(disconnected.length, 1)
+  assert.equal(disconnected[0].vmId, 'vm-err')
+  assert.match(disconnected[0].reason, /proxy_disconnect/)
+  pool2.stopScheduler()
+})
