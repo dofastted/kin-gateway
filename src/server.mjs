@@ -31,7 +31,7 @@ import {
 } from './lib/protocol/convert.mjs'
 import { sanitizeInboundBody, defaultSeedPolicy } from './lib/protocol/seed-policy.mjs'
 import { sessionKeyToOAuth } from '../scripts/session-to-oauth.mjs'
-import { persistOauthToVm, applyOauthToCfg, mirrorWorkerCredentialsToVm } from './lib/oauth/oauth-credentials.mjs'
+import { persistOauthToVm, applyOauthToCfg } from './lib/oauth/oauth-credentials.mjs'
 import crypto from 'node:crypto'
 import { fingerprintRequest } from './lib/protocol/client-fingerprint.mjs'
 import { validateOfficialModel, ingestWorkerModels, listOfficialModels, seedModelCatalog, getCatalogIds } from './lib/protocol/models.mjs'
@@ -52,6 +52,7 @@ import {
 } from './lib/core/errors.mjs'
 import * as panel from './lib/admin/panel-api.mjs'
 import { ProxyPool } from './lib/vm/proxy-pool.mjs'
+import { resolveImportProxy } from './lib/vm/proxy-resolve.mjs'
 import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/protocol/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/protocol/anthropic-messages.mjs'
@@ -190,11 +191,27 @@ if (routingConfig?.logging) {
 }
 try { requestLog.cleanup() } catch {}
 
+const disconnectingVms = new Set()
 const proxyPool = new ProxyPool({
   dataDir,
   onDisableVm: (vmId, reason, proxyId) => {
     setVmSchedulable(cfg.paths.project, vmId, false, `${reason}|proxy=${proxyId}`)
     // unbind is optional — keep binding for audit but mark VM not schedulable
+  },
+  onDisconnectVm: (vmId, reason, proxyId) => {
+    setVmSchedulable(cfg.paths.project, vmId, false, `${reason}|proxy=${proxyId}`)
+    if (process.env.KIN_CRS_MOCK === '1') return
+    if (disconnectingVms.has(vmId)) return
+    disconnectingVms.add(vmId)
+    try {
+      const vm = getVm(cfg.paths.project, vmId)
+      if (!vm || (vm.status !== 'running' && vm.status !== 'paused')) return
+      startVmRuntime(vm, cfg.paths.project, { recreate: true })
+    } catch {
+      /* tear-down is best-effort; slot stays unschedulable */
+    } finally {
+      setTimeout(() => disconnectingVms.delete(vmId), 5000)
+    }
   },
 })
 proxyPool.startScheduler()
@@ -1727,22 +1744,20 @@ const server = http.createServer(async (req, res) => {
             return json(res, 404, { ok: false, error: { message: 'vm not found, 请先创建种子虚拟机' } })
           }
           const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-          // resolve proxy for conversion — prefer in-memory pool (has username/password)
-          let proxyUrl = body.proxy_url || null
-          if (!proxyUrl) {
-            const bound = proxyPool.getProxyForVm?.(vmId)
-            if (bound?.url) proxyUrl = bound.url
+          existing.id = existing.id || vmId
+          const resolved = resolveImportProxy({
+            vm: existing,
+            proxyPool,
+            overrideUrl: body.proxy_url || null,
+          })
+          const allowProxyBypass = process.env.KIN_CRS_MOCK === '1' && body.require_proxy === false
+          if (sessionKey && !resolved.ok && !allowProxyBypass) {
+            const message = resolved.reason === 'proxy_unavailable'
+              ? '虚拟机 SOCKS5 不可用，请先更换或探测代理再转换凭证'
+              : '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证'
+            return json(res, 400, { ok: false, error: { message } })
           }
-          if (!proxyUrl && existing.proxy) {
-            const px = existing.proxy
-            if (px.url) proxyUrl = px.url
-            else if (px.host && px.port) {
-              proxyUrl = `socks5h://${px.host}:${px.port}`
-            }
-          }
-          if (sessionKey && !proxyUrl && body.require_proxy !== false) {
-            return json(res, 400, { ok: false, error: { message: '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证' } })
-          }
+          const proxyUrl = resolved.proxyUrl
           let oauth = null
           if (sessionKey) {
             oauth = await sessionKeyToOAuth(String(sessionKey).trim(), {
@@ -1885,17 +1900,11 @@ const server = http.createServer(async (req, res) => {
           vm,
           homeDir,
         }, { force: true })
-        let mirrored = null
-        if (result?.ok) {
-          try { mirrored = mirrorWorkerCredentialsToVm(vmPath, homeDir) } catch {}
-        }
         return json(res, result.ok ? 200 : (result.status || 502), panel.ok({
           ...result,
           vm_id: id,
           refresh_owner: 'go-slot-worker',
           proxy_required: true,
-          mirrored: !!mirrored,
-          expires_at: mirrored?.claude?.expires_at || result?.credential?.expires_at || null,
         }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
@@ -2224,20 +2233,11 @@ const server = http.createServer(async (req, res) => {
       const exec = workerExecForVm(id)
       if (!exec) return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })
       const result = await ensureWorkerCredential(exec, { force: body.force === true })
-      let mirrored = null
-      if (result?.ok && exec?.homeDir) {
-        try {
-          const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
-          mirrored = mirrorWorkerCredentialsToVm(vmPath, exec.homeDir)
-        } catch {}
-      }
       return json(res, result.ok ? 200 : (result.status || 502), {
         ...result,
         vm_id: id,
         refresh_owner: 'go-slot-worker',
         proxy_required: true,
-        mirrored: !!mirrored,
-        expires_at: mirrored?.claude?.expires_at || result?.credential?.expires_at || null,
       })
     }
 

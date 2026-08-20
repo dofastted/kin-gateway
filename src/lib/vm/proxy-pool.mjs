@@ -137,10 +137,11 @@ export function parseSocks5Line(line) {
 }
 
 export class ProxyPool {
-  constructor({ dataDir, db, onDisableVm } = {}) {
+  constructor({ dataDir, db, onDisableVm, onDisconnectVm } = {}) {
     this.db = resolveStoreDb({ db, dataDir })
     this.repo = new ProxiesRepo(this.db)
-    this.onDisableVm = onDisableVm // (vmId, reason) => void
+    this.onDisableVm = onDisableVm // (vmId, reason, proxyId) => void
+    this.onDisconnectVm = onDisconnectVm // (vmId, reason, proxyId) => void — experimental tear-down
     this.state = { config: { ...DEFAULT_CONFIG }, proxies: [] }
     this._timer = null
     this._probing = false
@@ -400,7 +401,7 @@ export class ProxyPool {
       ok: false,
       latency_ms: p.latency_ms ?? null,
       error: String(error || 'runtime_socks_failure'),
-    })
+    }, { cascade: false })
     this._cascadeDisconnectVm(p, `proxy_disconnect:${p.last_error || error}`)
     this.save()
     return { ok: true, skipped: false, proxy: this.publicProxy(p) }
@@ -508,7 +509,7 @@ export class ProxyPool {
     }
   }
 
-  _applyProbeResult(p, result) {
+  _applyProbeResult(p, result, { cascade = true } = {}) {
     p.last_probe_at = new Date().toISOString()
     p.latency_ms = result.latency_ms
     if (result.ok) {
@@ -523,7 +524,7 @@ export class ProxyPool {
       if (p.consecutive_failures >= maxFail) {
         p.enabled = false
         p.status = 'dead'
-        this._cascadeDisableVm(p, `proxy_probe_failed:${p.last_error}`)
+        if (cascade) this._cascadeDisableVm(p, `proxy_probe_failed:${p.last_error}`)
       }
     }
   }

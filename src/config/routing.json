@@ -2,7 +2,8 @@
   "sticky": {
     "enabled": true,
     "mode": "conversation",
-    "ttl_seconds": 86400
+    "ttl_seconds": 86400,
+    "header_keys": ["x-session-id"]
   },
   "concurrency": {
     "default_max_per_account": 20,
