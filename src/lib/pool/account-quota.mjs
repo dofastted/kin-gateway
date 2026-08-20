@@ -9,6 +9,7 @@
 
 import { resolveStoreDb } from '../db/database.mjs'
 import { AccountsRepo } from '../db/repos/accounts-repo.mjs'
+import { computeWeeklySplit, weeklySplitConfig } from './weekly-split.mjs'
 
 export class AccountQuota {
   constructor({ dataDir, db, config, accounts }) {
@@ -102,6 +103,20 @@ export class AccountQuota {
       acc.unified['7d'].reset = h['anthropic-ratelimit-unified-7d-reset'] || null
       acc.unified['7d'].status = h['anthropic-ratelimit-unified-7d-status'] || statusFromUtil(u7)
     }
+    const uOi = num(h['anthropic-ratelimit-unified-7d_oi-utilization'])
+    if (uOi != null || h['anthropic-ratelimit-unified-7d_oi-status']) {
+      acc.unified['7d_oi'] = {
+        utilization: uOi ?? acc.unified['7d_oi']?.utilization ?? null,
+        reset: h['anthropic-ratelimit-unified-7d_oi-reset'] || acc.unified['7d_oi']?.reset || null,
+        status: h['anthropic-ratelimit-unified-7d_oi-status'] || statusFromUtil(uOi ?? 0),
+      }
+    }
+    if (/seven_day_overage_included|7d_oi/i.test(String(h['anthropic-ratelimit-unified-representative-claim'] || ''))) {
+      acc.unified['7d_oi'] = {
+        ...(acc.unified['7d_oi'] || {}),
+        claim: h['anthropic-ratelimit-unified-representative-claim'],
+      }
+    }
     if (h['anthropic-ratelimit-unified-representative-claim']) {
       acc.unified.representative_claim = h['anthropic-ratelimit-unified-representative-claim']
     }
@@ -161,13 +176,28 @@ export class AccountQuota {
     }
     if (probe.extra_usage) acc.unified.overage_status = probe.extra_usage.status || acc.unified.overage_status
     acc.unified.extra_usage = probe.extra_usage || acc.unified.extra_usage || null
-    if (probe.fable) {
+    const fableTransport = isFableTransportFailure(probe)
+    const oi = probe.seven_day_oi || probe.seven_day_overage_included || probe.fable?.seven_day_oi
+    const oiUtil = oi?.utilization != null ? Number(oi.utilization) : (probe.fable?.utilization != null ? Number(probe.fable.utilization) : null)
+    const oiNorm = oiUtil != null && Number.isFinite(oiUtil) ? (oiUtil > 1.5 ? oiUtil / 100 : oiUtil) : null
+    const oiRejected = ['rejected', 'rate_limited'].includes(String(oi?.status || '').toLowerCase())
+      || (oiNorm != null && oiNorm >= 1)
+      || (!!probe.fable?.limited && !fableTransport && oiNorm == null)
+    if (oiNorm != null || oi?.status || oi?.resets_at || oi?.reset || oiRejected) {
+      acc.unified['7d_oi'] = {
+        utilization: oiNorm ?? (oiRejected ? 1 : acc.unified['7d_oi']?.utilization ?? null),
+        reset: oi?.resets_at || oi?.reset || probe.fable?.reset_at || acc.unified['7d_oi']?.reset || null,
+        status: oiRejected ? 'rejected' : (oi?.status || (oiNorm != null ? statusFromUtil(oiNorm) : acc.unified['7d_oi']?.status || null)),
+      }
+    }
+    if (probe.fable && !fableTransport) {
       acc.unified.fable = {
-        limited: !!probe.fable.limited,
+        limited: oiRejected,
         banned: !!probe.fable.banned,
-        ok: !!probe.fable.ok,
+        ok: !!probe.fable.ok && !oiRejected,
         status: probe.fable.status || 0,
-        reset: probe.fable.reset_at || null,
+        reset: probe.fable.reset_at || acc.unified['7d_oi']?.reset || null,
+        utilization: oiNorm ?? probe.fable.utilization ?? acc.unified['7d_oi']?.utilization ?? null,
         model: probe.fable.model || 'claude-fable-5',
         error: probe.fable.error || null,
         probed_at: probe.probed_at || new Date().toISOString(),
@@ -179,7 +209,10 @@ export class AccountQuota {
       at: probe.probed_at || new Date().toISOString(),
       ok: !!probe.ok,
       source: probe.source || 'vm-oauth-usage',
+      error: probe.error || probe.usage_error || probe.fable?.error || null,
+      transport: fableTransport,
     }
+    acc.unified.last_probe = acc.last_probe
     const saved = this.repo.save(acc)
     this._writeSessionWindow(saved)
     return saved
@@ -318,6 +351,43 @@ export class AccountQuota {
     return { ok: true, warn_5h: u5 >= (this.config.warn_ratio || 0.85), warn_7d: u7 >= (this.config.warn_ratio || 0.85) }
   }
 
+  /** sub2api 7d_oi: Fable-only window. Does not unschedulable the account. */
+  fableWindowLimited(accountId) {
+    const acc = this.repo.get(accountId)
+    const status = String(acc?.unified?.['7d_oi']?.status || '').toLowerCase()
+    return status === 'rejected' || status === 'rate_limited'
+  }
+
+  fableWindowResetAt(accountId) {
+    const reset = this.repo.get(accountId)?.unified?.['7d_oi']?.reset
+    if (!reset) return null
+    const parsed = Date.parse(reset)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  /** Experimental 50/50 weekly split. Off unless quota.weekly_split.enabled. */
+  weeklySplitOf(accountId) {
+    const cfg = weeklySplitConfig(this.config)
+    const acc = this.repo.get(accountId)
+    const u = acc?.unified || {}
+    return computeWeeklySplit({
+      enabled: cfg.enabled,
+      fable_share: cfg.fable_share,
+      utilization_7d: u['7d']?.utilization,
+      utilization_7d_oi: u['7d_oi']?.utilization ?? u.fable?.utilization,
+      status_7d_oi: u['7d_oi']?.status,
+    })
+  }
+
+  weeklySplitResetAt(accountId, kind = 'regular') {
+    const acc = this.repo.get(accountId)
+    const key = kind === 'fable' ? '7d_oi' : '7d'
+    const reset = acc?.unified?.[key]?.reset
+    if (!reset) return null
+    const parsed = Date.parse(reset)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
   acquire(accountId) {
     const n = (this.inflight.get(accountId) || 0) + 1
     this.inflight.set(accountId, n)
@@ -433,4 +503,14 @@ function epochToIso(v) {
   if (!Number.isFinite(n)) return String(v)
   const ms = n < 1e12 ? n * 1000 : n
   return new Date(ms).toISOString()
+}
+
+export function isFableTransportFailure(probe = {}) {
+  const fable = probe.fable || {}
+  if (fable.transport) return true
+  if (probe.transportError || probe.transport) return true
+  const status = Number(fable.status || 0)
+  const err = String(fable.error || probe.error || probe.usage_error || '')
+  if (status === 0 && /SOCKS|transport|worker_error|upstream_transport|refusing SOCKS|socket/i.test(err)) return true
+  return (status === 502 || status === 0) && /SOCKS|greeting|reset by peer|transport|worker_error|upstream_transport|refusing SOCKS/i.test(err)
 }

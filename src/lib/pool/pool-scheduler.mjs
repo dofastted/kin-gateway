@@ -1,13 +1,17 @@
-import { getVm, listVms } from '../vm/vm-registry.mjs'
+import { getVm, isVmScheduleReady, listVms } from '../vm/vm-registry.mjs'
 import { vmCliHomePath, vmJsonPath } from '../vm/execution-context.mjs'
+import { mirrorWorkerCredentialsToVm } from '../oauth/oauth-credentials.mjs'
+import { FABLE_FAMILY_KEY, isFableModel, modelCooldownKeys } from './upstream-error-policy.mjs'
+import { splitBlocksModel } from './weekly-split.mjs'
 
 const DEFAULT_CONFIG = {
   strategy: 'weighted-round-robin',
   max_waiters_per_account: 32,
-  fallback_wait_timeout_ms: 5000,
-  sticky_wait_timeout_ms: 15000,
+  fallback_wait_timeout_ms: 120000,
+  sticky_wait_timeout_ms: 120000,
   worker_health_ttl_ms: 5000,
   heartbeat_stale_ms: 15000,
+  fable_max_per_account: 4,
 }
 
 function accountIdOf(vm) {
@@ -54,10 +58,12 @@ export class PoolScheduler {
     this.workerHealth = workerHealth
     this.config = { ...DEFAULT_CONFIG, ...(config || {}) }
     this.inflight = new Map()
+    this.inflightFamily = new Map()
     this.waiters = new Map()
     this.healthCache = new Map()
     this.smooth = new Map()
     this.lastUsed = new Map()
+    this.cooldownTimers = new Map()
   }
 
   async selectAndReserve({
@@ -102,13 +108,17 @@ export class PoolScheduler {
         return {
           ok: false,
           code: 'no_available_accounts',
-          reason: candidates.length ? 'all_accounts_busy' : 'no_eligible_accounts',
+          reason: 'all_accounts_busy',
           waitMs: Date.now() - startedAt,
         }
       }
+      const wakeAts = candidates
+        .map((candidate) => Number(candidate.availableAt) || 0)
+        .filter((value) => value > Date.now())
+      const wakeAt = wakeAts.length ? Math.min(finalDeadline, ...wakeAts) : finalDeadline
       await this.waitForCapacity({
         signal,
-        deadline: finalDeadline,
+        deadline: wakeAt,
         stickyKey,
       })
     }
@@ -145,6 +155,8 @@ export class PoolScheduler {
         lastUsedAt: this.lastUsed.get(accountId) || state?.last_used_at || 0,
         workerStatus: eligibility.workerStatus,
         busy: !!eligibility.busy,
+        availableAt: eligibility.availableAt || null,
+        waitReason: eligibility.waitReason || null,
         exec: this.executionContext(vm, accountId),
       })
     }
@@ -152,26 +164,61 @@ export class PoolScheduler {
   }
 
   async checkEligibility({ vm, accountId, state, model, now, signal }) {
-    if (vm.schedulable === false || vm.status !== 'running') return { ok: false, reason: 'vm_unschedulable' }
+    if (!isVmScheduleReady(vm)) return { ok: false, reason: 'vm_unschedulable' }
     if (!vm.proxy_cli_enabled || !vm.proxy?.url) return { ok: false, reason: 'proxy_required' }
-    if (state && cooldownActive(state.cooldown_until, now)) return { ok: false, reason: 'account_cooldown' }
+    let busy = false
+    let availableAt = null
+    let waitReason = null
+    const markWait = (reason, until = null) => {
+      busy = true
+      waitReason = waitReason || reason
+      const next = Number(until) || 0
+      if (next > now) availableAt = availableAt ? Math.min(availableAt, next) : next
+    }
+    if (state && cooldownActive(state.cooldown_until, now)) {
+      markWait('account_cooldown', state.cooldown_until)
+    }
     const modelKey = normalizeModel(model)
-    const modelState = state?.model_states?.[modelKey]
-    if (modelState && cooldownActive(modelState.cooldown_until, now)) {
-      return { ok: false, reason: 'model_cooldown' }
+    for (const key of modelCooldownKeys(modelKey)) {
+      const modelState = state?.model_states?.[key]
+      if (modelState && cooldownActive(modelState.cooldown_until, now)) {
+        markWait(key === FABLE_FAMILY_KEY ? 'fable_cooldown' : 'model_cooldown', modelState.cooldown_until)
+      }
+    }
+    if (isFableModel(modelKey) && this.accountQuota?.fableWindowLimited?.(accountId)) {
+      const until = this.accountQuota.fableWindowResetAt?.(accountId)
+      markWait('fable_quota', until)
+    }
+    if (this.accountQuota?.weeklySplitOf) {
+      const split = this.accountQuota.weeklySplitOf(accountId)
+      const reason = splitBlocksModel(split, modelKey)
+      if (reason) {
+        const until = this.accountQuota.weeklySplitResetAt?.(
+          accountId,
+          reason === 'fable_split' ? 'fable' : 'regular',
+        )
+        markWait(reason, until)
+      }
     }
     const inflight = this.inflight.get(accountId) || 0
-    let busy = inflight >= maxConcurrencyOf(vm)
+    if (inflight >= maxConcurrencyOf(vm)) markWait('concurrency_limit')
+    const fableCap = Number(this.config.fable_max_per_account)
+    if (isFableModel(modelKey) && Number.isFinite(fableCap) && fableCap > 0) {
+      const familyInflight = this.familyInflight(accountId, FABLE_FAMILY_KEY)
+      if (familyInflight >= fableCap) markWait('fable_concurrency')
+    }
     if (this.accountQuota) {
       const gate = this.accountQuota.canAccept(accountId)
       if (!gate.ok) {
-        if (gate.reason === 'concurrency_limit') busy = true
+        if (gate.reason === 'concurrency_limit') markWait('concurrency_limit')
         else return { ok: false, reason: gate.reason || 'quota_gate' }
       }
     }
     const workerStatus = await this.getWorkerHealth(this.executionContext(vm, accountId), { signal })
-    if (!workerStatus?.ok) return { ok: false, reason: 'worker_unhealthy', workerStatus }
-    return { ok: true, workerStatus, busy }
+    if (!workerStatus?.ok) {
+      markWait('worker_unhealthy', now + Number(this.config.worker_health_ttl_ms || 5000))
+    }
+    return { ok: true, workerStatus, busy, availableAt, waitReason }
   }
 
   executionContext(vm, accountId) {
@@ -211,15 +258,30 @@ export class PoolScheduler {
     }
     this.healthCache.set(exec.vmId, { at: now, value })
     if (this.runtimeRepo && exec.accountId) {
+      const prev = this.runtimeRepo.get?.(exec.accountId)
+      const prevGen = Number(prev?.credential_generation) || 0
+      const nextGen = Number(value?.credential?.generation) || 0
       this.runtimeRepo.upsert({
         account_id: exec.accountId,
         vm_id: exec.vmId,
         status: value?.ok ? 'ready' : 'worker_unhealthy',
         worker_heartbeat_at: now,
         worker_status: value,
-        credential_generation: value?.credential?.generation || 0,
+        credential_generation: nextGen,
         refresh_status: value?.credential?.needs_refresh ? 'needed' : 'fresh',
       })
+      if (
+        value?.ok &&
+        value?.credential?.has_access &&
+        nextGen > prevGen &&
+        exec.homeDir &&
+        exec.vmId
+      ) {
+        try {
+          const vmPath = String(exec.homeDir).replace(/\/cli-home\/?$/, '.json')
+          mirrorWorkerCredentialsToVm(vmPath, exec.homeDir)
+        } catch {}
+      }
     }
     return value
   }
@@ -293,10 +355,37 @@ export class PoolScheduler {
     return selected
   }
 
+  familyInflight(accountId, family) {
+    return this.inflightFamily.get(accountId)?.get(family) || 0
+  }
+
+  bumpFamily(accountId, family, delta) {
+    if (!family) return
+    let byFamily = this.inflightFamily.get(accountId)
+    if (!byFamily) {
+      byFamily = new Map()
+      this.inflightFamily.set(accountId, byFamily)
+    }
+    const next = Math.max(0, (byFamily.get(family) || 0) + delta)
+    if (next === 0) byFamily.delete(family)
+    else byFamily.set(family, next)
+    if (byFamily.size === 0) this.inflightFamily.delete(accountId)
+  }
+
+  reloadConfig(config = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...(config || {}) }
+  }
+
   reserve(candidate) {
     const current = this.inflight.get(candidate.accountId) || 0
     if (current >= candidate.maxConcurrency) return null
+    const family = isFableModel(candidate.model) ? FABLE_FAMILY_KEY : null
+    const fableCap = Number(this.config.fable_max_per_account)
+    if (family && Number.isFinite(fableCap) && fableCap > 0 && this.familyInflight(candidate.accountId, family) >= fableCap) {
+      return null
+    }
     this.inflight.set(candidate.accountId, current + 1)
+    this.bumpFamily(candidate.accountId, family, 1)
     this.accountQuota?.acquire?.(candidate.accountId)
     let released = false
     return {
@@ -307,6 +396,7 @@ export class PoolScheduler {
         const next = Math.max(0, (this.inflight.get(candidate.accountId) || 1) - 1)
         if (next === 0) this.inflight.delete(candidate.accountId)
         else this.inflight.set(candidate.accountId, next)
+        this.bumpFamily(candidate.accountId, family, -1)
         this.accountQuota?.release?.(candidate.accountId)
         this.notifyCapacity()
       },
@@ -344,6 +434,20 @@ export class PoolScheduler {
       status,
     })
     this.healthCache.delete(candidate.vmId)
+    this.scheduleCooldownWake(candidate.accountId, until)
+  }
+
+  scheduleCooldownWake(accountId, until) {
+    const prev = this.cooldownTimers.get(accountId)
+    if (prev) clearTimeout(prev)
+    const delay = Math.max(1, Number(until) - Date.now())
+    if (!Number.isFinite(delay) || delay > 24 * 60 * 60 * 1000) return
+    const timer = setTimeout(() => {
+      this.cooldownTimers.delete(accountId)
+      this.notifyCapacity()
+    }, delay)
+    timer.unref?.()
+    this.cooldownTimers.set(accountId, timer)
   }
 
   waitForCapacity({ signal, deadline, stickyKey }) {
@@ -388,9 +492,15 @@ export class PoolScheduler {
   }
 
   snapshot() {
+    const family = {}
+    for (const [accountId, byFamily] of this.inflightFamily) {
+      family[accountId] = Object.fromEntries(byFamily)
+    }
     return {
       strategy: this.config.strategy,
+      fable_max_per_account: this.config.fable_max_per_account,
       inflight: Object.fromEntries(this.inflight),
+      inflight_family: family,
       waiters: this.waiters.size,
       health_cache: Object.fromEntries([...this.healthCache].map(([id, entry]) => [id, entry.value])),
     }

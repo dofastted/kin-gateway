@@ -2,45 +2,32 @@
   "sticky": {
     "enabled": true,
     "mode": "conversation",
-    "ttl_seconds": 86400,
-    "header_keys": [
-      "x-session-id",
-      "x-conversation-id",
-      "x-claude-code-session-id",
-      "x-client-request-id",
-      "session-id",
-      "thread-id"
-    ],
-    "body_keys": [
-      "conversation_id",
-      "session_id",
-      "thread_id",
-      "prompt_cache_key"
-    ]
+    "ttl_seconds": 86400
   },
   "concurrency": {
     "default_max_per_account": 20,
-    "default_key_concurrency": 20
+    "default_key_concurrency": 20,
+    "fable_max_per_account": 4
   },
   "quota": {
     "safety_ratio": 0.95,
+    "warn_ratio": 0.85,
     "block_on_5h": true,
     "block_on_7d": true,
-    "block_statuses": [
-      "rate_limited",
-      "warning"
-    ],
-    "warn_ratio": 0.85
+    "weekly_split": {
+      "enabled": false,
+      "fable_share": 0.5
+    }
   },
   "logging": {
-    "mode": "normal",
+    "mode": "debug",
     "retain_days": 7
   },
   "pool": {
     "strategy": "weighted-round-robin",
     "max_waiters_per_account": 32,
-    "fallback_wait_timeout_ms": 5000,
-    "sticky_wait_timeout_ms": 15000,
+    "fallback_wait_timeout_ms": 120000,
+    "sticky_wait_timeout_ms": 120000,
     "worker_health_ttl_ms": 5000,
     "heartbeat_stale_ms": 15000
   },
