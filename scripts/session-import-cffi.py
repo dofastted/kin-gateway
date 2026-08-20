@@ -30,7 +30,29 @@ SCOPE_API = (
     "user:mcp_servers user:file_upload"
 )
 SCOPE_INFERENCE = "user:inference"
-IMPERSONATES = ("chrome131", "chrome124", "chrome120")
+IMPERSONATES = ("chrome136", "chrome133", "chrome131", "chrome124")
+
+
+def is_cf_html(text: str, status: int = 0) -> bool:
+    raw = text or ""
+    head = raw[:500].lower()
+    return (
+        "just a moment" in head
+        or "cf-mitigated" in head
+        or "cdn-cgi/challenge" in head
+        or "cf-browser-verification" in head
+        or (status in (403, 429, 503) and head.lstrip().startswith("<!doctype"))
+    )
+
+
+def public_body(resp) -> str:
+    text = resp.text or ""
+    if is_cf_html(text, resp.status_code):
+        return "cloudflare_challenge"
+    stripped = text.lstrip()
+    if stripped.startswith(("{", "[")):
+        return stripped[:180].replace("\n", " ")
+    return stripped[:80].replace("\n", " ")
 
 
 def b64url(raw: bytes) -> str:
@@ -45,23 +67,20 @@ def redact(s: str, keep: int = 8) -> str:
     return s[:keep] + "…" + s[-6:]
 
 
-def load_session() -> object:
+def load_cffi():
     try:
         from curl_cffi import requests as cffi_requests
     except ImportError as e:
         raise SystemExit("curl_cffi not installed") from e
-    last = None
-    for name in IMPERSONATES:
-        try:
-            return cffi_requests.Session(impersonate=name)
-        except Exception as e:  # noqa: BLE001
-            last = e
-            print(f"[cffi] impersonate {name} failed: {e}", file=sys.stderr)
-    raise SystemExit(f"no chrome impersonate available: {last}")
+    return cffi_requests
+
+
+def new_session(cffi_requests, name: str):
+    return cffi_requests.Session(impersonate=name)
 
 
 def main() -> int:
-    sk = (os.environ.get("SESSION_KEY") or (sys.argv[1] if len(sys.argv) > 1 else "")).strip()
+    sk = (os.environ.get("SESSION_KEY") or (sys.argv[1] if len(sys.argv) > 1 else "")).strip().strip("\"'")
     proxy = (os.environ.get("PROXY_URL") or "").strip()
     if proxy.startswith("socks5://") and not proxy.startswith("socks5h://"):
         proxy = "socks5h://" + proxy[len("socks5://"):]
@@ -71,7 +90,7 @@ def main() -> int:
         return 2
 
     scope = SCOPE_INFERENCE if scope_name == "inference" else SCOPE_API
-    sess = load_session()
+    cffi_requests = load_cffi()
     proxies = {"http": proxy, "https": proxy} if proxy else None
     cookies = {"sessionKey": sk}
     headers = {
@@ -81,21 +100,49 @@ def main() -> int:
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-    print("[1/3] GET /api/organizations", file=sys.stderr)
-    try:
-        r = sess.get(
-            f"{CLAUDE_WEB}/api/organizations",
-            cookies=cookies,
-            headers=headers,
-            proxies=proxies,
-            timeout=60,
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"orgs request failed: {type(e).__name__}: {e}", file=sys.stderr)
-        return 2
-    if r.status_code != 200:
-        snippet = (r.text or "")[:240].replace("\n", " ")
-        print(f"orgs failed: {r.status_code} {snippet}", file=sys.stderr)
+    sess = None
+    r = None
+    last = None
+    for name in IMPERSONATES:
+        try:
+            sess = new_session(cffi_requests, name)
+        except Exception as e:  # noqa: BLE001
+            last = f"impersonate {name} failed: {e}"
+            print(f"[cffi] {last}", file=sys.stderr)
+            continue
+        print(f"[1/3] GET /api/organizations impersonate={name}", file=sys.stderr)
+        try:
+            sess.get(
+                f"{CLAUDE_WEB}/new",
+                cookies=cookies,
+                headers=headers,
+                proxies=proxies,
+                timeout=45,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            r = sess.get(
+                f"{CLAUDE_WEB}/api/organizations",
+                cookies=cookies,
+                headers=headers,
+                proxies=proxies,
+                timeout=60,
+            )
+        except Exception as e:  # noqa: BLE001
+            last = f"orgs request failed: {type(e).__name__}: {e}"
+            print(last, file=sys.stderr)
+            continue
+        if is_cf_html(r.text or "", r.status_code):
+            last = f"orgs failed: {r.status_code} cloudflare_challenge impersonate={name}"
+            print(last, file=sys.stderr)
+            continue
+        if r.status_code != 200:
+            print(f"orgs failed: {r.status_code} {public_body(r)}", file=sys.stderr)
+            return 2
+        break
+    else:
+        print(last or "orgs failed: no chrome impersonate available", file=sys.stderr)
         return 2
     orgs = r.json()
     if not isinstance(orgs, list) or not orgs:
@@ -129,8 +176,7 @@ def main() -> int:
         timeout=60,
     )
     if r.status_code != 200:
-        snippet = (r.text or "")[:240].replace("\n", " ")
-        print(f"authorize failed: {r.status_code} {snippet}", file=sys.stderr)
+        print(f"authorize failed: {r.status_code} {public_body(r)}", file=sys.stderr)
         return 2
     redirect = (r.json() or {}).get("redirect_uri") or ""
     parsed = urlparse(redirect)
@@ -165,7 +211,7 @@ def main() -> int:
                     "User-Agent": "axios/1.13.6",
                 },
                 json=token_body,
-                proxies=proxies,
+                proxies=None,  # token endpoints are not CF-gated; skip SOCKS
                 timeout=60,
             )
             if tr.status_code != 200:

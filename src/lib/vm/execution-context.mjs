@@ -7,7 +7,7 @@
  * Runtime: one Docker container + one long-lived Go slot worker per VM.
  */
 import path from 'node:path'
-import { getVm, listVms, getActiveVmId } from './vm-registry.mjs'
+import { getVm, listVms, getActiveVmId, isVmScheduleReady } from './vm-registry.mjs'
 
 export const GATEWAY_CAPABILITIES = {
   runtime: 'docker-container',
@@ -61,8 +61,7 @@ export function pickSchedulableVmId(projectRoot, preferredId = null) {
   for (const id of order) {
     const vm = getVm(projectRoot, id)
     if (!vm) continue
-    if (vm.status !== 'running') continue
-    if (vm.schedulable === false) continue
+    if (!isVmScheduleReady(vm)) continue
     if (!vm.proxy_cli_enabled || !vm.proxy?.url) continue
     const tok = vm.claude?.access_token || vm.claude?.refresh_token || vm.claude?.session_key
     if (!tok) continue

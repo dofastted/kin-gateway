@@ -123,6 +123,27 @@ function streamMetaFromHeaders(headers = {}) {
   }
 }
 
+function mergeUsage(current, next) {
+  if (!next || typeof next !== 'object') return current
+  const out = { ...(current || {}) }
+  for (const [key, value] of Object.entries(next)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      out[key] = { ...(typeof out[key] === 'object' && out[key] ? out[key] : {}), ...value }
+    } else {
+      out[key] = value
+    }
+  }
+  return out
+}
+
+/** Anthropic SSE: message_start.message.usage + message_delta.usage. */
+export function usageFromSseEvent(event) {
+  if (!event || typeof event !== 'object') return null
+  if (event.usage && typeof event.usage === 'object') return event.usage
+  if (event.message?.usage && typeof event.message.usage === 'object') return event.message.usage
+  return null
+}
+
 function dumpSessionEnvelope(envelope) {
   const dir = process.env.KIN_SESSION_DUMP
   if (!dir) return
@@ -147,9 +168,10 @@ function dumpSessionEnvelope(envelope) {
 }
 
 function workerEnvelope({ body, reqHeaders, exec, identity, stream, deliveryMode }) {
+  const model = body?.model || ''
   const envelope = {
     body,
-    headers: resolveCrsHeaders(reqHeaders, exec?.homeDir, identity),
+    headers: resolveCrsHeaders(reqHeaders, exec?.homeDir, identity, model),
     stream: !!stream,
     delivery_mode: deliveryMode || 'realtime',
   }
@@ -176,7 +198,7 @@ export async function callGoWorker({
   signal,
 } = {}) {
   if (isCrsMock()) {
-    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
+    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity, body?.model || '')
     writeCrsTrace({ body, headers, stream: false })
     const mock = mockCrsPayload({ scenario: mockScenario(exec) })
     return {
@@ -236,7 +258,7 @@ export async function streamGoWorker({
   onCommit,
 } = {}) {
   if (isCrsMock()) {
-    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity)
+    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity, body?.model || '')
     writeCrsTrace({ body, headers, stream: true })
     const scenario = mockScenario(exec)
     const mockStartedAt = Date.now()
@@ -331,6 +353,9 @@ export async function streamGoWorker({
     let lastError = null
     let sawTerminal = false
     let dataBuf = ''
+    let sseUsage = null
+    let sseModel = null
+    let sseStop = null
     const takeSseEvent = () => {
       try {
         const event = JSON.parse(dataBuf)
@@ -344,6 +369,11 @@ export async function streamGoWorker({
       if (!event) return
       if (event.type === 'message_stop') sawTerminal = true
       if (event.type === 'error') lastError = event
+      const evUsage = usageFromSseEvent(event)
+      if (evUsage) sseUsage = mergeUsage(sseUsage, evUsage)
+      if (event.message?.model) sseModel = event.message.model
+      const stop = event.message?.stop_reason || event.delta?.stop_reason
+      if (stop) sseStop = stop
     }
     for await (const chunk of response) {
       buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk)
@@ -387,9 +417,9 @@ export async function streamGoWorker({
       via: 'go-worker-stream',
       body: lastError || { type: 'message', role: 'assistant', content: [] },
       headers: { ...headers, ...trailers },
-      usage: meta.usage,
-      model: meta.model,
-      stopReason: meta.stopReason,
+      usage: meta.usage || sseUsage,
+      model: meta.model || sseModel,
+      stopReason: meta.stopReason || sseStop,
       ttftMs,
       committed,
       terminalState,
@@ -524,6 +554,12 @@ export async function callWorkerGet(exec, requestPath, { timeoutMs = 30000, sign
         body: {
           five_hour: { utilization: 0.12, resets_at: '2026-08-19T20:00:00Z' },
           seven_day: { utilization: 0.34, resets_at: '2026-08-25T00:00:00Z' },
+          limits: [{
+            kind: 'weekly_scoped',
+            percent: 21,
+            resets_at: '2026-08-25T00:00:00Z',
+            scope: { model: { display_name: 'Fable' } },
+          }],
         },
         headers: {},
         via: 'go-worker-mock',

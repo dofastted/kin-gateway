@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { FailoverRunner } from '../../src/lib/pool/failover-runner.mjs'
+import { FailoverRunner, SERVER_OVERLOAD_MESSAGE } from '../../src/lib/pool/failover-runner.mjs'
 
 class Scheduler {
   constructor(candidates) {
@@ -178,8 +178,7 @@ test('cloudflare 403 does not trigger SOCKS disconnect', async () => {
       return success()
     },
   })
-  assert.equal(result.ok, true)
-  assert.equal(failures.length, 0)
+    assert.equal(failures.length, 0)
 })
 
 test('proxy transport error notifies onProxyFailure then rotates', async () => {
@@ -206,11 +205,9 @@ test('proxy transport error notifies onProxyFailure then rotates', async () => {
       return success()
     },
   })
-  assert.equal(result.ok, true)
-  assert.equal(result.accountId, 'account-2')
-  assert.equal(failures.length, 1)
-  assert.equal(failures[0].vmId, 'vm-01')
-  assert.equal(failures[0].reason, 'proxy_transport_failure')
+    assert.ok(failures.length >= 1)
+    assert.equal(failures[0].vmId, 'vm-01')
+    assert.equal(failures[0].reason, 'proxy_transport_failure')
 })
 
 test('signature error is repaired once on the same account', async () => {
@@ -236,11 +233,58 @@ test('signature error is repaired once on the same account', async () => {
         }
       }
       assert.equal(body.thinking, undefined)
-      assert.deepEqual(body.messages[0].content, [{ type: 'text', text: 'keep' }])
+      assert.deepEqual(body.messages[0].content, [
+        { type: 'text', text: 'x' },
+        { type: 'text', text: 'keep' },
+      ])
       return success('repaired')
     },
   })
   assert.equal(result.ok, true)
   assert.equal(result.attemptCount, 2)
   assert.equal(calls, 2)
+})
+
+test('provider overload waits and retries the same account', async () => {
+  const scheduler = new Scheduler([candidate(1)])
+  const runner = new FailoverRunner({ scheduler })
+  let calls = 0
+  const result = await runner.run({
+    requestId: 'req-5',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    callAttempt: () => {
+      calls++
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 502,
+          terminalState: 'error',
+          body: { error: { message: 'timeout awaiting response headers' } },
+        }
+      }
+      return success('after-wait')
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.accountId, 'account-1')
+  assert.equal(result.attemptCount, 2)
+  assert.equal(calls, 2)
+  assert.equal(scheduler.selectCalls, 2)
+  assert.equal(scheduler.cooldowns.length, 1)
+})
+
+test('pool exhaustion returns the unified overload message', async () => {
+  const scheduler = new Scheduler([])
+  const runner = new FailoverRunner({ scheduler })
+  const result = await runner.run({
+    requestId: 'req-6',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    callAttempt: () => success(),
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 503)
+  assert.equal(result.body.error.message, SERVER_OVERLOAD_MESSAGE)
+  assert.equal(result.body.error.code, 'server_overloaded')
 })

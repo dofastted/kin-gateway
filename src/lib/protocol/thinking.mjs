@@ -1,6 +1,12 @@
+import { normalizeThinkingByPolicy, getCapabilities, getModelParams } from './model-policy.mjs'
+
 /**
- * OpenAI reasoning ↔ Claude thinking mapping
- * Only for official Claude models that support thinking.
+ * OpenAI reasoning <-> Claude thinking mapping + model-aware normalize.
+ * Official (Aug 2026):
+ *   Adaptive: Opus 4.6+, Sonnet 4.6+, Opus 4.7/4.8/5, Sonnet 5, Fable 5, Mythos
+ *   Manual enabled+budget only: Haiku 4.5, Sonnet/Opus 4.5 and earlier
+ *   Adaptive-only (enabled rejected): Opus 4.7+, Claude 5 series, Fable 5
+ * Client RikkaHub etc. send adaptive even on Haiku -> 400; convert/strip here.
  */
 
 const EFFORT_TO_BUDGET = {
@@ -12,8 +18,9 @@ const EFFORT_TO_BUDGET = {
   max: 32768,
 }
 
+const DEFAULT_FALLBACK_BUDGET = 4096
+
 export function openaiReasoningToClaudeThinking(body) {
-  // OpenAI: reasoning_effort | reasoning: { effort }
   let effort = body.reasoning_effort
   if (!effort && body.reasoning && typeof body.reasoning === 'object') {
     effort = body.reasoning.effort
@@ -29,12 +36,10 @@ export function openaiReasoningToClaudeThinking(body) {
   if (budget) {
     return { type: 'enabled', budget_tokens: budget }
   }
-  // unknown effort → medium
   return { type: 'enabled', budget_tokens: EFFORT_TO_BUDGET.medium }
 }
 
 export function claudeThinkingToOpenAIReasoning(claude) {
-  // Extract thinking text blocks if present
   const texts = []
   for (const b of claude.content || []) {
     if (b.type === 'thinking' && b.thinking) texts.push(b.thinking)
@@ -42,4 +47,72 @@ export function claudeThinkingToOpenAIReasoning(claude) {
   }
   if (!texts.length) return null
   return texts.join('\n')
+}
+
+/** Models that accept thinking.type = "adaptive" */
+export function modelSupportsAdaptiveThinking(model = '') {
+  const m = String(model || '').toLowerCase().split('[')[0]
+  if (!m) return false
+  if (m.includes('haiku')) return false
+  if (/claude-3[.-]/.test(m)) return false
+  // 4.5 family
+  if (/claude-(sonnet|opus)-4-5/.test(m)) return false
+  if (/claude-(sonnet|opus)-4-202/.test(m)) return false
+  // bare claude-sonnet-4 / claude-opus-4 (pre-4.6)
+  if (/claude-(sonnet|opus)-4$/.test(m)) return false
+  // 4.6+
+  if (/claude-(sonnet|opus)-4-[6-9]/.test(m)) return true
+  if (/claude-(sonnet|opus)-4\.[6-9]/.test(m)) return true
+  // 4.7 / 4.8 opus
+  if (/claude-opus-4-[7-9]/.test(m)) return true
+  // 5-series + fable/mythos
+  if (/claude-(opus|sonnet|fable|mythos)-5/.test(m)) return true
+  if (m.includes('fable') || m.includes('mythos')) return true
+  return false
+}
+
+/** Models that reject thinking.type=enabled (adaptive-only) */
+export function modelRequiresAdaptiveThinking(model = '') {
+  const m = String(model || '').toLowerCase().split('[')[0]
+  if (m.includes('haiku')) return false
+  if (/claude-opus-4-[7-9]/.test(m) || /claude-opus-4\.[7-9]/.test(m)) return true
+  if (/claude-(opus|sonnet|fable|mythos)-5/.test(m)) return true
+  if (m.includes('fable') || m.includes('mythos')) return true
+  return false
+}
+
+/**
+ * Normalize body.thinking for the target model (mutates body).
+ * - adaptive on unsupported (Haiku / 4.5) -> enabled + budget (keep thinking intent)
+ * - enabled on adaptive-only models -> adaptive
+ */
+export function normalizeThinkingForModel(body = {}) {
+  // Prefer model-policy matrix; fall back to hardcoded heuristics if policy unavailable
+  try {
+    return normalizeThinkingByPolicy(body)
+  } catch {
+    /* fall through */
+  }
+  if (!body || typeof body !== 'object') return body
+  const thinking = body.thinking
+  if (!thinking || typeof thinking !== 'object') return body
+  const model = body.model || ''
+  const type = String(thinking.type || '').toLowerCase()
+
+  if (type === 'adaptive' && !modelSupportsAdaptiveThinking(model)) {
+    const budget = Number(thinking.budget_tokens) > 0
+      ? Number(thinking.budget_tokens)
+      : DEFAULT_FALLBACK_BUDGET
+    body.thinking = { type: 'enabled', budget_tokens: budget }
+    return body
+  }
+
+  if (type === 'enabled' && modelRequiresAdaptiveThinking(model)) {
+    const next = { type: 'adaptive' }
+    if (thinking.display) next.display = thinking.display
+    body.thinking = next
+    return body
+  }
+
+  return body
 }

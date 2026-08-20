@@ -22,23 +22,60 @@ export function statusFromUtilization(u) {
   return 'allowed'
 }
 
-export function parseOAuthUsage(data = {}) {
-  const windowOf = (w) => {
-    if (!w || typeof w !== 'object') return null
-    const utilization = normUtilization(w.utilization)
-    return {
-      utilization,
-      utilization_pct: utilization == null ? null : Math.round(utilization * 1000) / 10,
-      resets_at: w.resets_at || w.resetsAt || null,
-      status: w.status || statusFromUtilization(utilization),
-    }
+function windowOf(w) {
+  if (!w || typeof w !== 'object') return null
+  const utilization = normUtilization(w.utilization ?? w.percent)
+  if (utilization == null && !w.resets_at && !w.resetsAt && !w.status) return null
+  return {
+    utilization,
+    utilization_pct: utilization == null ? null : Math.round(utilization * 1000) / 10,
+    resets_at: w.resets_at || w.resetsAt || null,
+    status: w.status || statusFromUtilization(utilization),
   }
+}
+
+function fableScopeName(value) {
+  return /fable/i.test(String(value || ''))
+}
+
+/** Fable weekly window (7d_oi) from /api/oauth/usage — limits[] weekly_scoped, not a boolean. */
+export function parseFableScopedWindow(data = {}) {
+  const direct = windowOf(data.seven_day_overage_included || data.seven_day_oi || data.seven_day_fable)
+  if (direct) return direct
+  for (const item of Array.isArray(data.limits) ? data.limits : []) {
+    if (!item || typeof item !== 'object') continue
+    const kind = String(item.kind || '').toLowerCase()
+    const name = item.scope?.model?.display_name || item.scope?.display_name || item.display_name || item.model || ''
+    const scoped = kind === 'weekly_scoped' || kind === 'seven_day_overage_included' || kind === '7d_oi'
+    if (!scoped || !fableScopeName(name)) continue
+    return windowOf(item)
+  }
+  for (const item of Array.isArray(data.model_scoped) ? data.model_scoped : []) {
+    if (!item || typeof item !== 'object') continue
+    if (!fableScopeName(item.display_name || item.name)) continue
+    return windowOf(item)
+  }
+  return null
+}
+
+export function windowFromRateLimitHeaders(headers = {}, prefix = '7d_oi') {
+  const h = {}
+  for (const [key, value] of Object.entries(headers || {})) h[String(key).toLowerCase()] = value
+  return windowOf({
+    utilization: h[`anthropic-ratelimit-unified-${prefix}-utilization`],
+    resets_at: h[`anthropic-ratelimit-unified-${prefix}-reset`] || null,
+    status: h[`anthropic-ratelimit-unified-${prefix}-status`] || null,
+  })
+}
+
+export function parseOAuthUsage(data = {}) {
   const extra = data.extra_usage || data.extraUsage || null
   return {
     five_hour: windowOf(data.five_hour),
     seven_day: windowOf(data.seven_day),
     seven_day_sonnet: windowOf(data.seven_day_sonnet),
     seven_day_opus: windowOf(data.seven_day_opus || data.seven_day_sonnet),
+    seven_day_oi: parseFableScopedWindow(data),
     extra_usage: extra && typeof extra === 'object'
       ? {
         is_enabled: !!(extra.is_enabled ?? extra.enabled),
@@ -50,20 +87,35 @@ export function parseOAuthUsage(data = {}) {
   }
 }
 
-export function parseFableProbe({ status, body } = {}) {
+export function parseFableProbe({ status, body, transportError, headers } = {}) {
   const err = body?.error || {}
-  const msg = String(err.message || body?.message || '')
-  const typ = String(err.type || '')
-  const limited = status === 429 || /rate.?limit/i.test(typ) || /rate.?limit/i.test(msg)
-  const banned = status === 401 || status === 403 || /oauth|authentication|permission/i.test(typ)
+  const msg = String(err.message || body?.message || err.code || '')
+  const typ = String(err.type || err.code || '')
+  const transport = !!transportError
+    || status === 0
+    || /SOCKS|transport|connection reset|worker_error|upstream_transport|refusing SOCKS/i.test(msg)
+    || /SOCKS|transport/i.test(typ)
+    || (status === 502 && /SOCKS|greeting|reset by peer/i.test(msg))
+  const limited = !transport && (status === 429 || /rate.?limit/i.test(typ) || /rate.?limit/i.test(msg))
+  const banned = !transport && (status === 401 || status === 403 || /oauth|authentication|permission/i.test(typ))
+  const oi = windowFromRateLimitHeaders(headers)
+  const utilization = oi?.utilization ?? (limited ? 1 : null)
   return {
     model: FABLE_PROBE_MODEL,
     status: status || 0,
-    ok: status === 200 && !limited && !banned,
+    ok: status === 200 && !limited && !banned && !transport,
     limited,
     banned,
-    reset_at: body?.error?.resets_at || body?.resets_at || null,
-    error: limited || banned || status >= 400 ? (msg || typ || `http_${status}`) : null,
+    transport,
+    utilization,
+    reset_at: body?.error?.resets_at || body?.resets_at || oi?.resets_at || null,
+    seven_day_oi: oi || (utilization != null ? {
+      utilization,
+      utilization_pct: Math.round(utilization * 1000) / 10,
+      resets_at: body?.error?.resets_at || body?.resets_at || null,
+      status: limited ? 'rejected' : statusFromUtilization(utilization),
+    } : null),
+    error: limited || banned || transport || status >= 400 ? (msg || typ || `http_${status}`) : null,
   }
 }
 
@@ -73,6 +125,12 @@ function mockUsage() {
     seven_day: { utilization: 0.34, resets_at: '2026-08-24T00:00:00Z' },
     seven_day_sonnet: { utilization: 0.08, resets_at: '2026-08-24T00:00:00Z' },
     extra_usage: { is_enabled: false, utilization: 0 },
+    limits: [{
+      kind: 'weekly_scoped',
+      percent: 21,
+      resets_at: '2026-08-24T00:00:00Z',
+      scope: { model: { display_name: 'Fable' } },
+    }],
   }
 }
 
@@ -93,7 +151,16 @@ export async function probeVmUsage({
       via: 'crs-mock',
       ...parsed,
       fable: includeFable
-        ? { model: FABLE_PROBE_MODEL, status: 200, ok: true, limited: false, banned: false, reset_at: null, error: null }
+        ? {
+          model: FABLE_PROBE_MODEL,
+          status: 200,
+          ok: true,
+          limited: false,
+          banned: false,
+          utilization: parsed.seven_day_oi?.utilization ?? 0.21,
+          reset_at: parsed.seven_day_oi?.resets_at || null,
+          error: null,
+        }
         : null,
       probed_at: new Date().toISOString(),
     }
@@ -104,6 +171,7 @@ export async function probeVmUsage({
     seven_day: null,
     seven_day_sonnet: null,
     seven_day_opus: null,
+    seven_day_oi: null,
     extra_usage: null,
   }
 
@@ -123,6 +191,18 @@ export async function probeVmUsage({
     fable = parseFableProbe(fableRes)
   }
 
+  const sevenDayOi = parsed.seven_day_oi || fable?.seven_day_oi || null
+  if (fable && sevenDayOi) {
+    const oiFull = ['rejected', 'rate_limited'].includes(String(sevenDayOi.status || '').toLowerCase())
+      || (sevenDayOi.utilization != null && Number(sevenDayOi.utilization) >= 1)
+    fable = {
+      ...fable,
+      utilization: sevenDayOi.utilization ?? fable.utilization ?? null,
+      reset_at: sevenDayOi.resets_at || fable.reset_at || null,
+      limited: oiFull || (fable.limited && sevenDayOi.utilization == null),
+    }
+  }
+
   const usageDenied = usageRes.status === 401 || usageRes.status === 403
   return {
     ok: !!(usageRes.ok || (includeFable && fable?.ok)) && !usageDenied,
@@ -131,6 +211,7 @@ export async function probeVmUsage({
     usage_status: usageRes.status,
     usage_error: usageRes.ok ? null : (usageRes.body?.error?.message || usageRes.body?.error || `http_${usageRes.status}`),
     ...parsed,
+    seven_day_oi: sevenDayOi,
     fable,
     probed_at: new Date().toISOString(),
   }

@@ -85,15 +85,57 @@ export function makeError({
   return { status, body: { error } }
 }
 
+const GATEWAY_OVERLOAD_CODES = new Set(['server_overloaded', 'account_pool_exhausted'])
+const CLIENT_CANCEL_CODES = new Set([
+  'client_cancelled',
+  'request_cancelled',
+  'client_aborted',
+  'selection_cancelled',
+  'ECONNRESET',
+  'aborted',
+])
+
+export function isClientCancelledCode(code, message = '') {
+  const hay = `${code || ''} ${message || ''}`
+  if (CLIENT_CANCEL_CODES.has(String(code || '').trim())) return true
+  return /econnreset|client_aborted|request_cancelled|selection_cancelled|context canceled/i.test(hay)
+}
+
+export function isClientCancelledResult(result = {}) {
+  const code = result?.body?.error?.code || result?.error_code || ''
+  const message = result?.body?.error?.message || result?.error_message || ''
+  return isClientCancelledCode(code, message)
+}
+
 /** Classify & map Anthropic upstream error body + HTTP status */
 export function mapUpstreamError(status, body, headers = {}) {
   const upType = body?.error?.type || body?.type || null
+  const inboundCode = body?.error?.code || null
   let msg =
     body?.error?.message ||
     body?.message ||
     (typeof body?.error === 'string' ? body.error : null) ||
     body?.raw ||
     null
+
+  if (GATEWAY_OVERLOAD_CODES.has(String(inboundCode || ''))) {
+    return makeError({
+      type: ErrorType.OVERLOADED,
+      code: inboundCode,
+      message: String(msg || '服务器负载过高稍后重试'),
+      status: 503,
+      details: { upstream_type: upType, upstream_status: status },
+    })
+  }
+  if (isClientCancelledCode(inboundCode, msg)) {
+    return makeError({
+      type: ErrorType.TIMEOUT,
+      code: 'client_cancelled',
+      message: String(msg || 'Client closed the connection'),
+      status: 499,
+      details: { upstream_status: status },
+    })
+  }
 
   // Anthropic sometimes returns literal "Error" — enrich for clients like RikkaHub
   if (!msg || String(msg).trim() === '' || /^error$/i.test(String(msg).trim())) {
@@ -165,7 +207,7 @@ export function mapUpstreamError(status, body, headers = {}) {
     })
   }
 
-  if (status === 408 || /timeout|aborted/i.test(String(msg))) {
+  if (status === 408 || (/timeout/i.test(String(msg)) && !/aborted|econnreset|cancel/i.test(String(msg)))) {
     return makeError({
       type: ErrorType.TIMEOUT,
       code: ErrorCode.UPSTREAM_TIMEOUT,

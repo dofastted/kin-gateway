@@ -39,7 +39,6 @@ test('Hermes unofficial: Go relay keeps persona/tools and never launches CLI', a
     assert.match(String(tr?.system || ''), /You are Hermes/)
     assert.match(String(tr?.system || ''), /Claude Code/)
     assert.ok(tr?.tools.includes('read_file'))
-    assert.ok(tr?.tools.includes('web_search'))
     assert.ok(!tr?.argv)
 
   } finally {
@@ -63,7 +62,6 @@ test('Hermes system blob without UA still classifies as hermes', async () => {
     assert.equal(tr?.via, 'go-worker')
     assert.match(String(tr?.system || ''), /You are Hermes/)
     assert.match(String(tr?.system || ''), /Claude Code/)
-    assert.ok((tr?.tools || []).includes('web_search'))
   } finally {
     await gw.stop()
   }

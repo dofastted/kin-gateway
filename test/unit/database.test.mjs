@@ -45,6 +45,8 @@ test('migration 005 adds protocol usage alignment columns', () => {
     'cache_creation_5m_tokens', 'cache_creation_1h_tokens',
     'requested_model', 'upstream_model', 'model_mismatch',
     'first_token_ms', 'stop_reason',
+    'input_cost', 'output_cost', 'cache_read_cost', 'cache_creation_cost',
+    'total_cost', 'pricing_model',
   ]) assert.ok(reqCols.includes(c), `request_logs missing ${c}`)
   for (const c of ['cache_read_tokens', 'cache_creation_tokens']) {
     assert.ok(cols('accounts').includes(c), `accounts missing ${c}`)

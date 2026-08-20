@@ -64,18 +64,30 @@ test('invalid tool names round-trip through response and SSE', () => {
   assert.match(line, /mcp\.server\/read file/)
 })
 
+test('unsigned and empty thinking blocks are stripped before hop', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-opus-5',
+    thinking: { type: 'adaptive' },
+    messages: [{
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'keep-me', signature: 'sig_real_1234567890abcdef' },
+        { type: 'thinking', thinking: 'no-sig' },
+        { type: 'thinking', thinking: '', signature: 'sig_empty_text' },
+        { type: 'thinking', thinking: 'dummy', signature: 'skip_thought_signature_validator' },
+        { type: 'text', text: 'answer' },
+      ],
+    }],
+  })
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'thinking', thinking: 'keep-me', signature: 'sig_real_1234567890abcdef' },
+    { type: 'text', text: 'answer' },
+  ])
+})
+
 test('valid unique tool names are not changed', () => {
   const result = rewriteToolNames({
     tools: [{ name: 'read_file' }, { name: 'write_file' }],
   })
   assert.deepEqual(result.body.tools.map((tool) => tool.name), ['read_file', 'write_file'])
-})
-
-test('server web_search tool is not renamed', () => {
-  const result = rewriteToolNames({
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-  })
-  assert.equal(result.body.tools[0].name, 'web_search')
-  assert.equal(result.body.tools[0].type, 'web_search_20250305')
-  assert.deepEqual(result.reverse, {})
 })

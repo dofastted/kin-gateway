@@ -60,6 +60,9 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if network != "tcp" && network != "tcp4" && network != "tcp6" {
 		return nil, fmt.Errorf("SOCKS5 only supports TCP, got %q", network)
 	}
+	if sameHostPort(address, d.Address) {
+		return nil, fmt.Errorf("refusing SOCKS CONNECT to the proxy address %s; DialContext must receive the upstream host", d.Address)
+	}
 	base := &net.Dialer{Timeout: d.Timeout, KeepAlive: 30 * time.Second}
 	conn, err := base.DialContext(ctx, "tcp", d.Address)
 	if err != nil {
@@ -239,4 +242,13 @@ func replyMessage(code byte) string {
 	default:
 		return fmt.Sprintf("error code %d", code)
 	}
+}
+
+func sameHostPort(left, right string) bool {
+	hostA, portA, errA := net.SplitHostPort(left)
+	hostB, portB, errB := net.SplitHostPort(right)
+	if errA != nil || errB != nil {
+		return left == right
+	}
+	return hostA == hostB && portA == portB
 }

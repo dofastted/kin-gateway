@@ -23,6 +23,26 @@ test('oauth usage parse: 5h / 7d / sonnet / extra', () => {
   assert.equal(p.extra_usage.is_enabled, true)
 })
 
+test('oauth usage parse: Fable weekly_scoped from limits[]', () => {
+  const p = parseOAuthUsage({
+    five_hour: { utilization: 33, resets_at: '2026-08-18T20:00:00Z' },
+    seven_day: { utilization: 88, resets_at: '2026-08-24T00:00:00Z' },
+    limits: [
+      { kind: 'session', percent: 33 },
+      { kind: 'weekly_all', percent: 88 },
+      {
+        kind: 'weekly_scoped',
+        percent: 54,
+        resets_at: '2026-08-24T00:00:00Z',
+        scope: { model: { display_name: 'Fable' } },
+      },
+    ],
+  })
+  assert.equal(p.seven_day_oi.utilization, 0.54)
+  assert.equal(p.seven_day_oi.utilization_pct, 54)
+  assert.equal(p.seven_day_oi.resets_at, '2026-08-24T00:00:00Z')
+})
+
 test('normUtilization treats 85 as 0.85', () => {
   assert.equal(normUtilization(85), 0.85)
   assert.equal(normUtilization(0.85), 0.85)
@@ -37,6 +57,23 @@ test('fable 429 is isolated weekly limit, not account ban', () => {
   assert.equal(r.limited, true)
   assert.equal(r.banned, false)
   assert.equal(r.ok, false)
+  assert.equal(r.utilization, 1)
+})
+
+test('fable probe reads 7d_oi utilization from response headers', () => {
+  const r = parseFableProbe({
+    status: 200,
+    body: { type: 'message', role: 'assistant' },
+    headers: {
+      'anthropic-ratelimit-unified-7d_oi-utilization': '0.21',
+      'anthropic-ratelimit-unified-7d_oi-reset': '2026-08-24T00:00:00Z',
+      'anthropic-ratelimit-unified-7d_oi-status': 'allowed',
+    },
+  })
+  assert.equal(r.ok, true)
+  assert.equal(r.utilization, 0.21)
+  assert.equal(r.seven_day_oi.utilization, 0.21)
+  assert.equal(r.reset_at, '2026-08-24T00:00:00Z')
 })
 
 test('fable 401 is banned / rejected, not weekly limit', () => {
@@ -57,4 +94,6 @@ test('KIN_CRS_MOCK probe returns 5h/7d/fable without network', async () => {
   assert.ok(r.seven_day.utilization > 0)
   assert.equal(r.fable.ok, true)
   assert.equal(r.fable.limited, false)
+  assert.equal(r.seven_day_oi.utilization, 0.21)
+  assert.equal(r.fable.utilization, 0.21)
 })

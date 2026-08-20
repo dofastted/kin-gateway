@@ -11,6 +11,12 @@ const DEFAULTS = {
   delivery_mode: 'realtime',
 }
 
+export const SERVER_OVERLOAD_MESSAGE = '服务器负载过高稍后重试'
+
+function isTransientPoolScope(scope) {
+  return scope === 'provider' || scope === 'worker' || scope === 'proxy' || scope === 'model'
+}
+
 function clone(value) {
   return structuredClone(value)
 }
@@ -39,6 +45,10 @@ function poolError(code, message, details = {}) {
       },
     },
   }
+}
+
+function poolOverloadError(details = {}) {
+  return poolError('server_overloaded', SERVER_OVERLOAD_MESSAGE, details)
 }
 
 function notifyProxyFailure(onProxyFailure, selected, policy) {
@@ -94,24 +104,41 @@ export class FailoverRunner {
         return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo - 1 })
       }
       if (Date.now() >= deadline) {
-        return poolError('pool_deadline_exceeded', 'Account pool retry deadline exceeded', {
+        return poolOverloadError({
+          reason: 'pool_deadline_exceeded',
           attempt_count: attemptNo - 1,
           last_scope: lastPolicy?.scope || null,
         })
       }
-      const selected = await this.scheduler.selectAndReserve({
-        model,
-        stickyKey,
-        excluded,
-        signal,
-        deadline,
-        allowWait: true,
-      })
+      let selected
+      try {
+        selected = await this.scheduler.selectAndReserve({
+          model,
+          stickyKey,
+          excluded,
+          signal,
+          deadline,
+          allowWait: true,
+        })
+      } catch (error) {
+        if (error?.code === 'selection_cancelled') {
+          return poolError('request_cancelled', 'Request was cancelled', { attempt_count: attemptNo - 1 })
+        }
+        if (error?.code === 'pool_wait_queue_full') {
+          return poolOverloadError({
+            reason: 'pool_wait_queue_full',
+            attempt_count: attemptNo - 1,
+          })
+        }
+        throw error
+      }
       if (!selected?.ok) {
-        return lastResult || poolError('account_pool_exhausted', 'No eligible Claude accounts remain', {
+        return poolOverloadError({
           excluded_accounts: [...excluded],
           reason: selected?.reason || 'no_eligible_accounts',
+          wait_ms: selected?.waitMs || 0,
           attempt_count: attemptNo - 1,
+          last_scope: lastPolicy?.scope || null,
         })
       }
       const attemptStarted = Date.now()
@@ -207,14 +234,17 @@ export class FailoverRunner {
             policy,
           }
         }
-        excluded.add(selected.accountId)
-        excluded.add(selected.vmId)
-        accountSwitches++
-        if (accountSwitches > this.config.max_account_switches) {
-          return poolError('max_account_switches_exceeded', 'Maximum account switches exceeded', {
-            attempt_count: attemptNo,
-            last_scope: policy.scope,
-          })
+        if (!isTransientPoolScope(policy.scope)) {
+          excluded.add(selected.accountId)
+          excluded.add(selected.vmId)
+          accountSwitches++
+          if (accountSwitches > this.config.max_account_switches) {
+            return poolOverloadError({
+              reason: 'max_account_switches_exceeded',
+              attempt_count: attemptNo,
+              last_scope: policy.scope,
+            })
+          }
         }
       } catch (error) {
         result = {
@@ -259,15 +289,19 @@ export class FailoverRunner {
           until: policy.cooldownUntil,
           reason: policy.reason,
         })
-        excluded.add(selected.accountId)
-        excluded.add(selected.vmId)
-        accountSwitches++
+        if (!isTransientPoolScope(policy.scope)) {
+          excluded.add(selected.accountId)
+          excluded.add(selected.vmId)
+          accountSwitches++
+        }
       } finally {
         selected.release?.()
       }
     }
-    return lastResult || poolError('attempts_exhausted', 'Maximum account attempts exhausted', {
+    return poolOverloadError({
+      reason: 'attempts_exhausted',
       max_attempts: this.config.max_total_attempts,
+      last_scope: lastPolicy?.scope || null,
     })
   }
 }

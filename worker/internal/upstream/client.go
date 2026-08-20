@@ -35,23 +35,15 @@ type Response struct {
 }
 
 func NewHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (*http.Client, error) {
-	var dialContext func(context.Context, string, string) (net.Conn, error)
-	if strings.TrimSpace(proxyURL) != "" {
-		dialer, err := kinproxy.New(proxyURL, 15*time.Second)
-		if err != nil {
-			return nil, err
-		}
-		dialContext = dialer.DialContext
-	} else if proxyRequired {
-		return nil, errors.New("slot proxy is required")
-	} else {
-		dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
-		dialContext = dialer.DialContext
+	dialContext, dialTLS, err := slotDialers(proxyURL, proxyRequired)
+	if err != nil {
+		return nil, err
 	}
 	transport := &http.Transport{
-		Proxy:                 nil,
+		Proxy:                 noProxy,
 		DialContext:           dialContext,
-		ForceAttemptHTTP2:     true,
+		DialTLSContext:        dialTLS,
+		ForceAttemptHTTP2:     false,
 		MaxIdleConns:          32,
 		MaxIdleConnsPerHost:   16,
 		MaxConnsPerHost:       32,
@@ -74,7 +66,10 @@ func NewHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (
 }
 
 // NewOAuthHTTPClient mirrors Sub2API's Claude OAuth transport: Chrome TLS
-// impersonation and the slot-bound SOCKS5. It never creates a direct fallback.
+// impersonation over the slot-bound SOCKS5 dialer. SetProxyURL is not used —
+// that made req/v3 TCP-dial the proxy and then SOCKS-CONNECT to the proxy
+// itself (pcap 2026-08-19). The impersonate client must Dial through kinproxy
+// with the upstream host as the CONNECT target.
 func NewOAuthHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (*http.Client, error) {
 	if strings.TrimSpace(proxyURL) == "" {
 		if proxyRequired {
@@ -82,7 +77,11 @@ func NewOAuthHTTPClient(proxyURL string, proxyRequired bool, timeout time.Durati
 		}
 		return nil, errors.New("OAuth direct transport is disabled")
 	}
-	if _, err := kinproxy.New(proxyURL, 15*time.Second); err != nil {
+	dialContext, _, err := slotDialers(proxyURL, proxyRequired)
+	if err != nil {
+		if strings.Contains(err.Error(), "slot proxy is required") {
+			return nil, errors.New("slot proxy is required for OAuth refresh")
+		}
 		return nil, err
 	}
 	if timeout <= 0 {
@@ -92,11 +91,50 @@ func NewOAuthHTTPClient(proxyURL string, proxyRequired bool, timeout time.Durati
 		SetTimeout(timeout).
 		ImpersonateChrome().
 		SetCookieJar(nil).
-		SetProxyURL(proxyURL)
+		SetProxy(noProxy).
+		SetDial(dialContext)
 	client.GetClient().CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errors.New("OAuth redirects are disabled")
 	}
 	return client.GetClient(), nil
+}
+
+func noProxy(*http.Request) (*url.URL, error) {
+	return nil, nil
+}
+
+func slotDialers(proxyURL string, proxyRequired bool) (dial, dialTLS func(context.Context, string, string) (net.Conn, error), err error) {
+	if strings.TrimSpace(proxyURL) != "" {
+		socks, socksErr := kinproxy.New(proxyURL, 15*time.Second)
+		if socksErr != nil {
+			return nil, nil, socksErr
+		}
+		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		return socks.DialContext, func(ctx context.Context, network, addr string) (net.Conn, error) {
+			raw, dialErr := socks.DialContext(ctx, network, addr)
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			host, _, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				_ = raw.Close()
+				return nil, splitErr
+			}
+			cfg := tlsCfg.Clone()
+			cfg.ServerName = host
+			conn := tls.Client(raw, cfg)
+			if hsErr := conn.HandshakeContext(ctx); hsErr != nil {
+				_ = raw.Close()
+				return nil, hsErr
+			}
+			return conn, nil
+		}, nil
+	}
+	if proxyRequired {
+		return nil, nil, errors.New("slot proxy is required")
+	}
+	plain := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	return plain.DialContext, nil, nil
 }
 
 func (c *Client) Messages(ctx context.Context, payload json.RawMessage, headers map[string]string) (*Response, error) {

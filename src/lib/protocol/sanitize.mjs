@@ -101,7 +101,7 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
   normalizeAnthropicMessages(out)
 
   if (Array.isArray(out.tools) && out.tools.length === 0) delete out.tools
-  if (typeof out.max_tokens === 'number' && out.max_tokens > 64000) out.max_tokens = 64000
+  // Do not overwrite caller max_tokens (thinking budget). Only fill if missing.
   if (!out.max_tokens) out.max_tokens = 4096
   if (out.tool_choice && !out.tools) delete out.tool_choice
   normalizeStop(out)

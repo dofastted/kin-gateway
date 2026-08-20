@@ -88,6 +88,20 @@ test('vm-registry writes are mirrored (setVmSchedulable)', () => {
   assert.equal(row.vm.schedule_disabled_reason, 'test-reason')
 })
 
+test('setVmSchedulable(true) restores soft-paused status to running', () => {
+  seedVmFile('vm-t3b')
+  initVmDbSync(project, { watch: false })
+  setVmSchedulable(project, 'vm-t3b', false, 'proxy_rebind_worker_restart')
+  const paused = JSON.parse(fs.readFileSync(path.join(project, 'vms', 'vm-t3b.json'), 'utf8'))
+  assert.equal(paused.status, 'paused')
+  assert.equal(paused.schedulable, false)
+  setVmSchedulable(project, 'vm-t3b', true)
+  const ready = JSON.parse(fs.readFileSync(path.join(project, 'vms', 'vm-t3b.json'), 'utf8'))
+  assert.equal(ready.status, 'running')
+  assert.equal(ready.schedulable, true)
+  assert.equal(ready.schedule_disabled_reason, null)
+})
+
 test('reconcile rebuilds missing vm file from DB (restore pull-up)', () => {
   const vm = seedVmFile('vm-t4')
   initVmDbSync(project, { watch: false })

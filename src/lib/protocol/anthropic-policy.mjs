@@ -1,5 +1,8 @@
 import crypto from 'node:crypto'
 import { isAnthropicServerTool } from './web-search.mjs'
+import { normalizeThinkingForModel } from './thinking.mjs'
+import { applyMaxTokensCap } from './model-policy.mjs'
+import { ensureOutputConfigSchema, rectifyUnofficialRequest } from './request-rectifier.mjs'
 
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -72,10 +75,68 @@ function forcedToolChoice(toolChoice) {
   return toolChoice.type === 'tool' || toolChoice.type === 'any'
 }
 
+const DUMMY_THINKING_SIGNATURES = new Set([
+  '',
+  'skip_thought_signature_validator',
+])
+
+export function hasUsableThinkingSignature(signature) {
+  const value = String(signature || '').trim()
+  // Truncated SSE signatures look present but fail Anthropic checksum (sub2api pre-filter).
+  if (!value || value.length < 24) return false
+  return !DUMMY_THINKING_SIGNATURES.has(value)
+}
+
+function thinkingModeEnabled(body) {
+  const type = String(body?.thinking?.type || '').toLowerCase()
+  return type === 'enabled' || type === 'adaptive'
+}
+
+/** Drop history thinking blocks Anthropic would reject (empty / unsigned / dummy). */
+export function stripInvalidThinkingBlocks(body = {}) {
+  if (!Array.isArray(body.messages)) return body
+  const keepSigned = thinkingModeEnabled(body)
+  let changed = false
+  const messages = body.messages.map((message) => {
+    if (!Array.isArray(message?.content)) return message
+    const content = []
+    let filteredThis = false
+    for (const block of message.content) {
+      const type = block?.type
+      if (type === 'thinking' || type === 'redacted_thinking') {
+        if (keepSigned && message.role === 'assistant') {
+          if (type === 'thinking' && !String(block.thinking || '').trim()) {
+            changed = true
+            filteredThis = true
+            continue
+          }
+          if (hasUsableThinkingSignature(block.signature)) {
+            content.push(block)
+            continue
+          }
+        }
+        changed = true
+        filteredThis = true
+        continue
+      }
+      content.push(block)
+    }
+    return filteredThis ? { ...message, content } : message
+  })
+  if (!changed) return body
+  return { ...body, messages }
+}
+
 export function prepareAnthropicRequest(body = {}, {
   cacheControlLimit = 4,
+  unofficial = false,
 } = {}) {
-  const out = clone(body)
+  let out = clone(body)
+  // Model-aware thinking normalize (adaptive ↔ enabled) before other policy
+  normalizeThinkingForModel(out)
+  applyMaxTokensCap(out)
+  if (unofficial) out = rectifyUnofficialRequest(out)
+  else out = ensureOutputConfigSchema(out)
   if (Array.isArray(out.system)) {
     out.system = cleanContent(out.system)
   }
@@ -85,6 +146,8 @@ export function prepareAnthropicRequest(body = {}, {
       content: cleanContent(message?.content),
     }))
   }
+  const stripped = stripInvalidThinkingBlocks(out)
+  if (stripped.messages) out.messages = stripped.messages
   if (forcedToolChoice(out.tool_choice) && out.thinking?.type === 'enabled') {
     delete out.thinking
   }

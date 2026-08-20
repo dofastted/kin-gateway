@@ -124,13 +124,30 @@ test('ingestOAuthUsage stores 5h/7d and isolated fable limit', () => {
     seven_day_sonnet: { utilization: 0.1, resets_at: '2026-08-24T00:00:00Z', status: 'allowed' },
     extra_usage: { is_enabled: false, status: 'rejected' },
     fable: { ok: false, limited: true, banned: false, status: 429, model: 'claude-fable-5', reset_at: '2026-08-25T00:00:00Z' },
+    seven_day_oi: { utilization: 0.54, resets_at: '2026-08-25T00:00:00Z', status: 'allowed' },
     probed_at: '2026-08-18T12:00:00Z',
   })
   const acc = q.repo.get('acc-fable')
   assert.equal(acc.unified['5h'].utilization, 0.2)
   assert.equal(acc.unified['7d'].utilization, 0.4)
-  assert.equal(acc.unified.fable.limited, true)
+  assert.equal(acc.unified.fable.limited, false)
+  assert.equal(acc.unified.fable.utilization, 0.54)
+  assert.equal(acc.unified['7d_oi'].utilization, 0.54)
+  assert.equal(acc.unified['7d_oi'].status, 'allowed')
   assert.equal(acc.unified.seven_day_sonnet.utilization, 0.1)
   const gate = q.canAccept('acc-fable')
   assert.equal(gate.ok, true, 'fable weekly limit must not block the whole account')
+})
+
+test('7d_oi window is Fable-only and does not block the account', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  q.ingestHeaders('acc-oi', {
+    'anthropic-ratelimit-unified-7d_oi-utilization': '1',
+    'anthropic-ratelimit-unified-7d_oi-status': 'rejected',
+    'anthropic-ratelimit-unified-7d_oi-reset': '2026-08-25T00:00:00Z',
+    'anthropic-ratelimit-unified-representative-claim': 'seven_day_overage_included',
+  })
+  assert.equal(q.canAccept('acc-oi').ok, true)
+  assert.equal(q.fableWindowLimited('acc-oi'), true)
+  assert.equal(q.fableWindowResetAt('acc-oi'), Date.parse('2026-08-25T00:00:00Z'))
 })
