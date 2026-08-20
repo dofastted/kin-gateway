@@ -398,7 +398,7 @@ function mergeVmProxy(v, poolSnap) {
       host: hit?.host || base.host || null,
       port: hit?.port || base.port || null,
       scheme: base.scheme || 'socks5',
-      url: base.url || null,
+      has_auth: hit?.has_auth ?? !!(base.url && /\/\/[^/@]+@/.test(base.url)),
       status: hit?.status ?? null,
       enabled: hit?.enabled ?? null,
       latency_ms: hit?.latency_ms ?? null,

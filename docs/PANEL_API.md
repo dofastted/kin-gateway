@@ -67,7 +67,7 @@ attempts 包含每次选中的 VM/账号、错误域、cooldown、响应提交�
 |------|------|
 | `proxy_configured` | 是否已绑定 SOCKS5 |
 | `can_import_credential` | 是否允许 sessionKey 转换（绑定且代理非 fail/dead） |
-| `proxy.status` / `enabled` / `latency_ms` / `last_error` / `last_probe_at` | 来自代理池的健康快照 |
+| `proxy.status` / `enabled` / `latency_ms` / `last_error` / `last_probe_at` / `has_auth` | 来自代理池的健康快照；**不返回**带账密的 `proxy.url` |
 
 `proxy_pool` 摘要：`{ total, free, bound, ok, dead, probing, disconnect_on_error }`。
 

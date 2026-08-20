@@ -81,6 +81,7 @@ test('dashboard and vm detail merge pool health onto bound VM', () => {
   assert.equal(vm.proxy.status, 'ok')
   assert.equal(vm.proxy.latency_ms, 12)
   assert.equal(vm.proxy.host, '10.8.8.8')
+  assert.equal(vm.proxy.url, undefined)
 
   const detail = buildVmDetail({ cfg, accountQuota: quota, id: 'vm-02', proxyPool: pool })
   assert.equal(detail.ok, true)

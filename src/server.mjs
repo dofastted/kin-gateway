@@ -44,6 +44,7 @@ import {
 } from './lib/core/errors.mjs'
 import * as panel from './lib/admin/panel-api.mjs'
 import { ProxyPool } from './lib/vm/proxy-pool.mjs'
+import { resolveImportProxy } from './lib/vm/proxy-resolve.mjs'
 import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/protocol/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/protocol/anthropic-messages.mjs'
@@ -180,6 +181,7 @@ if (routingConfig?.logging) {
 }
 try { requestLog.cleanup() } catch {}
 
+const disconnectingVms = new Set()
 const proxyPool = new ProxyPool({
   dataDir,
   onDisableVm: (vmId, reason, proxyId) => {
@@ -189,12 +191,16 @@ const proxyPool = new ProxyPool({
   onDisconnectVm: (vmId, reason, proxyId) => {
     setVmSchedulable(cfg.paths.project, vmId, false, `${reason}|proxy=${proxyId}`)
     if (process.env.KIN_CRS_MOCK === '1') return
-    const vm = getVm(cfg.paths.project, vmId)
-    if (!vm || (vm.status !== 'running' && vm.status !== 'paused')) return
+    if (disconnectingVms.has(vmId)) return
+    disconnectingVms.add(vmId)
     try {
+      const vm = getVm(cfg.paths.project, vmId)
+      if (!vm || (vm.status !== 'running' && vm.status !== 'paused')) return
       startVmRuntime(vm, cfg.paths.project, { recreate: true })
     } catch {
       /* tear-down is best-effort; slot stays unschedulable */
+    } finally {
+      setTimeout(() => disconnectingVms.delete(vmId), 5000)
     }
   },
 })
@@ -1560,27 +1566,20 @@ const server = http.createServer(async (req, res) => {
             return json(res, 404, { ok: false, error: { message: 'vm not found, 请先创建种子虚拟机' } })
           }
           const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-          // resolve proxy for conversion
-          let proxyUrl = body.proxy_url || null
-          if (!proxyUrl && existing.proxy) {
-            const px = existing.proxy
-            if (px.url) proxyUrl = px.url
-            else if (px.host && px.port) {
-              // try pool credentials
-              const snap = proxyPool.snapshot?.() || {}
-              const list = snap.proxies || []
-              const hit = list.find((x) => x.id === px.id) || list.find((x) => x.host === px.host && String(x.port) === String(px.port))
-              if (hit && hit.username) {
-                proxyUrl = `socks5h://${encodeURIComponent(hit.username)}:${encodeURIComponent(hit.password || '')}@${hit.host}:${hit.port}`
-              } else {
-                proxyUrl = `socks5h://${px.host}:${px.port}`
-              }
-            }
-          }
+          existing.id = existing.id || vmId
+          const resolved = resolveImportProxy({
+            vm: existing,
+            proxyPool,
+            overrideUrl: body.proxy_url || null,
+          })
           const allowProxyBypass = process.env.KIN_CRS_MOCK === '1' && body.require_proxy === false
-          if (sessionKey && !proxyUrl && !allowProxyBypass) {
-            return json(res, 400, { ok: false, error: { message: '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证' } })
+          if (sessionKey && !resolved.ok && !allowProxyBypass) {
+            const message = resolved.reason === 'proxy_unavailable'
+              ? '虚拟机 SOCKS5 不可用，请先更换或探测代理再转换凭证'
+              : '虚拟机未绑定 SOCKS5，请先分配代理再转换凭证'
+            return json(res, 400, { ok: false, error: { message } })
           }
+          const proxyUrl = resolved.proxyUrl
           let oauth = null
           if (sessionKey) {
             oauth = await sessionKeyToOAuth(String(sessionKey).trim(), {

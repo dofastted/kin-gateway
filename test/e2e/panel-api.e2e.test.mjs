@@ -84,6 +84,30 @@ test('sessionKey import without SOCKS5 is rejected', async () => {
   }
 })
 
+test('sessionKey import rejected when bound proxy is dead', async () => {
+  const gw = await startGateway()
+  try {
+    const added = await api(gw, 'POST', '/api/panel/proxies/import', {
+      body: { text: '10.9.9.9:1080' },
+    })
+    assert.equal(added.status, 200, added.text)
+    const pxId = (added.json.data || added.json).items[0].id
+    const bind = await api(gw, 'POST', `/api/panel/proxies/${pxId}/bind`, {
+      body: { vm_id: 'vm-sim-01' },
+    })
+    assert.equal(bind.status, 200, bind.text)
+    const off = await api(gw, 'POST', `/api/panel/proxies/${pxId}/disable`)
+    assert.equal(off.status, 200, off.text)
+    const imp = await api(gw, 'POST', '/api/panel/vms/import', {
+      body: { vm_id: 'vm-sim-01', sessionKey: 'sk-ant-sid01-' + 'e'.repeat(24) },
+    })
+    assert.equal(imp.status, 400, imp.text)
+    assert.match(String(imp.json?.error?.message || ''), /SOCKS5/)
+  } finally {
+    await gw.stop()
+  }
+})
+
 test('proxy disconnect_on_error can be toggled via config', async () => {
   const gw = await startGateway()
   try {
