@@ -1,0 +1,191 @@
+diff --git a/README.md b/README.md
+index cb50122..829dc41 100644
+--- a/README.md
++++ b/README.md
+@@ -9,6 +9,8 @@
+ ## 现在做什么
+ 
+ - 登录后管槽位、凭证、密钥、日志、代理、备份
++- 虚拟机概览可直接批量导入 SOCKS5、分配本槽代理、经 SOCKS5 导入 sessionKey；无代理禁止凭证转换
++- 代理池实验开关「断链停槽」：SOCKS5 链接错误时停止该槽请求并断开连接
+ - 卡片凭证状态：`无凭证` / `可用` / `5h 限制` / `7d 限制` / `Fable 限制` / `不可用`
+ - 「额度探测」走对应槽 Go worker + SOCKS5（5h / 7d / fable），不是宿主机，也不是 Claude CLI
+ - 「刷新凭证」调用 worker 的 OAuth refresh（worker 是唯一 refresh owner）
+diff --git a/index.html b/index.html
+index f2ea812..f79ae6b 100644
+--- a/index.html
++++ b/index.html
+@@ -506,6 +506,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
+ .wb-id .hid{font-family:var(--mono);font-size:11px;color:var(--faint)}
+ .wb-body{padding:16px}
+ .fact-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
++.wf-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+ .fact-cell{padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:rgba(248,250,252,.02);min-width:0}
+ .fact-cell .k{font-size:11px;color:var(--faint);margin-bottom:6px}
+ .fact-cell .v{font-size:14px;font-weight:550;letter-spacing:-.01em}
+@@ -527,7 +528,7 @@ pre.json{font-size:11px;overflow:auto;max-height:200px;background:oklch(0 0 0/25
+ .zone.danger{border-color:rgba(239,68,68,.3)}
+ .empty-box .btn{margin-top:12px}
+ @media(max-width:760px){
+-  .dock,.fact-grid{grid-template-columns:1fr}
++  .dock,.fact-grid,.wf-grid{grid-template-columns:1fr}
+   .set-row{grid-template-columns:1fr}
+   .sidebar-nav{flex-wrap:nowrap;overflow-x:auto}
+   .nav-item{flex:0 0 auto}
+@@ -1654,7 +1655,7 @@ function lifeSteps(vm) {
+   const has = !!vm.has_token
+   const seeded = !!(state.seedSettings?.kin_seed || state.seedSettings?.seed_policy)
+   const run = vmRunning(vm)
+-  const proxy = !!(vm.proxy_id || vm.proxy?.id || vm.proxy?.host || vm.proxy_cli_enabled)
++  const proxy = !!(vm.proxy_configured || vm.proxy_id || vm.proxy?.id || vm.proxy?.host)
+   const worker = vm.runtime?.worker === 'go' || !!(vm.runtime?.worker_socket)
+   const steps = [
+     [true, '建'],
+@@ -1780,10 +1781,11 @@ function renderVm() {
+         </div>
+         <div class="fact-cell">
+           <div class="k">绑定</div>
+-          <div class="v">${esc(vm.email || '未绑定')}</div>
+-          <div class="m">${esc(proxy.host || proxy.id || vm.proxy_id || '无 SOCKS5')} · ${esc(vmRegion(vm))}${vm.has_token && !(proxy.host || vm.proxy_id) ? ' · 无法转发' : ''}</div>
++          <div class="v">${esc(vm.email || '未绑定')} <span class="acc-pill ${vmProxyConfigured(vm, proxy) ? 'ok' : 'none'}">${vmProxyConfigured(vm, proxy) ? '已配置代理' : '未配置代理'}</span></div>
++          <div class="m">${esc(proxy.host || proxy.id || vm.proxy_id || '无 SOCKS5')}${proxy.status ? ' · '+esc(proxy.status) : ''}${proxy.latency_ms != null ? ' · '+proxy.latency_ms+'ms' : ''} · ${esc(vmRegion(vm))}${vm.has_token && !vmProxyConfigured(vm, proxy) ? ' · 无法转发' : ''}</div>
+         </div>
+-      </div>` : ''}
++      </div>
++      ${renderVmOverviewWorkflow(vm, proxy)}` : ''}
+ 
+       ${tab === 'account' ? `
+       <div class="qgrid">
+@@ -1814,10 +1816,11 @@ function renderVm() {
+ 
+       ${tab === 'proxy' ? `
+       <dl class="kv">
+-        <dt>绑定</dt><dd class="mono">${esc(proxy.id || vm.proxy_id || '—')}</dd>
++        <dt>绑定</dt><dd class="mono">${esc(proxy.id || vm.proxy_id || '—')} <span class="acc-pill ${vmProxyConfigured(vm, proxy) ? 'ok' : 'none'}">${vmProxyConfigured(vm, proxy) ? '已配置' : '未配置'}</span></dd>
+         <dt>Host</dt><dd class="mono">${esc(proxy.host || '—')}</dd>
+         <dt>Port</dt><dd class="mono">${esc(proxy.port || '—')}</dd>
+-        <dt>状态</dt><dd>${esc(proxy.status || '—')}${vm.has_token && !(proxy.host || vm.proxy_id) ? ' · 缺 SOCKS5，fail closed' : ''}</dd>
++        <dt>状态</dt><dd>${esc(proxy.status || '—')}${proxy.latency_ms != null ? ' · '+proxy.latency_ms+'ms' : ''}${proxy.last_error ? ' · '+esc(proxy.last_error) : ''}${vm.has_token && !vmProxyConfigured(vm, proxy) ? ' · 缺 SOCKS5，fail closed' : ''}</dd>
++        <dt>池</dt><dd>${proxyPoolLine()} · <a href="#/proxies">代理池</a></dd>
+       </dl>
+       <div class="actions" style="margin-top:14px"><button class="btn btn-outline btn-sm" onclick="allocateProxy('${esc(vm.id)}')">分配 SOCKS5</button></div>` : ''}
+ 
+@@ -2520,14 +2523,17 @@ async function openLogDetail(rid) {
+ }
+ 
+ /* ── proxies ─────────────────────────────────────────────── */
+-async function importProxies() {
+-  const text = document.getElementById('proxyImport')?.value || ''
++async function importProxies(inputId) {
++  const text = document.getElementById(inputId || 'proxyImport')?.value || ''
+   if (!text.trim()) { toast('请粘贴 SOCKS5 列表'); return }
+   try {
+     const r = await api('/api/panel/proxies/import', { method: 'POST', body: JSON.stringify({ text }) })
+     const d = r.data || r
+     toast(`导入 +${d.added} 跳过 ${d.skipped}`)
++    const el = document.getElementById(inputId || 'proxyImport')
++    if (el) el.value = ''
+     await refresh()
++    if (state.selectedVm) openVm(state.selectedVm)
+   } catch (e) { toast(e.message) }
+ }
+ async function probeProxies() {
+@@ -2566,11 +2572,62 @@ async function setProbeInterval(min) {
+     await refresh()
+   } catch (e) { toast(e.message) }
+ }
++async function setDisconnectOnError(on) {
++  try {
++    await api('/api/panel/proxies/config', { method: 'PUT', body: JSON.stringify({ disconnect_on_error: !!on }) })
++    toast(on ? '已开启 SOCKS5 断链停槽' : '已关闭断链停槽')
++    await refresh()
++  } catch (e) { toast(e.message, 'err') }
++}
++function proxyPoolSummary() {
++  return state.detail?.proxy_pool || state.dashboard?.proxy_pool || state.proxies?.totals || {}
++}
++function proxyPoolLine() {
++  const tot = proxyPoolSummary()
++  return `空闲 ${tot.free ?? 0} / 健康 ${tot.ok ?? 0} / 共 ${tot.total ?? 0}`
++}
++function vmProxyConfigured(vm, proxy) {
++  if (vm?.proxy_configured != null) return !!vm.proxy_configured
++  return !!(proxy?.host || proxy?.id || vm?.proxy_id)
++}
++function vmCanImportCred(vm, proxy) {
++  if (vm?.can_import_credential != null) return !!vm.can_import_credential
++  return vmProxyConfigured(vm, proxy)
++}
++function renderVmOverviewWorkflow(vm, proxy) {
++  const configured = vmProxyConfigured(vm, proxy)
++  const canImport = vmCanImportCred(vm, proxy)
++  const status = proxy.status || (configured ? '已绑定' : '无')
++  return `
++      <div class="wf-grid">
++        <div class="fact-cell">
++          <div class="k">SOCKS5 导入</div>
++          <div class="v"><span class="acc-pill ${configured ? 'ok' : 'none'}">${configured ? '已配置' : '未配置'}</span> ${esc(status)}${proxy.latency_ms != null ? ' · '+proxy.latency_ms+'ms' : ''}</div>
++          <div class="m">${esc(proxy.host ? proxy.host+':'+(proxy.port || '') : '未绑定')} · ${proxyPoolLine()} · <a href="#/proxies">代理池</a></div>
++          <textarea id="vmOverviewProxyImport" class="input" style="margin-top:10px;min-height:72px" placeholder="批量：socks5://user:pass@host:port&#10;host:port&#10;host:port:user:pass" aria-label="批量导入 SOCKS5"></textarea>
++          <div class="actions" style="margin-top:10px">
++            <button class="btn btn-primary btn-sm" onclick="importProxies('vmOverviewProxyImport')">导入到池</button>
++            <button class="btn btn-outline btn-sm" onclick="allocateProxy('${esc(vm.id)}')">${configured ? '重新分配' : '分配给本机'}</button>
++          </div>
++        </div>
++        <div class="fact-cell">
++          <div class="k">凭证导入</div>
++          <div class="v"><span class="acc-pill ${vm.has_token ? 'ok' : 'none'}">${vm.has_token ? '有凭证' : '无凭证'}</span></div>
++          <div class="m">${canImport ? '经本槽 SOCKS5 转换后写入 Go worker' : '未绑定可用 SOCKS5，禁止转换'} · <a href="#/import">导入向导</a></div>
++          <textarea id="vmOverviewSessionKey" class="input" style="margin-top:10px;min-height:72px" placeholder="sessionKey（sk-ant-sid…）" aria-label="sessionKey" ${canImport ? '' : 'disabled'}></textarea>
++          <div class="actions" style="margin-top:10px">
++            <button class="btn btn-primary btn-sm" ${canImport ? '' : 'disabled'} onclick="importOAuthWorkflow('${esc(vm.id)}','vmOverviewSessionKey')">导入</button>
++          </div>
++        </div>
++      </div>`
++}
+ async function allocateProxy(vmId) {
+   try {
+     const r = await api('/api/panel/vms/' + vmId + '/allocate-proxy', { method: 'POST' })
+-    toast('已绑定 ' + (r.data?.id || ''))
++    const d = r.data || r
++    toast('已绑定 ' + (d.proxy?.id || d.id || ''))
+     await refresh()
++    if (state.selectedVm === vmId) openVm(vmId)
+   } catch (e) { toast(e.message) }
+ }
+ function vmNameById(id) {
+@@ -2600,6 +2657,9 @@ function renderProxies() {
+         <select class="input" style="width:120px;height:32px" aria-label="探测间隔" onchange="setProbeInterval(this.value)">
+           ${[5,10,30,60].map(m => `<option value="${m}" ${Number(interval)===m?'selected':''}>${m} 分</option>`).join('')}
+         </select>
++        <label class="chip-check" title="实验：SOCKS5 链接错误时停止该槽请求并断开连接">
++          <input type="checkbox" ${cfg.disconnect_on_error ? 'checked' : ''} onchange="setDisconnectOnError(this.checked)"/> 断链停槽
++        </label>
+         <button class="btn btn-outline btn-sm" onclick="probeProxies()">测通</button>
+       </div>
+     </div>
+@@ -2696,9 +2756,9 @@ async function createVmFromPage() {
+   }
+ }
+ 
+-async function importOAuthWorkflow() {
+-  const id = state.importVmId || document.getElementById('importVmSelect')?.value
+-  const sessionKey = document.getElementById('importSessionKey')?.value?.trim() || ''
++async function importOAuthWorkflow(vmId, inputId) {
++  const id = vmId || state.importVmId || state.selectedVm || document.getElementById('importVmSelect')?.value
++  const sessionKey = document.getElementById(inputId || 'importSessionKey')?.value?.trim() || ''
+   if (!id) { toast('请选择虚拟机', 'err'); return }
+   if (!sessionKey) { toast('请填写 sessionKey', 'err'); return }
+   try {
+@@ -2709,9 +2769,10 @@ async function importOAuthWorkflow() {
+     const r = await api('/api/panel/vms/import', { method: 'POST', body: JSON.stringify(body) })
+     const d = r.data || r
+     toast('已导入 ' + (d.oauth_email || id) + ' · 写入 Go worker')
+-    const el = document.getElementById('importSessionKey')
++    const el = document.getElementById(inputId || 'importSessionKey')
+     if (el) el.value = ''
+     await refresh()
++    if (state.selectedVm === id) openVm(id)
+   } catch (e) { toast(e.message, 'err') }
+ }
+ 
