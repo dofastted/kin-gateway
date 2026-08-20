@@ -1255,16 +1255,16 @@ const server = http.createServer(async (req, res) => {
 
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
-        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog, proxyPool }))
+        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog, poolScheduler, proxyPool }))
       }
       // GET /api/panel/vms
       if (req.method === 'GET' && p === '/api/panel/vms') {
-        return json(res, 200, panel.buildVmList({ cfg, accountQuota, proxyPool }))
+        return json(res, 200, panel.buildVmList({ cfg, accountQuota, routingConfig, poolScheduler, proxyPool }))
       }
       // GET /api/panel/vms/:id
       if (req.method === 'GET' && /^\/api\/panel\/vms\/[^/]+$/.test(p)) {
         const id = p.split('/').pop()
-        const result = panel.buildVmDetail({ cfg, accountQuota, id, proxyPool })
+        const result = panel.buildVmDetail({ cfg, accountQuota, id, routingConfig, poolScheduler, requestLog, proxyPool })
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
@@ -1278,7 +1278,7 @@ const server = http.createServer(async (req, res) => {
         }
         const vm = applyVmConcurrency(id, next, { override: true })
         if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        return json(res, 200, panel.buildVmDetail({ cfg, accountQuota, id, proxyPool }))
+        return json(res, 200, panel.buildVmDetail({ cfg, accountQuota, id, routingConfig, poolScheduler, requestLog, proxyPool }))
       }
       // POST /api/panel/vms/:id/probe
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/probe$/.test(p)) {
@@ -1783,7 +1783,7 @@ const server = http.createServer(async (req, res) => {
       }
       // GET /api/panel/usage
       if (req.method === 'GET' && p === '/api/panel/usage') {
-        return json(res, 200, panel.buildUsage({ accountQuota, cfg }))
+        return json(res, 200, panel.buildUsage({ accountQuota, cfg, requestLog }))
       }
       // GET /api/panel/models
       if (req.method === 'GET' && p === '/api/panel/models') {
