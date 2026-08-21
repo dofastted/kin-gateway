@@ -241,6 +241,23 @@ export class FailoverRunner {
         if (typeof onAttempt === 'function') {
           await onAttempt({ attemptNo, selected, result, policy })
         }
+        if (policy.reason === 'content_filter_refusal') {
+          this.scheduler.markSuccess(selected, { workerStatus: result.workerStatus || null })
+          if (stickyKey) {
+            this.stickyRouter?.bind?.(stickyKey, {
+              accountId: selected.accountId,
+              vmId: selected.vmId,
+            })
+          }
+          return {
+            ...result,
+            accountId: selected.accountId,
+            vmId: selected.vmId,
+            attemptCount: attemptNo,
+            finalState: 'content_filter',
+            policy,
+          }
+        }
         if (verifiedSuccess(result)) {
           this.scheduler.markSuccess(selected, { workerStatus: result.workerStatus || null })
           if (stickyKey) {

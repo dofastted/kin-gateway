@@ -193,6 +193,23 @@ test('7d_oi 429 cools fable family not the account', () => {
   assert.equal(policy.cooldownUntil, now + 90_000)
 })
 
+test('200 refusal with empty visible output is content_filter, not success', () => {
+  const policy = classifyUpstreamResult({
+    ok: true,
+    status: 200,
+    terminalState: 'verified',
+    stopReason: 'refusal',
+    body: {
+      stop_reason: 'refusal',
+      content: [{ type: 'thinking', thinking: 'hidden' }],
+      usage: { input_tokens: 7582, output_tokens: 12 },
+    },
+  })
+  assert.equal(policy.scope, 'request')
+  assert.equal(policy.action, 'stop')
+  assert.equal(policy.reason, 'content_filter_refusal')
+})
+
 test('assistant prefill 400 is repairable', () => {
   const policy = classifyUpstreamResult({
     status: 400,
