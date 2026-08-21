@@ -73,6 +73,37 @@ export function copyOfficialAnthropicFields(body) {
   return out
 }
 
+/** OpenAI response_format / Responses text.format → Anthropic output_config. */
+export function openaiResponseFormatToOutputConfig(responseFormat) {
+  if (!responseFormat || typeof responseFormat !== 'object') return null
+  const type = String(responseFormat.type || '').toLowerCase()
+  if (type === 'json_schema') {
+    const wrapper = responseFormat.json_schema && typeof responseFormat.json_schema === 'object'
+      ? responseFormat.json_schema
+      : responseFormat
+    const schema = wrapper.schema || wrapper
+    if (!schema || typeof schema !== 'object') return null
+    const format = { type: 'json_schema', schema }
+    if (wrapper.name) format.name = wrapper.name
+    if (wrapper.description) format.description = wrapper.description
+    return { format }
+  }
+  if (type === 'json_object') {
+    return { format: { type: 'json_schema', schema: { type: 'object' } } }
+  }
+  return null
+}
+
+/** Promote leftover OpenAI structured-output fields before they are dropped. */
+export function applyStructuredOutput(out, source = {}) {
+  if (!out || typeof out !== 'object') return out
+  if (out.output_config && typeof out.output_config === 'object') return out
+  const mapped = openaiResponseFormatToOutputConfig(source.response_format)
+    || openaiResponseFormatToOutputConfig(source.text?.format)
+  if (mapped) out.output_config = mapped
+  return out
+}
+
 export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) {
   if (!body || typeof body !== 'object') return body
   if (strictPassthrough) {
@@ -82,6 +113,7 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
   }
 
   const out = copyOfficialAnthropicFields(body)
+  applyStructuredOutput(out, body)
 
   if (Array.isArray(out.system)) {
     const blocks = out.system

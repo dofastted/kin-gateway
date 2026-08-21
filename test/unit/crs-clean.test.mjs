@@ -255,3 +255,48 @@ test('OpenAI responses usage carries input_tokens_details cache breakdown', () =
   assert.equal(out.usage.input_tokens, 10)
   assert.deepEqual(out.usage.input_tokens_details, { cached_tokens: 2 })
 })
+
+test('OpenAI response_format.json_schema maps to output_config', () => {
+  const { claude } = toClaudeMessages('openai.chat', {
+    model: 'claude-sonnet-5',
+    messages: [{ role: 'user', content: 'color' }],
+    max_tokens: 64,
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'colors',
+        schema: { type: 'object', properties: { top_left: { type: 'string' } } },
+      },
+    },
+  })
+  assert.equal(claude.output_config.format.type, 'json_schema')
+  assert.equal(claude.output_config.format.name, 'colors')
+  assert.equal(claude.output_config.format.schema.properties.top_left.type, 'string')
+})
+
+test('OpenAI chat maps Anthropic refusal instead of silent stop', () => {
+  const out = fromClaudeToOpenAIChat({
+    content: [{ type: 'refusal', refusal: 'no' }],
+    stop_reason: 'refusal',
+    usage: { input_tokens: 8, output_tokens: 0 },
+  }, 'claude-opus-5', 'vm-1', 'convert')
+  assert.equal(out.choices[0].finish_reason, 'content_filter')
+  assert.equal(out.choices[0].message.refusal, 'no')
+  assert.equal(out.choices[0].message.content, 'no')
+})
+
+test('OpenAI response_format survives Anthropic sanitize as output_config', () => {
+  const native = officialMessagesBody({
+    model: 'claude-sonnet-5',
+    messages: [{ role: 'user', content: 'json' }],
+    max_tokens: 32,
+    response_format: { type: 'json_object' },
+  })
+  assert.equal(native.output_config.format.type, 'json_schema')
+  assert.equal(native.response_format, undefined)
+})
+
+test('officialMessagesBody fills missing max_tokens with 128000', () => {
+  const out = officialMessagesBody({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }] })
+  assert.equal(out.max_tokens, 128000)
+})
