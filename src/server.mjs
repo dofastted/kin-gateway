@@ -57,7 +57,7 @@ import { resolveImportProxy } from './lib/vm/proxy-resolve.mjs'
 import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/protocol/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/protocol/anthropic-messages.mjs'
-import { prepareOutboundAttempt } from './lib/protocol/outbound-attempt.mjs'
+import { prepareOutboundEnvelope } from './lib/protocol/outbound-attempt.mjs'
 import { loadVmIdentity } from './lib/identity/vm-identity.mjs'
 import { withVmLock, atomicWriteJson } from './lib/vm/vm-file.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
@@ -699,7 +699,7 @@ async function handleProtocol(req, res, protocol, pathName) {
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        const prepared = prepareOutboundAttempt({
+        const prepared = prepareOutboundEnvelope({
           canonicalBody: body,
           inbound,
           identity,
@@ -707,6 +707,8 @@ async function handleProtocol(req, res, protocol, pathName) {
           stream: upstreamStream,
           cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
           toolNameRewrite: routingConfig?.compatibility?.tool_name_rewrite !== false,
+          reqHeaders: req.headers,
+          homeDir: selected.exec?.homeDir || '',
         })
         logBag.outbound_body = prepared.body
         logBag.outbound_summary = summarizeBody(prepared.body)

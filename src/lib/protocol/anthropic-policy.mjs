@@ -127,6 +127,8 @@ export function stripInvalidThinkingBlocks(body = {}) {
   return { ...body, messages }
 }
 
+export const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27'
+
 /** sub2api OAuth: real CLI attaches this when thinking is enabled/adaptive. */
 export function ensureClearThinkingContextManagement(body = {}) {
   if (!thinkingModeEnabled(body)) return body
@@ -135,6 +137,28 @@ export function ensureClearThinkingContextManagement(body = {}) {
     ...body,
     context_management: { edits: [{ ...CLEAR_THINKING_EDIT }] },
   }
+}
+
+export function anthropicBetaTokensContains(header, token) {
+  if (!header || !token) return false
+  return String(header)
+    .split(',')
+    .map((part) => part.trim())
+    .includes(token)
+}
+
+/**
+ * sub2api sanitizeAnthropicBodyForBetaTokens: keep context_management only when
+ * the final anthropic-beta header carries context-management-2025-06-27.
+ * Call after headers are resolved, before the Go worker envelope (CCH).
+ */
+export function sanitizeAnthropicBodyForBetaTokens(body = {}, anthropicBetaHeader = '') {
+  if (!body || typeof body !== 'object') return body
+  if (!Object.prototype.hasOwnProperty.call(body, 'context_management')) return body
+  if (anthropicBetaTokensContains(anthropicBetaHeader, CONTEXT_MANAGEMENT_BETA)) return body
+  const out = { ...body }
+  delete out.context_management
+  return out
 }
 
 export function prepareAnthropicRequest(body = {}, {
