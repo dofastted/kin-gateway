@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson } from './vm-file.mjs'
+import { hasAccessPresence, hasCredentialPresence, hasRefreshPresence } from '../oauth/oauth-credentials.mjs'
 
 export function listVms(projectRoot) {
   const dir = path.join(projectRoot, 'vms')
@@ -40,12 +41,12 @@ export function summarizeVm(vm) {
     email: vm.claude?.email || null,
     account_uuid: vm.claude?.account_uuid || null,
     org_uuid: vm.claude?.org_uuid || null,
-    has_token: !!vm.claude?.access_token,
+    has_token: hasAccessPresence(vm.claude),
     expires_at: vm.claude?.expires_at || null,
     refreshed_at: vm.claude?.refreshed_at || null,
     oauth_source: vm.claude?.source || null,
-    has_refresh: !!vm.claude?.refresh_token,
-    has_session_key: !!vm.claude?.session_key,
+    has_refresh: hasRefreshPresence(vm.claude),
+    has_session_key: false,
     max_concurrency: vm.policy?.maxConcurrency ?? 20,
     weight: vm.policy?.weight ?? 1,
     timezone: vm.timezone || null,
@@ -85,7 +86,7 @@ export function setActiveVm(projectRoot, id) {
 const HARD_UNAVAILABLE = new Set(['stopped', 'dead', 'error', 'disabled'])
 
 export function vmHasClaudeCredential(vm) {
-  return !!(vm?.claude?.access_token || vm?.claude?.refresh_token)
+  return hasCredentialPresence(vm?.claude)
 }
 
 /**

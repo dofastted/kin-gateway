@@ -1,7 +1,7 @@
 /**
  * Official Claude model catalog.
- * Fed by the Go slot workers (`/internal/v1/models` via the slot SOCKS5).
- * The gateway never calls Anthropic directly and never reads a CLI binary.
+ * GET /v1/models is local seed + model-policy only. Never hop a slot worker
+ * `/internal/v1/models` (that 401-forced OAuth refresh).
  */
 
 import { isModelEnabled, filterPublicModelIds, getModelEntry, getModelPolicy, loadModelPolicy } from './model-policy.mjs'
@@ -27,7 +27,18 @@ export const SEED_MODEL_IDS = [
 
 export function seedModelCatalog() {
   if (cache.ids.length) return cache
-  return setModelCatalog(SEED_MODEL_IDS, { source: 'go-slot-worker-seed' })
+  return setModelCatalog(SEED_MODEL_IDS, { source: 'gateway-catalog' })
+}
+
+/** Local catalog for GET /v1/models and boot. Does not touch workers. */
+export function gatewayModelCatalog() {
+  seedModelCatalog()
+  try { loadModelPolicy() } catch {}
+  return {
+    object: 'list',
+    data: listOfficialModels(),
+    source: 'gateway-catalog',
+  }
 }
 
 export function isCatalogModelId(id) {

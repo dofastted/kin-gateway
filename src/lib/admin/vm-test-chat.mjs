@@ -5,7 +5,7 @@
  * (no third-party UA, no inbound anthropic-beta). Outbound body+headers are
  * assembled by the same prepareOutboundAttempt / resolveCrsHeaders as /v1.
  */
-import { getVm } from '../vm/vm-registry.mjs'
+import { getVm, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
 import { vmJsonPath, vmCliHomePath } from '../vm/execution-context.mjs'
 import { streamGoWorker } from '../transport/go-worker-client.mjs'
 import { loadVmIdentity } from '../identity/vm-identity.mjs'
@@ -188,8 +188,7 @@ export async function runVmTestChat(opts = {}) {
   push('info', `开始测试凭证槽 ${vm.name || vmId}`)
   push('info', `状态 running=${vm.status === 'running'} schedulable=${vm.schedulable !== false}`)
 
-  const token = vm.claude?.access_token || vm.claude?.refresh_token || vm.claude?.session_key
-  if (!token) {
+  if (!vmHasClaudeCredential(vm)) {
     push('error', '无 OAuth / session 凭证')
     return done({
       ok: false,

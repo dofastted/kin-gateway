@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
 import { isCrsMock, writeCrsTrace, mockCrsPayload, emitMockSse } from './crs-mock.mjs'
+import { hasAccessPresence, hasCredentialPresence, hasRefreshPresence } from '../oauth/oauth-credentials.mjs'
 
 const MAX_BODY = 64 * 1024 * 1024
 
@@ -442,21 +443,18 @@ export async function streamGoWorker({
 
 export async function workerHealth(exec, { timeoutMs = 3000, signal } = {}) {
   if (isCrsMock()) {
-    const hasCredential = !!(
-      exec?.vm?.claude?.access_token ||
-      exec?.vm?.claude?.refresh_token ||
-      exec?.vm?.claude?.session_key
-    )
+    const claude = exec?.vm?.claude || {}
+    const hasCredential = hasCredentialPresence(claude)
     return {
       ok: hasCredential,
       status: hasCredential ? 'ready' : 'degraded',
       vm_id: exec?.vmId || null,
       proxy_configured: true,
       credential: {
-        has_access: !!exec?.vm?.claude?.access_token,
-        has_refresh: !!exec?.vm?.claude?.refresh_token,
+        has_access: hasAccessPresence(claude),
+        has_refresh: hasRefreshPresence(claude),
         generation: 1,
-        needs_refresh: !exec?.vm?.claude?.access_token,
+        needs_refresh: !hasAccessPresence(claude),
       },
       source: 'go-worker-mock',
     }
@@ -481,8 +479,8 @@ export async function ensureWorkerCredential(exec, { force = false, timeoutMs = 
       status: 200,
       refreshed: !!force,
       credential: {
-        has_access: !!exec?.vm?.claude?.access_token,
-        has_refresh: !!exec?.vm?.claude?.refresh_token,
+        has_access: hasAccessPresence(exec?.vm?.claude),
+        has_refresh: hasRefreshPresence(exec?.vm?.claude),
         generation: exec?.vm?.claude?._token_version || 1,
       },
     }

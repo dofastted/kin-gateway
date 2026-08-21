@@ -142,35 +142,14 @@ func (c *Client) Messages(ctx context.Context, payload json.RawMessage, headers 
 	if err != nil {
 		return nil, err
 	}
-	response, err := c.do(ctx, http.MethodPost, "/v1/messages", payload, headers, credentialValue.AccessToken)
-	if err != nil {
-		return nil, err
-	}
-	if response.Status != http.StatusUnauthorized {
-		return response, nil
-	}
-	_ = response.Body.Close()
-	credentialValue, err = c.ensureCredential(ctx, true)
-	if err != nil {
-		return nil, err
-	}
+	// 401 is returned to Node for failover. Do not force-refresh: Anthropic
+	// OAuth 401 is often "this endpoint rejected the token", not expiry, and
+	// a forced refresh burns a still-valid grant (invalid_grant).
 	return c.do(ctx, http.MethodPost, "/v1/messages", payload, headers, credentialValue.AccessToken)
 }
 
 func (c *Client) Get(ctx context.Context, path string, headers map[string]string) (*Response, error) {
 	credentialValue, err := c.ensureCredential(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.do(ctx, http.MethodGet, path, nil, headers, credentialValue.AccessToken)
-	if err != nil {
-		return nil, err
-	}
-	if response.Status != http.StatusUnauthorized {
-		return response, nil
-	}
-	_ = response.Body.Close()
-	credentialValue, err = c.ensureCredential(ctx, true)
 	if err != nil {
 		return nil, err
 	}

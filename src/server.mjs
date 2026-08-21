@@ -31,10 +31,10 @@ import {
 } from './lib/protocol/convert.mjs'
 import { sanitizeInboundBody, defaultSeedPolicy } from './lib/protocol/seed-policy.mjs'
 import { sessionKeyToOAuth } from '../scripts/session-to-oauth.mjs'
-import { persistOauthToVm, applyOauthToCfg } from './lib/oauth/oauth-credentials.mjs'
+import { persistOauthToVm, applyOauthToCfg, mirrorWorkerCredentialsToVm } from './lib/oauth/oauth-credentials.mjs'
 import crypto from 'node:crypto'
 import { fingerprintRequest } from './lib/protocol/client-fingerprint.mjs'
-import { validateOfficialModel, ingestWorkerModels, listOfficialModels, seedModelCatalog, getCatalogIds } from './lib/protocol/models.mjs'
+import { validateOfficialModel, ingestWorkerModels, listOfficialModels, seedModelCatalog, getCatalogIds, gatewayModelCatalog } from './lib/protocol/models.mjs'
 import {
   loadModelPolicy, getModelPolicy, saveModelPolicy, resetModelPolicy,
   listPolicyModels, syncWorkerModelsIntoPolicy, filterPublicModelIds,
@@ -73,7 +73,6 @@ import {
   workerHealth,
   ensureWorkerCredential,
   importWorkerCredential,
-  callWorkerGet,
   workerPaths,
 } from './lib/transport/go-worker-client.mjs'
 import { PoolScheduler } from './lib/pool/pool-scheduler.mjs'
@@ -901,45 +900,7 @@ async function oauthStatusWithWorker(id = null) {
 }
 
 async function fetchWorkerModels() {
-  seedModelCatalog()
-try { loadModelPolicy() } catch (e) { console.warn('[model-policy] load failed', e?.message || e) }
-  const active = getActiveVmId(cfg.paths.project)
-  const order = [
-    active,
-    ...listVms(cfg.paths.project).map((vm) => vm.id).filter((id) => id !== active),
-  ].filter(Boolean)
-  let last = null
-  let liveCount = 0
-  for (const id of order) {
-    const exec = workerExecForVm(id)
-    if (!exec) continue
-    const { socketPath } = workerPaths(exec)
-    if (!socketPath) continue
-    try {
-      if (!fs.statSync(socketPath).isSocket()) continue
-    } catch {
-      continue
-    }
-    liveCount += 1
-    const result = await callWorkerGet(exec, '/internal/v1/models')
-    last = result
-    if (result.ok) {
-      try { ingestWorkerModels(result.body) } catch {}
-      return {
-        object: 'list',
-        data: listOfficialModels(),
-        source: 'go-slot-worker',
-        vm_id: id,
-      }
-    }
-  }
-  return {
-    object: 'list',
-    data: listOfficialModels(),
-    source: 'go-slot-worker-seed',
-    live_workers: liveCount,
-    error: last?.body?.error?.message || (liveCount ? undefined : 'No live slot worker socket'),
-  }
+  return gatewayModelCatalog()
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1893,7 +1854,6 @@ const server = http.createServer(async (req, res) => {
             persistOauthToVm(vmPath, {
               ...importedCredential,
               source: oauth.source || 'sessionKey-cookie-auth',
-              session_key: sessionKey ? String(sessionKey).trim() : (existing.claude?.session_key || null),
               mode: 'oauth',
             })
             try { rebindOauthAccount({ ...existing, ...JSON.parse(fs.readFileSync(vmPath, 'utf8')), id: vmId }) } catch {}
@@ -1922,14 +1882,13 @@ const server = http.createServer(async (req, res) => {
           if (body.activate !== false) {
             try { activateVmSlot(vmId) } catch {}
             applyOauthToCfg(cfg, {
-              access_token: existing.claude.access_token,
-              refresh_token: existing.claude.refresh_token,
               expires_at: existing.claude.expires_at,
               email: existing.claude.email,
               account_uuid: existing.claude.account_uuid,
               org_uuid: existing.claude.org_uuid,
               source: existing.claude.source || 'sessionKey-cookie-auth',
-              session_key: existing.claude.session_key || null,
+              has_access: existing.claude.has_access,
+              has_refresh: existing.claude.has_refresh,
             })
           }
           return json(res, 200, panel.ok({
@@ -1962,12 +1921,18 @@ const server = http.createServer(async (req, res) => {
           vmId: id,
           vm,
           homeDir,
-        }, { force: true })
+        }, { force: false })
+        if (!result.ok && /invalid_grant|refresh_token/i.test(String(result.error?.message || result.error || ''))) {
+          setVmSchedulable(cfg.paths.project, id, false, 'oauth_invalid_grant')
+        } else if (result.ok) {
+          try { mirrorWorkerCredentialsToVm(vmPath, homeDir) } catch {}
+        }
         return json(res, result.ok ? 200 : (result.status || 502), panel.ok({
           ...result,
           vm_id: id,
           refresh_owner: 'go-slot-worker',
           proxy_required: true,
+          force: false,
         }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
@@ -2295,7 +2260,7 @@ const server = http.createServer(async (req, res) => {
       const id = body.vm_id || getActiveVmId(cfg.paths.project)
       const exec = workerExecForVm(id)
       if (!exec) return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })
-      const result = await ensureWorkerCredential(exec, { force: body.force === true })
+      const result = await ensureWorkerCredential(exec, { force: false })
       return json(res, result.ok ? 200 : (result.status || 502), {
         ...result,
         vm_id: id,

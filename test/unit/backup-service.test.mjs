@@ -123,9 +123,12 @@ test('restore rebuilds vm files from DB mirror for db-only path', () => {
   const out = svc.restoreBackup(rec.id)
   assert.equal(out.ok, true)
   const back = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-b2.json'), 'utf8'))
+  // tar snapshot still has the on-disk file from backup time; DB is metadata only.
   assert.equal(back.claude.access_token, 'sk-ant-oat01-BAK')
   const row = new VmsRepo(getDb()).get('vm-b2')
-  assert.equal(row.access_token, 'sk-ant-oat01-BAK')
+  assert.equal(row.access_token, null)
+  assert.equal(row.vm.claude.has_access, true)
+  assert.equal(row.vm.claude.access_token, undefined)
 })
 
 test('sha256 tamper detection blocks restore', () => {

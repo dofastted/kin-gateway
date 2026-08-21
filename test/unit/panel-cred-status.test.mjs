@@ -66,6 +66,15 @@ test('weekly split off does not use mode', () => {
   assert.equal(st.text, '可用')
 })
 
+test('expired TTL with refresh is still available', () => {
+  const st = credStatusFromQuota(true, {
+    utilization_5h: 0.1,
+    status_5h: 'allowed',
+  }, Date.now() - 60_000, { has_refresh: true, worker_credential: { has_access: false, has_refresh: true } })
+  assert.equal(st.key, 'ok')
+  assert.equal(st.text, '可用')
+})
+
 test('expired TTL is unavailable even if worker still reports has_access', () => {
   const st = credStatusFromQuota(true, {
     utilization_5h: 0.1,

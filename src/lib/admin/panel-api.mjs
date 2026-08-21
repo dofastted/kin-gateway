@@ -8,7 +8,7 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { listVms, getVm, summarizeVm, getActiveVmId } from '../vm/vm-registry.mjs'
+import { listVms, getVm, summarizeVm, getActiveVmId, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 import { computeWeeklySplit, publicWeeklySplit, weeklySplitConfig } from '../pool/weekly-split.mjs'
@@ -236,7 +236,7 @@ export async function buildProbeOne({ cfg, accountQuota, id }) {
       }),
     )
   }
-  if (!vm.claude?.access_token) {
+  if (!vmHasClaudeCredential(vm)) {
     return fail(
       makeError({
         type: ErrorType.INVALID_REQUEST,
@@ -630,6 +630,7 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     cred_status: credStatusFromQuota(hasToken, q, expiresAt, {
       refreshed_at: v.refreshed_at || null,
       worker_credential: workerCred,
+      has_refresh: !!(v.has_refresh || workerCred?.has_refresh),
       fable_cooldown_until: fablePool.fable_cooldown_until,
       schedulable: v.schedulable !== false,
       schedule_disabled_reason: v.schedule_disabled_reason || null,

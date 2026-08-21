@@ -56,11 +56,13 @@ test('initVmDbSync reconciles existing vm files into DB (credentials included)',
   assert.equal(res.upserted, 1)
   const repo = new VmsRepo(getDb())
   const row = repo.get('vm-t1')
-  assert.equal(row.access_token, 'sk-ant-oat01-AAA')
-  assert.equal(row.refresh_token, 'sk-ant-ort01-BBB')
-  assert.equal(row.session_key, 'sk-ant-sid01-CCC')
+  assert.equal(row.access_token, null)
+  assert.equal(row.refresh_token, null)
+  assert.equal(row.session_key, null)
   assert.equal(row.email, 't@x.io')
-  assert.equal(row.vm.claude.access_token, 'sk-ant-oat01-AAA')
+  assert.equal(row.vm.claude.access_token, undefined)
+  assert.equal(row.vm.claude.has_access, true)
+  assert.equal(row.vm.claude.has_refresh, true)
   assert.equal(repo.getActiveVmId(), 'vm-t1')
 })
 
@@ -75,8 +77,11 @@ test('write-through hook mirrors persistOauthToVm into DB', () => {
   })
   const repo = new VmsRepo(getDb())
   const row = repo.get('vm-t2')
-  assert.equal(row.access_token, 'sk-ant-oat01-NEW')
-  assert.equal(row.refresh_token, 'sk-ant-ort01-NEW')
+  assert.equal(row.access_token, null)
+  assert.equal(row.refresh_token, null)
+  assert.equal(row.vm.claude.has_access, true)
+  assert.equal(row.vm.claude.has_refresh, true)
+  assert.equal(row.vm.claude.access_token, undefined)
 })
 
 test('vm-registry writes are mirrored (setVmSchedulable)', () => {
@@ -111,7 +116,10 @@ test('reconcile rebuilds missing vm file from DB (restore pull-up)', () => {
   assert.equal(res.rebuilt, 1)
   assert.ok(fs.existsSync(vmPath))
   const back = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-  assert.equal(back.claude.access_token, vm.claude.access_token)
+  assert.equal(back.claude.access_token, undefined)
+  assert.equal(back.claude.has_access, true)
+  assert.equal(back.claude.has_refresh, true)
+  assert.equal(back.claude.email, vm.claude.email)
 })
 
 test('removeVmFromDb drops the row', () => {
@@ -128,13 +136,13 @@ test('KIN_DB_SECRET encrypts credentials at rest, decrypts on read', () => {
   // raw row must be ciphertext
   const raw = getDb().prepare('SELECT access_token, vm_json, encrypted FROM vms WHERE id = ?').get('vm-t6')
   assert.equal(raw.encrypted, 1)
-  assert.ok(isEncrypted(raw.access_token), 'access_token column should be encrypted')
+  assert.equal(raw.access_token, null)
   assert.ok(isEncrypted(raw.vm_json), 'vm_json should be encrypted')
-  assert.doesNotMatch(String(raw.access_token), /sk-ant-oat01/)
-  // repo read decrypts
+  assert.doesNotMatch(String(raw.vm_json), /sk-ant-oat01/)
   const row = new VmsRepo(getDb()).get('vm-t6')
-  assert.equal(row.access_token, 'sk-ant-oat01-AAA')
-  assert.equal(row.vm.claude.refresh_token, 'sk-ant-ort01-BBB')
+  assert.equal(row.access_token, null)
+  assert.equal(row.vm.claude.has_access, true)
+  assert.equal(row.vm.claude.refresh_token, undefined)
 })
 
 test('secure round-trip + tamper detection', () => {
@@ -165,5 +173,8 @@ test('file newer than DB wins on reconcile (mtime compare)', async () => {
   fs.writeFileSync(vmPath, JSON.stringify(vm, null, 2))
   const res = reconcileVms(project)
   assert.equal(res.upserted, 1)
-  assert.equal(new VmsRepo(getDb()).get('vm-t8').access_token, 'sk-ant-oat01-EXTERNAL')
+  const row = new VmsRepo(getDb()).get('vm-t8')
+  assert.equal(row.access_token, null)
+  assert.equal(row.vm.claude.has_access, true)
+  assert.equal(row.vm.claude.access_token, undefined)
 })

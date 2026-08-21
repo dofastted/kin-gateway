@@ -105,7 +105,9 @@ test('imports every legacy store and is idempotent', () => {
   assert.equal(new RequestLogsRepo(db).count(), 2)
   assert.ok(new RequestLogsRepo(db).getDebug('rid-l1'))
   const vmRow = new VmsRepo(db).get('vm-l1')
-  assert.equal(vmRow.access_token, 'sk-ant-oat01-LEG')
+  assert.equal(vmRow.access_token, null)
+  assert.equal(vmRow.vm.claude.has_access, true)
+  assert.equal(vmRow.vm.claude.access_token, undefined)
   assert.equal(new VmsRepo(db).getActiveVmId(), 'vm-l1')
 
   // second run skips

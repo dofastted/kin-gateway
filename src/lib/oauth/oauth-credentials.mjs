@@ -1,19 +1,24 @@
 /**
- * OAuth credential normalization + single-writer persistence.
+ * OAuth credential normalization + metadata persistence.
  *
- * The per-slot Go worker is the ONLY refresh owner (grant_type=refresh_token
- * over the slot SOCKS5). The gateway never refreshes tokens itself; it only:
- *   1. imports credentials (admin sessionKey import → worker import API), and
- *   2. mirrors worker-rotated credentials into vm.json via `persistOauthToVm`.
+ * The per-slot Go worker is the ONLY secret owner (credentials.json) and the
+ * ONLY refresh owner (grant_type=refresh_token over slot SOCKS5).
+ * Node / vm.json / SQLite / panel keep metadata only — never live tokens.
  *
- * ONLY `persistOauthToVm` may write access_token/refresh_token into vm.json.
+ * persistOauthToVm writes presence flags + expiry/identity, then strips
+ * access_token / refresh_token / session_key from the VM record.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
 
-/** Kept for status / diagnostics only — refresh scheduling lives in the Go worker. */
 export const REFRESH_SKEW_MS = 5 * 60 * 1000
+
+export const SENSITIVE_CREDENTIAL_KEYS = [
+  'access_token', 'refresh_token', 'session_key',
+  'accessToken', 'refreshToken', 'sessionKey',
+  'id_token', 'idToken',
+]
 
 export function expiresAtToMs(expiresAt) {
   const n = Number(expiresAt) || 0
@@ -49,27 +54,46 @@ export function normalizeOauth(cred = {}) {
     scope: cred.scope || null,
     source: cred.source || null,
     session_key: cred.session_key || cred.sessionKey || null,
-    _token_version: cred._token_version || cred.token_version || null,
+    _token_version: cred._token_version || cred.token_version || cred.kinGeneration || cred.kin_generation || null,
   }
 }
 
+export function hasAccessPresence(claude = {}) {
+  return !!(claude.has_access || claude.access_token || claude.accessToken)
+}
+
+export function hasRefreshPresence(claude = {}) {
+  return !!(claude.has_refresh || claude.refresh_token || claude.refreshToken)
+}
+
+export function hasCredentialPresence(claude = {}) {
+  return hasAccessPresence(claude) || hasRefreshPresence(claude)
+}
+
+export function stripCredentialSecrets(claude = {}) {
+  const out = { ...claude }
+  for (const key of SENSITIVE_CREDENTIAL_KEYS) delete out[key]
+  return out
+}
+
+/** Metadata-only apply. Never copies live tokens onto cfg. */
 export function applyOauthToCfg(cfg, cred) {
   if (!cfg?.vm) return cfg
   const n = normalizeOauth(cred)
-  if (n.access_token) cfg.vm.access_token = n.access_token
-  if (n.refresh_token) cfg.vm.refresh_token = n.refresh_token
   if (n.expires_at) cfg.vm.expires_at = n.expires_at
   if (n.email) cfg.vm.email = n.email
   if (n.account_uuid) cfg.vm.account_uuid = n.account_uuid
   if (n.org_uuid) cfg.vm.org_uuid = n.org_uuid
-  if (n.session_key) cfg.vm.session_key = n.session_key
-  if (n._token_version) cfg.vm._token_version = n._token_version
+  cfg.vm.has_access = !!(n.access_token || cred.has_access || cfg.vm.has_access)
+  cfg.vm.has_refresh = !!(n.refresh_token || cred.has_refresh || cfg.vm.has_refresh)
   cfg.vm.refresh_error = null
+  delete cfg.vm.access_token
+  delete cfg.vm.refresh_token
+  delete cfg.vm.session_key
   return cfg
 }
 
-
-/** Read the slot worker credentials.json (claudeAiOauth) without logging secrets. */
+/** Read the slot worker credentials.json without logging secrets. */
 export function readWorkerCredentialFile(homeDir) {
   if (!homeDir) return null
   const candidates = [
@@ -99,12 +123,11 @@ export function readWorkerCredentialFile(homeDir) {
 }
 
 /**
- * After the Go worker rotates tokens, mirror credentials.json → vm.json
- * so panel expires_at / has_token stay aligned with the refresh owner.
+ * After the Go worker rotates tokens, mirror metadata (not secrets) into vm.json.
  */
 export function mirrorWorkerCredentialsToVm(vmPath, homeDir) {
   const cred = readWorkerCredentialFile(homeDir)
-  if (!cred?.access_token) return null
+  if (!cred?.access_token && !cred?.refresh_token) return null
   return persistOauthToVm(vmPath, cred)
 }
 
@@ -112,21 +135,20 @@ export function persistOauthToVm(vmPath, cred) {
   if (!vmPath || !fs.existsSync(vmPath)) return null
   const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
   const n = normalizeOauth(cred)
-  vm.claude = { ...(vm.claude || {}) }
-  if (n.access_token) vm.claude.access_token = n.access_token
-  if (n.refresh_token) vm.claude.refresh_token = n.refresh_token
+  vm.claude = stripCredentialSecrets({ ...(vm.claude || {}) })
+  if (n.access_token || cred.has_access) vm.claude.has_access = true
+  if (n.refresh_token || cred.has_refresh) vm.claude.has_refresh = true
   if (n.expires_at) vm.claude.expires_at = n.expires_at
   if (n.email) vm.claude.email = n.email
   if (n.account_uuid) vm.claude.account_uuid = n.account_uuid
   if (n.org_uuid) vm.claude.org_uuid = n.org_uuid
   if (n.scope) vm.claude.scope = n.scope
   if (n.source) vm.claude.source = n.source
-  if (n.session_key) vm.claude.session_key = n.session_key
   if (cred?.mode) vm.claude.mode = cred.mode
   else if (!vm.claude.mode) vm.claude.mode = 'oauth'
   vm.claude.refresh_error = null
   vm.claude.refreshed_at = new Date().toISOString()
-  vm.claude._token_version = Date.now()
+  vm.claude._token_version = n._token_version || Date.now()
   vm.updated_at = new Date().toISOString()
   atomicWriteJson(vmPath, vm, { mode: 0o600 })
   return vm

@@ -33,8 +33,8 @@ test('concurrent sessionKey import vs harvest leaves valid vm.json', async () =>
 
     const raw = fs.readFileSync(path.join(gw.project, 'vms', 'vm-sim-01.json'), 'utf8')
     const rec = JSON.parse(raw)
-    assert.ok(rec.claude?.access_token)
-    assert.match(rec.claude.access_token, /FAKE-SIM|HARVEST-RACE/)
+    assert.equal(rec.claude.access_token, undefined)
+    assert.equal(rec.claude.has_access, true)
     assert.ok(rec.claude._token_version)
     assert.notEqual(rec.claude.grant_type, 'refresh_token')
   } finally {

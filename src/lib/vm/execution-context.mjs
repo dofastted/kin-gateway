@@ -63,8 +63,6 @@ export function pickSchedulableVmId(projectRoot, preferredId = null) {
     if (!vm) continue
     if (!isVmScheduleReady(vm)) continue
     if (!vm.proxy_cli_enabled || !vm.proxy?.url) continue
-    const tok = vm.claude?.access_token || vm.claude?.refresh_token || vm.claude?.session_key
-    if (!tok) continue
     return id
   }
   return null
@@ -73,10 +71,9 @@ export function pickSchedulableVmId(projectRoot, preferredId = null) {
 export function snapshotOauth(vm) {
   const c = vm?.claude || {}
   return {
-    access_token: c.access_token || null,
-    refresh_token: c.refresh_token || null,
+    has_access: !!(c.has_access || c.access_token),
+    has_refresh: !!(c.has_refresh || c.refresh_token),
     expires_at: c.expires_at || null,
-    session_key: c.session_key || null,
     email: c.email || null,
     account_uuid: c.account_uuid || null,
     org_uuid: c.org_uuid || null,

@@ -151,7 +151,9 @@ test('persistOauthToVm is the writer for fake oauth fields', () => {
     mode: 'oauth',
   })
   const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-  assert.equal(vm.claude.access_token, 'sk-ant-oat01-TESTONLY')
+  assert.equal(vm.claude.access_token, undefined)
+  assert.equal(vm.claude.has_access, true)
+  assert.equal(vm.claude.has_refresh, true)
   assert.equal(vm.claude.email, 'test@example.com')
   assert.equal(vm.claude.source, 'test-fixture')
   assert.ok(vm.claude.refreshed_at)

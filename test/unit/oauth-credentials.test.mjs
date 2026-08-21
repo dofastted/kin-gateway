@@ -49,15 +49,18 @@ test('persist + apply keep other vm fields', () => {
   assert.equal(vm.policy.maxConcurrency, 2)
   assert.equal(vm.claude.email, 'a@b.c')
   assert.equal(vm.claude.extra, 1)
-  assert.equal(vm.claude.access_token, 'new')
-  assert.equal(vm.claude.refresh_token, 'newrt')
+  assert.equal(vm.claude.has_access, true)
+  assert.equal(vm.claude.has_refresh, true)
+  assert.equal(vm.claude.access_token, undefined)
+  assert.equal(vm.claude.refresh_token, undefined)
+  assert.equal(vm.claude.session_key, undefined)
   assert.equal(vm.claude.expires_at, 99)
-  assert.equal(vm.claude.session_key, 'sk-keep')
   assert.ok(vm.claude._token_version > 0)
 
-  const cfg = { vm: { access_token: 'old', refresh_token: 'oldrt', expires_at: 1 } }
+  const cfg = { vm: { expires_at: 1 } }
   applyOauthToCfg(cfg, vm.claude)
-  assert.equal(cfg.vm.access_token, 'new')
+  assert.equal(cfg.vm.access_token, undefined)
+  assert.equal(cfg.vm.has_access, true)
   assert.equal(cfg.vm.expires_at, 99)
 })
 

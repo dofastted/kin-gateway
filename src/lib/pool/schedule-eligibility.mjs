@@ -3,7 +3,7 @@
  * Green on the console must mean the scheduler will actually select the slot.
  */
 import { isVmScheduleReady, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
-import { expiresAtToMs, isFullyExpired } from '../oauth/oauth-credentials.mjs'
+import { expiresAtToMs, hasRefreshPresence, isFullyExpired } from '../oauth/oauth-credentials.mjs'
 
 const CREDENTIAL_COOLDOWN = /oauth_|authentication_failed|permission_denied|credential/i
 const REFRESH_FAILURE = /credential_refresh_failed|oauth_refresh|refresh_token|invalid_grant/i
@@ -30,9 +30,16 @@ export function evaluateSlotGate(vm) {
 
 export function evaluateCredentialEligibility({ vm, workerStatus = null, now = Date.now() } = {}) {
   if (!vmHasClaudeCredential(vm)) return { ok: false, reason: 'no_credential' }
-  if (isFullyExpired(vm?.claude?.expires_at, now)) return { ok: false, reason: 'oauth_expired' }
+  if (isRefreshFailure(workerStatus) || isRefreshFailure({ last_error: vm?.claude?.refresh_error })) {
+    return { ok: false, reason: 'oauth_invalid_grant' }
+  }
+  // Access expiry is not fatal when a refresh token still exists — the slot
+  // worker is the refresh owner and must be allowed to receive work.
+  if (isFullyExpired(vm?.claude?.expires_at, now) && !hasRefreshPresence(vm?.claude)) {
+    return { ok: false, reason: 'oauth_expired' }
+  }
   const expMs = expiresAtToMs(vm?.claude?.expires_at)
-  if (!expMs && workerStatus && !workerStatus?.credential?.has_access) {
+  if (!expMs && workerStatus && !workerStatus?.credential?.has_access && !hasRefreshPresence(vm?.claude)) {
     return { ok: false, reason: 'oauth_unconfirmed' }
   }
   if (workerStatus) {
@@ -48,6 +55,7 @@ export function credPanelUnavailable(extras = {}, expiresAt = null, now = Date.n
   if (/^oauth_/.test(String(extras.schedule_disabled_reason || ''))) return true
   if (isCredentialRuntimeBlocked(extras.runtime || extras.state, now)) return true
   const expMs = expiresAtToMs(expiresAt)
-  if (expMs && expMs <= now) return true
+  const hasRefresh = extras.has_refresh || extras.worker_credential?.has_refresh
+  if (expMs && expMs <= now && !hasRefresh) return true
   return false
 }

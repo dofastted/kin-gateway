@@ -3974,7 +3974,7 @@ async function activateVm(id) {
 async function refreshOauth(id) {
   try {
     toast('Go worker 刷新凭证…')
-    const r = await api('/api/panel/vms/' + id + '/oauth/refresh', { method: 'POST', body: JSON.stringify({ force: true }) })
+    const r = await api('/api/panel/vms/' + id + '/oauth/refresh', { method: 'POST', body: JSON.stringify({}) })
     const d = r.data || r
     toast(d.ok === false ? ('刷新失败') : ('已刷新' + (d.expires_at ? ' · ' + fmtExpiresAt(d.expires_at) : '')))
     await refresh()

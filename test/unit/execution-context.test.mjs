@@ -83,7 +83,8 @@ test('snapshotOauth reads the scheduled record only', () => {
   const s = snapshotOauth({
     claude: { access_token: 'x', email: 'a@b.c', org_uuid: 'org' },
   })
-  assert.equal(s.access_token, 'x')
+  assert.equal(s.has_access, true)
+  assert.equal(s.access_token, undefined)
   assert.equal(s.email, 'a@b.c')
   assert.equal(s.org_uuid, 'org')
 })

@@ -74,11 +74,13 @@ test('vm credentials are mirrored into the vms table (入库)', async () => {
     try {
       const row = db.prepare('SELECT * FROM vms WHERE id = ?').get('vm-sim-01')
       assert.ok(row, 'vms row must exist')
-      assert.equal(row.access_token, 'sk-ant-oat01-FAKE-SEED')
-      assert.equal(row.refresh_token, 'sk-ant-ort01-FAKE-SEED')
+      assert.equal(row.access_token, null)
+      assert.equal(row.refresh_token, null)
       assert.equal(row.email, 'seed@kin.test')
       const vmJson = JSON.parse(row.vm_json)
-      assert.equal(vmJson.claude.access_token, 'sk-ant-oat01-FAKE-SEED')
+      assert.equal(vmJson.claude.access_token, undefined)
+      assert.equal(vmJson.claude.has_access, true)
+      assert.equal(vmJson.claude.has_refresh, true)
       const active = db.prepare("SELECT value FROM settings WHERE key = 'active_vm'").get()
       assert.equal(JSON.parse(active.value), 'vm-sim-01')
     } finally {
@@ -92,9 +94,12 @@ test('vm credentials are mirrored into the vms table (入库)', async () => {
     assert.equal(imp.status, 200, imp.text)
     const db2 = openDb(gw)
     try {
-      const row = db2.prepare('SELECT access_token, session_key FROM vms WHERE id = ?').get('vm-sim-01')
-      assert.notEqual(row.access_token, 'sk-ant-oat01-FAKE-SEED', 'imported token mirrored to DB')
-      assert.ok(row.session_key, 'session key stored in DB')
+      const row = db2.prepare('SELECT access_token, session_key, vm_json FROM vms WHERE id = ?').get('vm-sim-01')
+      assert.equal(row.access_token, null)
+      assert.equal(row.session_key, null)
+      const vmJson = JSON.parse(row.vm_json)
+      assert.equal(vmJson.claude.session_key, undefined)
+      assert.equal(vmJson.claude.has_access, true)
     } finally {
       db2.close()
     }

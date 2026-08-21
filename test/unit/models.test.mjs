@@ -10,6 +10,7 @@ import {
   listOfficialModels,
   validateOfficialModel,
   clearModelsCache,
+  gatewayModelCatalog,
 } from '../../src/lib/protocol/models.mjs'
 
 test('isCatalogModelId rejects fragments', () => {
@@ -79,6 +80,18 @@ test('ingestWorkerModels merges worker list responses into the catalog', () => {
   assert.deepEqual(ids, ['claude-opus-4-6', 'claude-sonnet-5'])
   assert.equal(validateOfficialModel('claude-made-up-99').ok, false)
   clearModelsCache()
+})
+
+test('gatewayModelCatalog stays local and never hops', () => {
+  clearModelsCache()
+  const cat = gatewayModelCatalog()
+  assert.equal(cat.source, 'gateway-catalog')
+  assert.equal(cat.object, 'list')
+  assert.ok(Array.isArray(cat.data))
+  assert.ok(cat.data.length > 0)
+  const src = fs.readFileSync(new URL('../../src/server.mjs', import.meta.url), 'utf8')
+  assert.equal(src.includes('callWorkerGet'), false)
+  assert.match(src, /return gatewayModelCatalog\(\)/)
 })
 
 test('models module never talks to Anthropic or a CLI binary', () => {

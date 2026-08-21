@@ -17,10 +17,12 @@ test('sessionKey import writes via persistOauthToVm (fake oauth)', async () => {
     assert.equal(r.status, 200, r.text)
     const rec = JSON.parse(fs.readFileSync(path.join(gw.project, 'vms', 'vm-sim-01.json'), 'utf8'))
     assert.equal(rec.claude.email, 'fake-oauth@kin.test')
-    assert.equal(rec.claude.access_token, 'sk-ant-oat01-FAKE-SIM')
+    assert.equal(rec.claude.access_token, undefined)
+    assert.equal(rec.claude.has_access, true)
+    assert.equal(rec.claude.has_refresh, true)
     assert.equal(rec.claude.source, 'KIN_FAKE_SESSION_OAUTH')
     assert.ok(rec.claude._token_version)
-    assert.match(rec.claude.session_key, /^sk-ant-sid/)
+    assert.equal(rec.claude.session_key, undefined)
   } finally {
     await gw.stop()
   }
@@ -44,7 +46,7 @@ test('Go slot worker owns refresh; gateway no longer harvests CLI credentials', 
     assert.equal(r.json.refresh_owner, 'go-slot-worker')
     assert.equal(r.json.proxy_required, true)
     const rec = JSON.parse(fs.readFileSync(path.join(gw.project, 'vms', 'vm-sim-01.json'), 'utf8'))
-    assert.equal(rec.claude.access_token, 'sk-ant-oat01-FAKE-SEED')
+    assert.ok(rec.claude.has_access || rec.claude.access_token)
   } finally {
     await gw.stop()
   }

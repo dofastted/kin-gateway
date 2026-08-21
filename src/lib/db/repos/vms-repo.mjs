@@ -1,18 +1,15 @@
 /**
  * vms repository — VM records + OAuth credential mirror.
  *
- * The `vms/*.json` files remain the runtime single-writer surface
- * (persistOauthToVm / CLI seed). Every file write is mirrored here
- * (see lib/vm-db-sync.mjs), so the database always holds the full
- * credential set and a DB-only backup can restore everything.
- *
- * With KIN_DB_SECRET set, credential columns and the full vm_json are
- * AES-256-GCM encrypted at rest (encrypted=1).
+ * The `vms/*.json` files remain the runtime metadata surface.
+ * Live OAuth secrets stay in the slot worker credentials.json.
+ * This table mirrors identity / expiry / presence flags only.
  */
 
 import { getDb } from '../database.mjs'
 import { SettingsRepo } from './settings-repo.mjs'
 import { maybeEncrypt, maybeDecrypt, encryptionEnabled } from '../secure.mjs'
+import { hasAccessPresence, hasRefreshPresence, stripCredentialSecrets } from '../../oauth/oauth-credentials.mjs'
 
 const ACTIVE_VM_KEY = 'active_vm'
 
@@ -48,25 +45,31 @@ export class VmsRepo {
     if (!vm?.id) return null
     const now = new Date().toISOString()
     const c = vm.claude || {}
+    const safeClaude = stripCredentialSecrets({
+      ...c,
+      has_access: hasAccessPresence(c),
+      has_refresh: hasRefreshPresence(c),
+    })
+    const safeVm = { ...vm, claude: safeClaude }
     const enc = encryptionEnabled()
     this._upsert.run(
       vm.id,
       vm.name ?? null,
       vm.status ?? null,
       vm.schedulable === false ? 0 : 1,
-      c.email ?? null,
-      c.account_uuid ?? null,
-      c.org_uuid ?? null,
-      c.access_token != null ? maybeEncrypt(c.access_token) : null,
-      c.refresh_token != null ? maybeEncrypt(c.refresh_token) : null,
-      c.session_key != null ? maybeEncrypt(c.session_key) : null,
+      safeClaude.email ?? null,
+      safeClaude.account_uuid ?? null,
+      safeClaude.org_uuid ?? null,
+      null,
+      null,
+      null,
       c.expires_at != null ? String(c.expires_at) : null,
-      c.source ?? null,
+      safeClaude.source ?? null,
       vm.proxy?.id ?? null,
       vm.claude_code_version ?? null,
       vm.timezone ?? null,
       vm.locale ?? null,
-      enc ? maybeEncrypt(JSON.stringify(vm)) : JSON.stringify(vm),
+      enc ? maybeEncrypt(JSON.stringify(safeVm)) : JSON.stringify(safeVm),
       enc ? 1 : 0,
       mtimeMs != null ? Math.floor(mtimeMs) : null,
       now,
