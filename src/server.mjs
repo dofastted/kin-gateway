@@ -67,7 +67,6 @@ import { applyCrsUnofficialPersona } from './lib/identity/crs-persona.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './lib/protocol/web-search.mjs'
 import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
 import {
-  callGoWorker,
   streamGoWorker,
   workerHealth,
   ensureWorkerCredential,
@@ -489,6 +488,7 @@ async function streamAndAssembleClaudeMessage({
   signal,
   deliveryMode,
   toolNames = {},
+  onCommit,
 }) {
   const assembler = createClaudeMessageAssembler()
   const workerResult = await streamGoWorker({
@@ -499,6 +499,7 @@ async function streamAndAssembleClaudeMessage({
     identity: loadVmIdentity(candidate.exec),
     signal,
     deliveryMode,
+    onCommit,
     onEvent: async (line) => {
       applyClaudeSSELineToMessage(restoreToolNamesInSSELine(line, toolNames), assembler)
     },
@@ -663,10 +664,9 @@ async function handleProtocol(req, res, protocol, pathName) {
   req.once('aborted', onAborted)
 
   const clientStream = !!inbound.stream
-  const forceUpstreamStream = protocol === 'openai.chat'
-  const upstreamStream = forceUpstreamStream || clientStream
+  const upstreamStream = true
   const requestedDelivery = String(req.headers['x-kin-delivery'] || routingConfig?.failover?.delivery_mode || 'realtime')
-  const deliveryMode = (!clientStream && forceUpstreamStream)
+  const deliveryMode = !clientStream
     ? 'verified'
     : (requestedDelivery === 'verified' ? 'verified' : 'realtime')
   let result
@@ -693,22 +693,8 @@ async function handleProtocol(req, res, protocol, pathName) {
         logBag.outbound_summary = summarizeBody(tools.body)
         return { body: tools.body, meta: { toolNames: tools.reverse } }
       },
-      callAttempt: async ({ candidate, body, attemptMeta, stream, deliveryMode: attemptDelivery, signal, onCommit }) => {
-        if (!stream) {
-          const workerResult = await callGoWorker({
-            exec: candidate.exec,
-            body,
-            reqHeaders: req.headers,
-            timeoutMs: cfg.limits.upstream_timeout_ms,
-            identity: loadVmIdentity(candidate.exec),
-            signal,
-          })
-          if (workerResult?.body) {
-            workerResult.body = restoreToolNames(workerResult.body, attemptMeta?.toolNames || {})
-          }
-          return workerResult
-        }
-        if (!clientStream && protocol === 'openai.chat') {
+      callAttempt: async ({ candidate, body, attemptMeta, deliveryMode: attemptDelivery, signal, onCommit }) => {
+        if (!clientStream) {
           return streamAndAssembleClaudeMessage({
             candidate,
             body,
@@ -717,6 +703,7 @@ async function handleProtocol(req, res, protocol, pathName) {
             signal,
             deliveryMode: attemptDelivery,
             toolNames: attemptMeta?.toolNames || {},
+            onCommit,
           })
         }
         let state

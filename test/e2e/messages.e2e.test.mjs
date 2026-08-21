@@ -18,6 +18,9 @@ test('POST /v1/messages non-stream returns mock text', async () => {
     assert.equal(r.json.type, 'message')
     const text = (r.json.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('')
     assert.match(text, /pong/)
+    const tr = readTrace(gw)
+    assert.equal(tr.body.stream, true)
+    assert.notEqual(r.headers.get('content-type'), 'text/event-stream')
   } finally {
     await gw.stop()
   }

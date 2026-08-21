@@ -169,36 +169,38 @@ function openaiMessagesToClaude(messages) {
   return { systemParts, messages: out }
 }
 
+/** Anthropic hop is always SSE. Client stream vs JSON is decided after the worker. */
+function withUpstreamStream(claude) {
+  if (claude && typeof claude === 'object') claude.stream = true
+  return claude
+}
+
 export function toClaudeMessages(protocol, body, opts = { rewrite: false, model_map: true }) {
   if (protocol === 'anthropic.messages' && !opts.rewrite) {
     const out = sanitizeAnthropicBody(body, { strictPassthrough: opts.strict_passthrough })
     if (!out.max_tokens) out.max_tokens = 4096
-    return { claude: out, mode: 'passthrough' }
+    return { claude: withUpstreamStream(out), mode: 'passthrough' }
   }
 
   if (protocol === 'anthropic.messages' && opts.rewrite) {
     return {
-      claude: {
+      claude: withUpstreamStream({
         ...body,
         model: mapModel(body.model || DEFAULT_MODEL, { allowMap: opts.model_map }),
         max_tokens: body.max_tokens || 1024,
-      },
+      }),
       mode: 'rewrite',
     }
   }
 
   if (protocol === 'openai.chat') {
-    const claude = openaiToClaude(body, opts)
-    // Chat Completions always hits Anthropic as a true stream (Sub2API-style).
-    // Non-stream clients are reassembled in the gateway after SSE completes.
-    claude.stream = true
-    return { claude, mode: opts.rewrite ? 'rewrite' : 'convert' }
+    return { claude: withUpstreamStream(openaiToClaude(body, opts)), mode: opts.rewrite ? 'rewrite' : 'convert' }
   }
   if (protocol === 'openai.completions') {
-    return { claude: completionsToClaude(body, opts), mode: opts.rewrite ? 'rewrite' : 'convert' }
+    return { claude: withUpstreamStream(completionsToClaude(body, opts)), mode: opts.rewrite ? 'rewrite' : 'convert' }
   }
   if (protocol === 'openai.responses') {
-    return { claude: responsesToClaude(body, opts), mode: opts.rewrite ? 'rewrite' : 'convert' }
+    return { claude: withUpstreamStream(responsesToClaude(body, opts)), mode: opts.rewrite ? 'rewrite' : 'convert' }
   }
   throw new Error(`unsupported protocol: ${protocol}`)
 }
@@ -452,7 +454,7 @@ function ensureAssemblerMessage(state) {
   return state.message
 }
 
-/** Fold Anthropic SSE into one Messages JSON for non-stream Chat Completions clients. */
+/** Fold Anthropic SSE into one Messages JSON for non-stream clients. */
 export function applyClaudeSSELineToMessage(line, state) {
   const evt = consumeClaudeSSEData(line, state)
   if (!evt) return state.message

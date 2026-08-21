@@ -67,12 +67,23 @@ test('openai.chat convert forces stream:true even when inbound is not streaming'
   assert.equal(official.stream, true)
 })
 
-test('openai.completions still omits stream when inbound is not streaming', () => {
-  const { claude } = toClaudeMessages('openai.completions', {
+test('all protocols force upstream stream:true when inbound is not streaming', () => {
+  const messages = toClaudeMessages('anthropic.messages', {
+    model: MODEL,
+    max_tokens: 8,
+    messages: [{ role: 'user', content: 'hi' }],
+  })
+  assert.equal(messages.claude.stream, true)
+  const completions = toClaudeMessages('openai.completions', {
     model: MODEL,
     prompt: 'hi',
   })
-  assert.equal(claude.stream, undefined)
+  assert.equal(completions.claude.stream, true)
+  const responses = toClaudeMessages('openai.responses', {
+    model: MODEL,
+    input: 'hi',
+  })
+  assert.equal(responses.claude.stream, true)
 })
 
 test('openai.responses and openai.completions copy stream:true', () => {
