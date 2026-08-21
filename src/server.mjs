@@ -223,7 +223,14 @@ function poolSchedulerConfig() {
   return {
     ...(routingConfig.pool || {}),
     fable_max_per_account: Number(routingConfig.concurrency?.fable_max_per_account ?? 4),
+    default_max_per_account: Number(routingConfig.concurrency?.default_max_per_account ?? 20),
   }
+}
+
+function rebindOauthAccount(vm) {
+  const uuid = vm?.claude?.account_uuid
+  if (!uuid || !vm?.id) return
+  accountQuota.rebindToVm(uuid, vm.id, { email: vm.claude?.email || null })
 }
 function initPoolRuntime() {
   runtimeRepo = new AccountRuntimeRepo()
@@ -245,6 +252,11 @@ function initPoolRuntime() {
     config: routingConfig.failover || {},
     onProxyFailure: (vmId, reason) => {
       proxyPool.reportRuntimeFailure(vmId, reason)
+    },
+    onCredentialFailure: ({ selected }) => {
+      if (!selected?.vm?.claude?.refresh_token && selected?.vmId) {
+        setVmSchedulable(cfg.paths.project, selected.vmId, false, 'oauth_no_refresh')
+      }
     },
   })
 }
@@ -1614,7 +1626,10 @@ const server = http.createServer(async (req, res) => {
           note: body.note || `${(OS_CATALOG[wantKernel] || {}).pretty || wantKernel} · Go slot worker`,
           proxy: null,
           policy: {
-            maxConcurrency: Math.max(1, Math.min(128, Number(body.max_concurrency ?? body.maxConcurrency ?? routingConfig?.concurrency?.default_max_per_account ?? 20))),
+            maxConcurrency: (() => {
+              const raw = Number(body.max_concurrency ?? body.maxConcurrency ?? routingConfig?.concurrency?.default_max_per_account)
+              return Number.isFinite(raw) ? Math.max(0, Math.min(128, raw)) : 20
+            })(),
             weight: Math.max(1, Math.min(100, Number(body.weight ?? 1))),
             inflight: 0,
           },
@@ -1623,8 +1638,8 @@ const server = http.createServer(async (req, res) => {
           stats: {},
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-          schedulable: !!startNow,
-          schedule_disabled_reason: startNow ? null : 'stopped',
+          schedulable: false,
+          schedule_disabled_reason: 'no_credential',
           proxy_cli_enabled: true,
           seed_policy: defaultSeedPolicy(body.seed_policy || {}),
         }
@@ -1827,6 +1842,7 @@ const server = http.createServer(async (req, res) => {
               session_key: sessionKey ? String(sessionKey).trim() : (existing.claude?.session_key || null),
               mode: 'oauth',
             })
+            try { rebindOauthAccount({ ...existing, ...JSON.parse(fs.readFileSync(vmPath, 'utf8')), id: vmId }) } catch {}
             // Reload after single-writer persist
             const refreshed = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
             existing.claude = refreshed.claude || existing.claude
@@ -1848,6 +1864,7 @@ const server = http.createServer(async (req, res) => {
               claude: existing.claude,
             })
           })
+          rebindOauthAccount(existing)
           if (body.activate !== false) {
             try { activateVmSlot(vmId) } catch {}
             applyOauthToCfg(cfg, {

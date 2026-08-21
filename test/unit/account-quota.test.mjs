@@ -104,6 +104,25 @@ test('allocations trimmed to 50 per account', () => {
   assert.equal(recent[4].util_5h, 0.59)
 })
 
+test('max_concurrency 0 blocks instead of treating as unlimited', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { concurrency: { default_max_per_account: 20 } } })
+  q.ensure({ account_id: 'zero', max_concurrency: 0 })
+  q.setMaxConcurrency('zero', 0)
+  const gate = q.canAccept('zero')
+  assert.equal(gate.ok, false)
+  assert.equal(gate.reason, 'concurrency_limit')
+  assert.equal(gate.detail.max, 0)
+})
+
+test('rebindToVm moves the UUID row onto the new slot', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  q.ensure({ account_id: '1c5a7a73', vm_id: 'vm-02', email: 'old@x' })
+  q.rebindToVm('1c5a7a73', 'vm-04', { email: 'new@x' })
+  const acc = q.snapshot().accounts.find((a) => a.account_id === '1c5a7a73')
+  assert.equal(acc.vm_id, 'vm-04')
+  assert.equal(acc.email, 'new@x')
+})
+
 test('concurrency inflight gate stays in memory', () => {
   const q = new AccountQuota({ dataDir: tmpDir(), config: { concurrency: { default_max_per_account: 1 } } })
   q.ensure({ account_id: 'a7' })

@@ -66,11 +66,20 @@ test('weekly split off does not use mode', () => {
   assert.equal(st.text, '可用')
 })
 
-test('live worker token is available even if expires_at is stale', () => {
+test('expired TTL is unavailable even if worker still reports has_access', () => {
   const st = credStatusFromQuota(true, {
     utilization_5h: 0.1,
     status_5h: 'allowed',
   }, Date.now() - 60_000, { worker_credential: { has_access: true, needs_refresh: false } })
-  assert.equal(st.key, 'ok')
-  assert.equal(st.text, '可用')
+  assert.equal(st.key, 'bad')
+  assert.equal(st.text, '不可用')
+})
+
+test('oauth_ disabled reason is unavailable', () => {
+  const st = credStatusFromQuota(true, {
+    utilization_5h: 0.1,
+    status_5h: 'allowed',
+  }, Date.now() + 3600_000, { schedulable: false, schedule_disabled_reason: 'oauth_no_refresh' })
+  assert.equal(st.key, 'bad')
+  assert.equal(st.text, '不可用')
 })

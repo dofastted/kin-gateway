@@ -335,6 +335,35 @@ test('slow 502 does not stack another same-account hop', async () => {
   assert.equal(result.body.error.code, 'upstream_transport_error')
 })
 
+test('401 unbinds the dead account then continues on the next slot', async () => {
+  const scheduler = new Scheduler([candidate(1), candidate(2)])
+  const unbound = []
+  const runner = new FailoverRunner({
+    scheduler,
+    stickyRouter: { unbindByAccount: (value) => unbound.push(value) },
+  })
+  const result = await runner.run({
+    requestId: 'req-401',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    stickyKey: 'conversation-dead',
+    callAttempt: ({ candidate: selected }) => {
+      if (selected.accountId === 'account-1') {
+        return {
+          ok: false,
+          status: 401,
+          terminalState: 'rejected',
+          body: { error: { message: 'invalid or expired credentials' } },
+        }
+      }
+      return success()
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.accountId, 'account-2')
+  assert.deepEqual(unbound, [{ accountId: 'account-1', vmId: 'vm-01' }])
+})
+
 test('empty pool without a prior hop stays account_pool_exhausted', async () => {
   const scheduler = new Scheduler([])
   const runner = new FailoverRunner({ scheduler })

@@ -84,19 +84,25 @@ export function setActiveVm(projectRoot, id) {
 /** Statuses that mean the slot is actually down — not a soft UI pause. */
 const HARD_UNAVAILABLE = new Set(['stopped', 'dead', 'error', 'disabled'])
 
+export function vmHasClaudeCredential(vm) {
+  return !!(vm?.claude?.access_token || vm?.claude?.refresh_token)
+}
+
 /**
  * Soft `paused` is only a UI mark written by setVmSchedulable(false).
  * If schedulable is back on, the account must remain selectable.
+ * Empty inventory slots (no Claude token) stay out of the pool.
  */
 export function isVmScheduleReady(vm) {
   if (!vm) return false
   if (vm.schedulable === false) return false
+  if (!vmHasClaudeCredential(vm)) return false
   const status = String(vm.status || '').toLowerCase()
   if (HARD_UNAVAILABLE.has(status)) return false
   return true
 }
 
-export function setVmSchedulable(projectRoot, id, schedulable, reason = null) {
+export function setVmSchedulable(projectRoot, id, schedulable, reason = null, { preserveStatus = false } = {}) {
   const file = path.join(projectRoot, 'vms', `${id}.json`)
   if (!fs.existsSync(file)) return null
   const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
@@ -105,10 +111,10 @@ export function setVmSchedulable(projectRoot, id, schedulable, reason = null) {
   vm.updated_at = vm.schedule_updated_at
   if (schedulable) {
     vm.schedule_disabled_reason = null
-    if (String(vm.status || '').toLowerCase() === 'paused') vm.status = 'running'
+    if (!preserveStatus && String(vm.status || '').toLowerCase() === 'paused') vm.status = 'running'
   } else {
     vm.schedule_disabled_reason = reason || 'disabled'
-    if (String(vm.status || '').toLowerCase() === 'running') vm.status = 'paused'
+    if (!preserveStatus && String(vm.status || '').toLowerCase() === 'running') vm.status = 'paused'
   }
   atomicWriteJson(file, vm)
   return summarizeVm(vm)

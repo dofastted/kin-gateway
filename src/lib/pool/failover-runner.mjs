@@ -117,12 +117,24 @@ export class FailoverRunner {
     attemptsRepo = null,
     config = {},
     onProxyFailure = null,
+    onCredentialFailure = null,
   } = {}) {
     this.scheduler = scheduler
     this.stickyRouter = stickyRouter
     this.attemptsRepo = attemptsRepo
     this.config = { ...DEFAULTS, ...(config || {}) }
     this.onProxyFailure = onProxyFailure
+    this.onCredentialFailure = onCredentialFailure
+  }
+
+  forgetCredential(selected, policy) {
+    this.stickyRouter?.unbindByAccount?.({
+      accountId: selected?.accountId,
+      vmId: selected?.vmId,
+    })
+    if (typeof this.onCredentialFailure === 'function') {
+      try { this.onCredentialFailure({ selected, policy }) } catch {}
+    }
   }
 
   async run({
@@ -263,6 +275,9 @@ export class FailoverRunner {
           continue
         }
         applyCooldown(this.scheduler, selected, policy, model)
+        if (policy.scope === 'credential' || policy.action === 'disable') {
+          this.forgetCredential(selected, policy)
+        }
         if (!shouldContinue(policy)) {
           return {
             ...result,
@@ -337,6 +352,9 @@ export class FailoverRunner {
           }
         }
         applyCooldown(this.scheduler, selected, policy, model)
+        if (policy.scope === 'credential' || policy.action === 'disable') {
+          this.forgetCredential(selected, policy)
+        }
         const hopMs = Date.now() - attemptStarted
         const used = sameAccountRetries.get(selected.accountId) || 0
         if (canRetrySameAccount(policy, used, this.config, hopMs)) {
