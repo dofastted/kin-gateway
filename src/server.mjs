@@ -790,6 +790,10 @@ async function handleProtocol(req, res, protocol, pathName) {
   logBag.first_token_ms = result?.ttftMs ?? null
   logBag.stop_reason = result?.body?.stop_reason || result?.stopReason || null
   logBag.via = result?.via || 'go-worker-pool'
+  if (result?.finalState === 'content_filter' || logBag.stop_reason === 'refusal') {
+    logBag.error_code = logBag.error_code || 'content_filter_refusal'
+    logBag.error_message = logBag.error_message || 'upstream stop_reason=refusal'
+  }
 
   if (result?.ok && result?.accountId) {
     try { accountQuota.ingestHeaders(result.accountId, result.headers || {}, logBag.usage) } catch {}

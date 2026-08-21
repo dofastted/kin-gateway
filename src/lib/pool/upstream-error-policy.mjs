@@ -1,5 +1,5 @@
 import { normalizeThinkingForModel } from '../protocol/thinking.mjs'
-import { rectifyUnofficialRequest } from '../protocol/request-rectifier.mjs'
+import { rectifyUnofficialRequestForRetry } from '../protocol/request-rectifier.mjs'
 
 const ENTITLEMENT_PATTERNS = [
   /extra usage required/i,
@@ -174,11 +174,35 @@ function continueWithoutCooldown({
   }
 }
 
+function claudeStopReasonOf(result) {
+  return String(result?.stopReason || result?.body?.stop_reason || '')
+}
+
+function claudeHasVisibleOutput(body) {
+  const content = body?.content || body?.message?.content
+  if (!Array.isArray(content)) return false
+  for (const block of content) {
+    if (block?.type === 'text' && String(block.text || '').trim()) return true
+    if (block?.type === 'tool_use') return true
+    if (block?.type === 'refusal' && String(block.refusal || block.text || '').trim()) return true
+  }
+  return false
+}
+
+/** 200 + stop_reason=refusal with no visible text — not a successful empty reply. */
+export function isSilentClaudeRefusal(result = {}) {
+  if (claudeStopReasonOf(result) !== 'refusal') return false
+  return !claudeHasVisibleOutput(result.body)
+}
+
 export function classifyUpstreamResult(result = {}, {
   model = null,
   now = Date.now(),
   repaired = false,
 } = {}) {
+  if (isSilentClaudeRefusal(result) && !result.committed) {
+    return { scope: 'request', action: 'stop', reason: 'content_filter_refusal', cooldownUntil: null }
+  }
   if (result.ok && result.terminalState !== 'incomplete') {
     return { scope: 'success', action: 'complete', cooldownUntil: null }
   }
@@ -402,7 +426,7 @@ export function repairAnthropicRequest(body = {}, policy = {}) {
   if (policy.action !== 'repair-and-retry') return body
   const reason = String(policy.reason || '')
   if (reason === 'prefill_repairable' || reason === 'tool_pair_repairable' || reason === 'schema_repairable') {
-    return rectifyUnofficialRequest(body)
+    return rectifyUnofficialRequestForRetry(body)
   }
   if (reason === 'thinking_repairable') {
     const next = structuredClone(body)
