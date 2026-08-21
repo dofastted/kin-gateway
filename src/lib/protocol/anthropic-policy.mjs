@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { isAnthropicServerTool } from './web-search.mjs'
 import { normalizeThinkingForModel } from './thinking.mjs'
-import { applyMaxTokensCap } from './model-policy.mjs'
+import { applyMaxTokensCap, getCapabilities } from './model-policy.mjs'
 import { ensureOutputConfigSchema, rectifyUnofficialRequest } from './request-rectifier.mjs'
 
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/
@@ -92,6 +92,19 @@ function thinkingModeEnabled(body) {
   return type === 'enabled' || type === 'adaptive'
 }
 
+/**
+ * Anthropic: thinking enabled/adaptive only accepts temperature=1.
+ * top_p / top_k are also rejected. Real Claude Code sends temperature: 1.
+ */
+export function alignSamplingWithThinking(body = {}) {
+  if (!thinkingModeEnabled(body)) return body
+  const out = body
+  if (out.temperature !== 1) out.temperature = 1
+  if (Object.prototype.hasOwnProperty.call(out, 'top_p')) delete out.top_p
+  if (Object.prototype.hasOwnProperty.call(out, 'top_k')) delete out.top_k
+  return out
+}
+
 /** Drop history thinking blocks Anthropic would reject (empty / unsigned / dummy). */
 export function stripInvalidThinkingBlocks(body = {}) {
   if (!Array.isArray(body.messages)) return body
@@ -129,9 +142,22 @@ export function stripInvalidThinkingBlocks(body = {}) {
 
 export const CONTEXT_MANAGEMENT_BETA = 'context-management-2025-06-27'
 
+export function modelSupportsContextManagement(modelId = '') {
+  const caps = getCapabilities(modelId)
+  if (caps?.supports_context_management === false) return false
+  if (/haiku/i.test(String(modelId || ''))) return false
+  return true
+}
+
 /** sub2api OAuth: real CLI attaches this when thinking is enabled/adaptive. */
 export function ensureClearThinkingContextManagement(body = {}) {
   if (!thinkingModeEnabled(body)) return body
+  if (!modelSupportsContextManagement(body.model)) {
+    if (body.context_management == null) return body
+    const out = { ...body }
+    delete out.context_management
+    return out
+  }
   if (body.context_management != null) return body
   return {
     ...body,
@@ -161,6 +187,15 @@ export function sanitizeAnthropicBodyForBetaTokens(body = {}, anthropicBetaHeade
   return out
 }
 
+/** sub2api normalizeClaudeOAuthRequestBody defaults (temperature / empty tools). */
+export function ensureClaudeOAuthBodyDefaults(body = {}) {
+  const out = body && typeof body === 'object' ? body : {}
+  if (out.temperature == null) out.temperature = 1
+  if (!Array.isArray(out.tools)) out.tools = []
+  if (out.tools.length === 0 && out.tool_choice) delete out.tool_choice
+  return out
+}
+
 export function prepareAnthropicRequest(body = {}, {
   cacheControlLimit = 4,
   unofficial = false,
@@ -183,6 +218,8 @@ export function prepareAnthropicRequest(body = {}, {
   const stripped = stripInvalidThinkingBlocks(out)
   if (stripped.messages) out.messages = stripped.messages
   out = ensureClearThinkingContextManagement(out)
+  out = alignSamplingWithThinking(out)
+  out = ensureClaudeOAuthBodyDefaults(out)
   normalizeCacheTTL(out)
   enforceCacheLimit(out, cacheControlLimit)
   return out

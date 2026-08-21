@@ -1,11 +1,12 @@
 /**
  * Unofficial OAuth outbound persona. Official Claude Code inbound is
  * never rewritten. Mode comes from routing.compatibility.persona_inject:
- *   rewrite — 3-block overwrite (billing + identity + expansion)
+ *   rewrite — 3-block overwrite (billing + identity + expansion) [default]
  *   append  — attach the official one-liner to the caller system
  *   none    — leave system / messages untouched
  */
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 
 export const CRS_OFFICIAL_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
 export const DEFAULT_CLI_VERSION = '2.1.234'
@@ -128,6 +129,16 @@ export function normalizePersonaMode(value) {
 
 export function personaModeFromRouting(routing = {}) {
   return normalizePersonaMode(routing?.compatibility?.persona_inject)
+}
+
+/** Re-read routing.json so scp of persona_inject applies without a Node restart. */
+export function personaModeFromRoutingFile(filePath) {
+  if (!filePath) return DEFAULT_PERSONA_MODE
+  try {
+    return personaModeFromRouting(JSON.parse(fs.readFileSync(filePath, 'utf8')))
+  } catch {
+    return DEFAULT_PERSONA_MODE
+  }
 }
 
 const CLAUDE_CLI_UA_RE = /^claude-cli\/\d+\.\d+\.\d+/i

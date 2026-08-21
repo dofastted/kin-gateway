@@ -8,6 +8,7 @@ import {
   sanitizeAnthropicBodyForBetaTokens,
   anthropicBetaTokensContains,
   CONTEXT_MANAGEMENT_BETA,
+  alignSamplingWithThinking,
 } from '../../src/lib/protocol/anthropic-policy.mjs'
 
 test('request policy strips empty blocks, caps cache controls and keeps forced-tool thinking', () => {
@@ -126,10 +127,56 @@ test('sanitize keeps context_management when final beta has the token', () => {
   assert.equal(kept.context_management.edits[0].type, 'clear_thinking_20251015')
 })
 
+test('OAuth defaults fill missing temperature and empty tools', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  })
+  assert.equal(body.temperature, 1)
+  assert.deepEqual(body.tools, [])
+  assert.equal(body.tool_choice, undefined)
+})
+
+test('thinking forces temperature=1 and drops top_p/top_k', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-sonnet-5',
+    thinking: { type: 'adaptive' },
+    temperature: 0,
+    top_p: 0.9,
+    top_k: 40,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  })
+  assert.equal(body.temperature, 1)
+  assert.equal(body.top_p, undefined)
+  assert.equal(body.top_k, undefined)
+  const left = alignSamplingWithThinking({ temperature: 0.2, messages: [] })
+  assert.equal(left.temperature, 0.2)
+})
+
 test('sanitize is a no-op when the body has no context_management', () => {
   const body = { model: 'claude-haiku-4-5', messages: [] }
   assert.equal(sanitizeAnthropicBodyForBetaTokens(body, ''), body)
   assert.equal(sanitizeAnthropicBodyForBetaTokens(body, CONTEXT_MANAGEMENT_BETA), body)
+})
+
+test('Haiku thinking.enabled does not inject context_management', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-haiku-4-5-20251001',
+    thinking: { type: 'enabled', budget_tokens: 2000 },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  })
+  assert.equal(body.thinking.type, 'enabled')
+  assert.equal(body.context_management, undefined)
+})
+
+test('Haiku inbound context_management is stripped', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-haiku-4-5',
+    thinking: { type: 'enabled', budget_tokens: 1024 },
+    context_management: { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  })
+  assert.equal(body.context_management, undefined)
 })
 
 test('valid unique tool names are not changed', () => {

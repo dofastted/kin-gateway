@@ -101,6 +101,31 @@ func TestOAuthTransportNeverAllowsDirectFallback(t *testing.T) {
 	}
 }
 
+func TestInferenceTransportRequiresSlotSOCKSWhenProxyRequired(t *testing.T) {
+	if _, err := NewHTTPClient("", true, time.Second); err == nil {
+		t.Fatal("inference client allowed missing SOCKS when proxy_required")
+	}
+}
+
+func TestInferenceAndOAuthClientsAreDistinct(t *testing.T) {
+	proxyURL, _, closeProxy := startRelaySOCKS(t)
+	defer closeProxy()
+	infer, err := NewHTTPClient(proxyURL, true, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oauth, err := NewOAuthHTTPClient(proxyURL, true, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if infer.Transport == nil || oauth.Transport == nil {
+		t.Fatal("missing transport")
+	}
+	if infer.Transport == oauth.Transport {
+		t.Fatal("inference and OAuth share a transport")
+	}
+}
+
 func startRelaySOCKS(t *testing.T) (string, *atomic.Int32, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
