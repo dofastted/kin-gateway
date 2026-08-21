@@ -1,39 +1,28 @@
 /**
- * Per-VM model connectivity test (sub2api-style AccountTest).
+ * Per-VM model connectivity probe (sub2api-style AccountTest).
  *
- * Pins one credential slot and runs a short Messages call through the same
- * unofficial-client path as production /v1:
- *   persona + identity replace + policy prepare + Go worker.
- *
- * 429 lesson (2026-08-20): do NOT send a reduced anthropic-beta. Unofficial
- * inbound without beta replays stored Claude Code betas (minus context-1m).
- * Overwriting them with a short TEST_BETAS list made Anthropic classify
- * Sonnet/Opus/Fable as OAuth extra-usage → HTTP 429 {type:rate_limit_error,message:"Error"}.
- * Haiku is included even as extra-usage, so it still returned 200.
- * Keep UA unofficial so storeAccountHeaders does not overwrite kin-cc-headers.json.
+ * Pins one credential slot. Inbound is official Claude Code body/headers
+ * (no third-party UA, no inbound anthropic-beta). Outbound body+headers are
+ * assembled by the same prepareOutboundAttempt / resolveCrsHeaders as /v1.
  */
 import { getVm } from '../vm/vm-registry.mjs'
 import { vmJsonPath, vmCliHomePath } from '../vm/execution-context.mjs'
 import { streamGoWorker } from '../transport/go-worker-client.mjs'
 import { loadVmIdentity } from '../identity/vm-identity.mjs'
-import { applyCrsIdentityReplace } from '../identity/identity-rewrite.mjs'
-import { applyCrsUnofficialPersona } from '../identity/crs-persona.mjs'
 import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
-import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
-import { prepareAnthropicRequest } from '../protocol/anthropic-policy.mjs'
+import { claudeCodeInboundBody, claudeCodeInboundHeaders, CLAUDE_CLI_UA } from '../protocol/claude-code-inbound.mjs'
+import { prepareOutboundAttempt } from '../protocol/outbound-attempt.mjs'
 import { createClaudeMessageAssembler, applyClaudeSSELineToMessage } from '../protocol/convert.mjs'
 import {
   isModelEnabled,
   getModelParams,
   getCapabilities,
   listPolicyModels,
-  applyMaxTokensCap,
 } from '../protocol/model-policy.mjs'
 import { listOfficialModels, validateOfficialModel } from '../protocol/models.mjs'
 
 const DEFAULT_PROMPT = 'hello'
 const DEFAULT_MAX_TOKENS = 64
-const TEST_UA = 'kin-console-test/1.0'
 
 export function listTestableModels() {
   const rank = (id) => {
@@ -118,27 +107,28 @@ function extractError(result) {
   return out
 }
 
-function prepareTestBody(model, prompt, maxTokens, { mode } = {}) {
-  let body = {
-    model,
-    max_tokens: maxTokens,
-    stream: true,
-    messages: [{ role: 'user', content: prompt }],
-  }
+export function buildVmTestInbound({ model, prompt, maxTokens, sessionId }) {
   const caps = getCapabilities(model) || {}
-  if (caps.requires_adaptive || caps.thinking_mode === 'adaptive_only') {
-    body.thinking = { type: 'adaptive' }
-  }
-  body = applyCrsUnofficialPersona(body, { officialClient: false, mode })
-  body = applyMaxTokensCap(body)
-  return body
+  const thinking = (caps.requires_adaptive || caps.thinking_mode === 'adaptive_only')
+    ? { type: 'adaptive' }
+    : null
+  const inbound = claudeCodeInboundBody({
+    model,
+    messages: [{ role: 'user', content: prompt }],
+    maxTokens,
+    thinking,
+    sessionId,
+    stream: true,
+  })
+  const headers = claudeCodeInboundHeaders({ sessionId })
+  return { inbound, headers }
 }
 
 function beginTestLog(requestLog, vmId) {
   if (!requestLog?.start) return null
   return requestLog.start({
     method: 'POST',
-    headers: { 'user-agent': TEST_UA },
+    headers: { 'user-agent': CLAUDE_CLI_UA },
     socket: {},
   }, { protocol: 'anthropic.messages', pathName: `/api/panel/vms/${vmId || 'unknown'}/test-chat` })
 }
@@ -150,14 +140,14 @@ function endTestLog(requestLog, logCtx, extra = {}) {
       protocol: 'anthropic.messages',
       workspace: 'client',
       stream: false,
-      user_agent: TEST_UA,
+      user_agent: CLAUDE_CLI_UA,
       ...extra,
     })
   } catch {}
 }
 
 /**
- * @param {{ projectRoot: string, vmId: string, model?: string, prompt?: string, max_tokens?: number, timeoutMs?: number, requestLog?: object, personaMode?: string }} opts
+ * @param {{ projectRoot: string, vmId: string, model?: string, prompt?: string, max_tokens?: number, timeoutMs?: number, requestLog?: object }} opts
  */
 export async function runVmTestChat(opts = {}) {
   const projectRoot = opts.projectRoot
@@ -260,13 +250,21 @@ export async function runVmTestChat(opts = {}) {
 
   const exec = buildExec(projectRoot, vm)
   const identity = loadVmIdentity(exec)
+  const sessionId = `vm-test-${vmId}`
+  let inbound
+  let reqHeaders
   let body
   try {
-    body = prepareTestBody(model, prompt, maxTokens, { mode: opts.personaMode })
-    body = officialMessagesBody(body, { stream: true })
-    body = applyCrsIdentityReplace(body, identity, {})
-    const prepared = prepareAnthropicRequest(body, { cacheControlLimit: 4, unofficial: true })
-    body = prepared?.body || prepared || body
+    const built = buildVmTestInbound({ model, prompt, maxTokens, sessionId })
+    inbound = built.inbound
+    reqHeaders = built.headers
+    body = prepareOutboundAttempt({
+      canonicalBody: inbound,
+      inbound,
+      identity,
+      unofficial: false,
+      stream: true,
+    }).body
     body.stream = true
   } catch (e) {
     push('error', `请求准备失败: ${e.message || e}`)
@@ -280,12 +278,6 @@ export async function runVmTestChat(opts = {}) {
     })
   }
 
-  // Unofficial UA: skip storeAccountHeaders. Omit anthropic-beta so stored
-  // Claude Code betas replay (same as RikkaHub / Go-http-client /v1).
-  const reqHeaders = {
-    'user-agent': TEST_UA,
-    'anthropic-version': '2023-06-01',
-  }
   const outboundHeaders = resolveCrsHeaders(reqHeaders, exec.homeDir, identity, model) || {}
   push('info', `出站 ua=${outboundHeaders['user-agent'] || '—'} beta=${outboundHeaders['anthropic-beta'] || '(none)'}`)
   push('info', `persona=${body.system ? 'claude-code' : 'none'} thinking=${body.thinking?.type || 'none'}`)

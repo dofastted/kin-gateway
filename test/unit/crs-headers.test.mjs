@@ -23,6 +23,7 @@ test('unofficial UA replays stored official headers', () => {
     'user-agent': 'claude-cli/2.1.234 (external, sdk-cli)',
     'x-stainless-os': 'Linux',
     'anthropic-version': '2023-06-01',
+    'anthropic-beta': 'oauth-2025-04-20',
   }, dir)
   const replayed = resolveCrsHeaders({ 'user-agent': 'python-requests/2.24.0' }, dir)
   assert.equal(replayed['user-agent'].startsWith('claude-cli/'), true)

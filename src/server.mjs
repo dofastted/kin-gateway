@@ -41,6 +41,7 @@ import {
 } from './lib/protocol/model-policy.mjs'
 import { runVmTestChat, listTestableModels } from './lib/admin/vm-test-chat.mjs'
 import { startConcurrentTest, getConcurrentTest, listConcurrentTests, cancelConcurrentTest, listSavedReports, readSavedReport } from './lib/admin/concurrent-test.mjs'
+import { startProbeTest, getProbeTest, listProbeTests, cancelProbeTest, getProbeCatalog } from './lib/admin/probe-test.mjs'
 import { StickyRouter } from './lib/pool/sticky-router.mjs'
 import { AccountQuota } from './lib/pool/account-quota.mjs'
 import { ApiKeyStore, publicKeyView } from './lib/admin/api-keys.mjs'
@@ -56,6 +57,7 @@ import { resolveImportProxy } from './lib/vm/proxy-resolve.mjs'
 import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/protocol/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/protocol/anthropic-messages.mjs'
+import { prepareOutboundAttempt } from './lib/protocol/outbound-attempt.mjs'
 import { loadVmIdentity } from './lib/identity/vm-identity.mjs'
 import { withVmLock, atomicWriteJson } from './lib/vm/vm-file.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
@@ -685,17 +687,18 @@ async function handleProtocol(req, res, protocol, pathName) {
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        const identified = applyCrsIdentityReplace(officialMessagesBody(body, { stream: upstreamStream }), identity, inbound)
-        const cleaned = prepareAnthropicRequest(identified, {
-          cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
+        const prepared = prepareOutboundAttempt({
+          canonicalBody: body,
+          inbound,
+          identity,
           unofficial: !officialClient,
+          stream: upstreamStream,
+          cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
+          toolNameRewrite: routingConfig?.compatibility?.tool_name_rewrite !== false,
         })
-        const tools = rewriteToolNames(cleaned, {
-          enabled: routingConfig?.compatibility?.tool_name_rewrite !== false,
-        })
-        logBag.outbound_body = tools.body
-        logBag.outbound_summary = summarizeBody(tools.body)
-        return { body: tools.body, meta: { toolNames: tools.reverse } }
+        logBag.outbound_body = prepared.body
+        logBag.outbound_summary = summarizeBody(prepared.body)
+        return { body: prepared.body, meta: { toolNames: prepared.toolNames } }
       },
       callAttempt: async ({ candidate, body, attemptMeta, deliveryMode: attemptDelivery, signal, onCommit }) => {
         if (!clientStream) {
@@ -1330,7 +1333,6 @@ const server = http.createServer(async (req, res) => {
           max_tokens: body.max_tokens,
           timeoutMs: body.timeout_ms || body.timeoutMs,
           requestLog,
-          personaMode: personaModeFromRouting(routingConfig),
         })
         return json(res, 200, panel.ok(result))
       }
@@ -1391,6 +1393,54 @@ const server = http.createServer(async (req, res) => {
         const id = p.split('/')[4]
         const includeText = url.searchParams.get('text') === '1'
         const data = getConcurrentTest(id, { includeText })
+        if (!data) return json(res, 404, { ok: false, error: { message: 'run not found' } })
+        return json(res, 200, panel.ok(data))
+      }
+
+      if (req.method === 'GET' && p === '/api/panel/probe-test/catalog') {
+        return json(res, 200, panel.ok(getProbeCatalog()))
+      }
+      if (req.method === 'POST' && p === '/api/panel/probe-test') {
+        const body = await readBody(req, 32 * 1024).catch(() => ({}))
+        const result = startProbeTest({
+          suite: body.suite,
+          models: body.models,
+          cases: body.cases,
+          forms: body.forms,
+          questions: body.questions,
+          sample: body.sample ?? body.sample_size,
+          random: body.random,
+          seed: body.seed,
+          max_tokens: body.max_tokens,
+          concurrency: body.concurrency,
+          timeout_ms: body.timeout_ms,
+          baseUrl: `http://127.0.0.1:${cfg.port}`,
+          apiKey: cfg.api_key,
+          dataDir: cfg.paths?.data || path.join(cfg.paths.project, 'data'),
+        })
+        if (!result.ok) {
+          const status = result.error?.code === 'run_in_progress' ? 409 : 400
+          return json(res, status, { ok: false, error: result.error, data: result.data || null })
+        }
+        return json(res, 200, panel.ok(result.data))
+      }
+      if (req.method === 'GET' && p === '/api/panel/probe-test') {
+        const includeText = url.searchParams.get('text') === '1' || url.searchParams.get('raw') === '1'
+        return json(res, 200, panel.ok(getProbeTest(null, { includeText })))
+      }
+      if (req.method === 'GET' && p === '/api/panel/probe-tests') {
+        return json(res, 200, panel.ok({ items: listProbeTests() }))
+      }
+      if (req.method === 'POST' && /^\/api\/panel\/probe-test\/[^/]+\/cancel$/.test(p)) {
+        const id = p.split('/')[4]
+        const result = cancelProbeTest(id)
+        if (!result.ok) return json(res, 404, { ok: false, error: result.error })
+        return json(res, 200, panel.ok(result.data))
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/probe-test\/[^/]+$/.test(p)) {
+        const id = p.split('/')[4]
+        const includeText = url.searchParams.get('text') === '1' || url.searchParams.get('raw') === '1'
+        const data = getProbeTest(id, { includeText })
         if (!data) return json(res, 404, { ok: false, error: { message: 'run not found' } })
         return json(res, 200, panel.ok(data))
       }
