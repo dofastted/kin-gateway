@@ -56,13 +56,13 @@ import { ProxyPool } from './lib/vm/proxy-pool.mjs'
 import { GATEWAY_CAPABILITIES } from './lib/vm/execution-context.mjs'
 import { resolveWorkspaceMode, isOfficialClaudeClient } from './lib/protocol/workspace-mode.mjs'
 import { officialMessagesBody } from './lib/protocol/anthropic-messages.mjs'
+import { prepareOutboundAttempt } from './lib/protocol/outbound-attempt.mjs'
 import { loadVmIdentity } from './lib/identity/vm-identity.mjs'
 import { withVmLock, atomicWriteJson } from './lib/vm/vm-file.mjs'
 import { openDatabase, closeDatabase } from './lib/db/database.mjs'
 import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
 import { BackupService } from './lib/admin/backup-service.mjs'
-import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona, personaModeFromRouting, isOfficialClaudeCodeTraffic } from './lib/identity/crs-persona.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './lib/protocol/web-search.mjs'
 import { startVmRuntime, stopVmRuntime, ensureSlotOwnership, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
@@ -71,7 +71,6 @@ import {
   workerHealth,
   ensureWorkerCredential,
   importWorkerCredential,
-  callWorkerGet,
   workerPaths,
 } from './lib/transport/go-worker-client.mjs'
 import { PoolScheduler } from './lib/pool/pool-scheduler.mjs'
@@ -79,8 +78,6 @@ import { FailoverRunner } from './lib/pool/failover-runner.mjs'
 import { AccountRuntimeRepo } from './lib/db/repos/account-runtime-repo.mjs'
 import { RequestAttemptsRepo } from './lib/db/repos/request-attempts-repo.mjs'
 import {
-  prepareAnthropicRequest,
-  rewriteToolNames,
   restoreToolNames,
   restoreToolNamesInSSELine,
 } from './lib/protocol/anthropic-policy.mjs'
@@ -207,7 +204,14 @@ function poolSchedulerConfig() {
   return {
     ...(routingConfig.pool || {}),
     fable_max_per_account: Number(routingConfig.concurrency?.fable_max_per_account ?? 4),
+    default_max_per_account: Number(routingConfig.concurrency?.default_max_per_account ?? 20),
   }
+}
+
+function rebindOauthAccount(vm) {
+  const uuid = vm?.claude?.account_uuid
+  if (!uuid || !vm?.id) return
+  accountQuota.rebindToVm(uuid, vm.id, { email: vm.claude?.email || null })
 }
 function initPoolRuntime() {
   runtimeRepo = new AccountRuntimeRepo()
@@ -666,17 +670,18 @@ async function handleProtocol(req, res, protocol, pathName) {
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        const identified = applyCrsIdentityReplace(officialMessagesBody(body, { stream: upstreamStream }), identity, inbound)
-        const cleaned = prepareAnthropicRequest(identified, {
-          cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
+        const prepared = prepareOutboundAttempt({
+          canonicalBody: body,
+          inbound,
+          identity,
           unofficial: !officialClient,
+          stream: upstreamStream,
+          cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
+          toolNameRewrite: routingConfig?.compatibility?.tool_name_rewrite !== false,
         })
-        const tools = rewriteToolNames(cleaned, {
-          enabled: routingConfig?.compatibility?.tool_name_rewrite !== false,
-        })
-        logBag.outbound_body = tools.body
-        logBag.outbound_summary = summarizeBody(tools.body)
-        return { body: tools.body, meta: { toolNames: tools.reverse } }
+        logBag.outbound_body = prepared.body
+        logBag.outbound_summary = summarizeBody(prepared.body)
+        return { body: prepared.body, meta: { toolNames: prepared.toolNames } }
       },
       callAttempt: async ({ candidate, body, attemptMeta, deliveryMode: attemptDelivery, signal, onCommit }) => {
         if (!clientStream) {
@@ -866,45 +871,23 @@ async function oauthStatusWithWorker(id = null) {
   }
 }
 
+function mergePolicyModelsIntoCatalog() {
+  try {
+    const ids = listPolicyModels()
+      .filter((m) => m && m.enabled !== false)
+      .map((m) => m.id)
+    if (ids.length) ingestWorkerModels({ data: ids })
+  } catch {}
+}
+
 async function fetchWorkerModels() {
   seedModelCatalog()
-try { loadModelPolicy() } catch (e) { console.warn('[model-policy] load failed', e?.message || e) }
-  const active = getActiveVmId(cfg.paths.project)
-  const order = [
-    active,
-    ...listVms(cfg.paths.project).map((vm) => vm.id).filter((id) => id !== active),
-  ].filter(Boolean)
-  let last = null
-  let liveCount = 0
-  for (const id of order) {
-    const exec = workerExecForVm(id)
-    if (!exec) continue
-    const { socketPath } = workerPaths(exec)
-    if (!socketPath) continue
-    try {
-      if (!fs.statSync(socketPath).isSocket()) continue
-    } catch {
-      continue
-    }
-    liveCount += 1
-    const result = await callWorkerGet(exec, '/internal/v1/models')
-    last = result
-    if (result.ok) {
-      try { ingestWorkerModels(result.body) } catch {}
-      return {
-        object: 'list',
-        data: listOfficialModels(),
-        source: 'go-slot-worker',
-        vm_id: id,
-      }
-    }
-  }
+  try { loadModelPolicy() } catch (e) { console.warn('[model-policy] load failed', e?.message || e) }
+  mergePolicyModelsIntoCatalog()
   return {
     object: 'list',
     data: listOfficialModels(),
-    source: 'go-slot-worker-seed',
-    live_workers: liveCount,
-    error: last?.body?.error?.message || (liveCount ? undefined : 'No live slot worker socket'),
+    source: 'gateway-catalog',
   }
 }
 
@@ -1315,7 +1298,6 @@ const server = http.createServer(async (req, res) => {
           max_tokens: body.max_tokens,
           timeoutMs: body.timeout_ms || body.timeoutMs,
           requestLog,
-          personaMode: personaModeFromRouting(routingConfig),
         })
         return json(res, 200, panel.ok(result))
       }
@@ -2341,14 +2323,16 @@ process.on('SIGINT', () => shutdown('SIGINT'))
 server.listen(cfg.port, cfg.host, () => {
   const addr = server.address()
   const boundPort = typeof addr === 'object' && addr ? addr.port : cfg.port
-  fetchWorkerModels().then((catalog) => {
+  const logCatalog = (catalog) => {
     console.log(JSON.stringify({
       event: 'go-worker-model-catalog',
       source: catalog.source,
       total: Array.isArray(catalog.data) ? catalog.data.length : 0,
       vm_id: catalog.vm_id || null,
+      error: catalog.error || null,
     }))
-  }).catch((error) => console.warn('[worker-models] fetch failed', error.message))
+  }
+  fetchWorkerModels().then(logCatalog).catch((error) => console.warn('[worker-models] catalog load failed', error.message))
   console.log(JSON.stringify({
     event: 'kin-gateway-v2.1-started',
     port: boundPort,

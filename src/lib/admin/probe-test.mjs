@@ -1,13 +1,15 @@
 /**
  * Capability + answer-form probes for the loadtest page.
  *
+ * Inbound is official Claude Code body/headers (no third-party UA).
+ * Loopback /v1/messages so outbound uses the same prepareOutboundAttempt path.
  * Upstream prompts are ordinary tasks. No training / teacher / student wording.
- * Scoring, anomaly labels, and suite names stay on this side.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { getCapabilities } from '../protocol/model-policy.mjs'
+import { claudeCodeInboundBody, claudeCodeInboundHeaders } from '../protocol/claude-code-inbound.mjs'
 import {
   beginTestJob,
   endTestJob,
@@ -17,7 +19,6 @@ import {
   busyMessage,
 } from './test-job-lock.mjs'
 
-const TEST_UA = 'kin-console-loadtest/1.0'
 const ABSOLUTE_MAX_TOKENS = 128000
 const MAX_RUNS = 8
 export const DEFAULT_PROBE_MODELS = ['claude-sonnet-5', 'claude-haiku-4-5']
@@ -589,18 +590,22 @@ function attachStream(item, patch, maxTokens) {
   if (patch?.usage) item.usage = patch.usage
 }
 
-async function postProbeTurn({ baseUrl, apiKey, model, messages, maxTokens, sessionId, signal, timeoutMs, onProgress }) {
+export function buildProbeTurnRequest({ model, messages, maxTokens, sessionId }) {
   const caps = getCapabilities(model) || {}
-  const body = {
-    model,
-    max_tokens: maxTokens,
-    stream: true,
-    temperature: 0,
-    messages,
-  }
+  let thinking = null
   if (caps.requires_adaptive || caps.thinking_mode === 'adaptive_only' || /claude-(opus|sonnet|fable)-5/.test(model) || /claude-opus-4-[5-8]/.test(model)) {
-    body.thinking = { type: 'adaptive' }
+    thinking = { type: 'adaptive' }
   }
+  const body = claudeCodeInboundBody({ model, messages, maxTokens, thinking, sessionId, stream: true })
+  const headers = {
+    ...claudeCodeInboundHeaders({ sessionId }),
+    'x-session-id': sessionId,
+  }
+  return { body, headers }
+}
+
+async function postProbeTurn({ baseUrl, apiKey, model, messages, maxTokens, sessionId, signal, timeoutMs, onProgress }) {
+  const { body, headers } = buildProbeTurnRequest({ model, messages, maxTokens, sessionId })
   const ac = new AbortController()
   const onAbort = () => ac.abort()
   if (signal) {
@@ -615,10 +620,7 @@ async function postProbeTurn({ baseUrl, apiKey, model, messages, maxTokens, sess
         'content-type': 'application/json',
         authorization: `Bearer ${apiKey}`,
         'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'user-agent': TEST_UA,
-        'x-session-id': sessionId,
-        accept: 'text/event-stream',
+        ...headers,
       },
       body: JSON.stringify(body),
       signal: ac.signal,
@@ -769,6 +771,12 @@ function publicItem(item, { includeText = false } = {}) {
     answer: item.answer,
     stream: item.stream || null,
     thinking_chars: String(item.thinking || '').length,
+    raw_summary: {
+      status: item.http || item.raw?.response?.status || 0,
+      error: item.error || item.raw?.response?.body?.error?.message || null,
+      request_model: item.raw?.request?.model || item.model || null,
+      response_error: item.raw?.response?.body?.error || null,
+    },
     text: includeText ? item.text : undefined,
     thinking: includeText ? item.thinking : undefined,
     turns: includeText ? item.turns : undefined,
@@ -1000,6 +1008,12 @@ async function runQueue(run) {
       if (item.status === 'pending' || item.status === 'running') {
         item.status = 'cancelled'
         item.error = item.error || 'cancelled'
+        if (!item.raw) {
+          item.raw = packProbeRaw(
+            { model: item.model, messages: [], stream: true },
+            { ok: false, status: 0, headers: {}, body: { error: { type: 'cancelled', message: item.error } }, events: [], event_count: 0 },
+          )
+        }
       }
     }
   }
