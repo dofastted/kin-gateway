@@ -54,6 +54,6 @@
   "compatibility": {
     "tool_name_rewrite": true,
     "cache_control_limit": 4,
-    "persona_inject": "rewrite"
+    "persona_inject": "append"
   }
 }
