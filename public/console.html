@@ -3292,7 +3292,7 @@ function renderSettings() {
           <div class="set-sub">协议</div>
           <div class="set-row"><span>非官方 mimic</span>
             <select id="persona_inject" class="input">
-              ${[['rewrite','默认：覆盖（3 块）'],['append','附加一句'],['none','关闭']].map(([v,l]) => `<option value="${v}" ${((r.compatibility||{}).persona_inject || 'rewrite')===v?'selected':''}>${l}</option>`).join('')}
+              ${[['append','默认：附加一句'],['rewrite','覆盖（3 块）'],['none','关闭']].map(([v,l]) => `<option value="${v}" ${((r.compatibility||{}).persona_inject || 'append')===v?'selected':''}>${l}</option>`).join('')}
             </select>
           </div>
           <p class="text-xs faint" style="margin:4px 0 0">对齐 sub2api：非官方默认整包覆盖（billing/身份/扩充，原文落到 messages）。可改附加一句或关闭。关闭时剥 system 上的 cache_control。官方 Claude Code（UA <code>claude-cli/x.y.z</code> + 合法 metadata.user_id）始终跳过。保存即生效。</p>
@@ -3346,7 +3346,7 @@ async function saveRouting() {
       },
       compatibility: {
         ...(state.routing?.compatibility || {}),
-        persona_inject: document.getElementById('persona_inject')?.value || 'rewrite',
+        persona_inject: document.getElementById('persona_inject')?.value || 'append',
       },
     }
     await api('/api/panel/routing', { method: 'PUT', body: JSON.stringify(body) })
