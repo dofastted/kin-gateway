@@ -23,6 +23,7 @@ function project() {
         account_uuid: accountId,
         access_token: `access-${accountId}`,
         refresh_token: `refresh-${accountId}`,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
       },
     }
     fs.writeFileSync(path.join(vms, `${id}.json`), JSON.stringify(vm))
@@ -67,10 +68,26 @@ function scheduler(root, extras = {}) {
     runtimeRepo: extras.runtimeRepo || new RuntimeRepo(),
     stickyRouter: extras.stickyRouter || null,
     accountQuota: extras.accountQuota || { canAccept: () => ({ ok: true }) },
-    workerHealth: async () => ({ ok: true, credential: { generation: 1 } }),
+    workerHealth: async () => ({ ok: true, credential: { generation: 1, has_access: true } }),
     config: { fallback_wait_timeout_ms: 5, sticky_wait_timeout_ms: 5 },
   })
 }
+
+test('scheduler skips a slot whose access token is known expired', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const vm1 = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-01.json'), 'utf8'))
+  vm1.claude.expires_at = Math.floor(Date.now() / 1000) - 3600
+  fs.writeFileSync(path.join(root, 'vms', 'vm-01.json'), JSON.stringify(vm1))
+  const pool = scheduler(root)
+  const selected = await pool.selectAndReserve({
+    model: 'claude-test',
+    allowWait: false,
+  })
+  assert.equal(selected.ok, true)
+  assert.equal(selected.vmId, 'vm-02')
+  selected.release()
+})
 
 test('scheduler skips excluded account and reserves the next one', async (t) => {
   const root = project()
@@ -192,7 +209,7 @@ test('cooldown is waitable and becomes selectable after it expires', async (t) =
     projectRoot: root,
     runtimeRepo: repo,
     accountQuota: { canAccept: () => ({ ok: true }) },
-    workerHealth: async () => ({ ok: true, credential: { generation: 1 } }),
+    workerHealth: async () => ({ ok: true, credential: { generation: 1, has_access: true } }),
     config: { fallback_wait_timeout_ms: 200, sticky_wait_timeout_ms: 200 },
   })
   pool.markCooldown({
@@ -224,7 +241,7 @@ test('busy slot waits for release instead of failing closed', async (t) => {
     projectRoot: root,
     runtimeRepo: new RuntimeRepo(),
     accountQuota: { canAccept: () => ({ ok: true }) },
-    workerHealth: async () => ({ ok: true, credential: { generation: 1 } }),
+    workerHealth: async () => ({ ok: true, credential: { generation: 1, has_access: true } }),
     config: { fallback_wait_timeout_ms: 200, sticky_wait_timeout_ms: 200 },
   })
   const first = await pool.selectAndReserve({
@@ -253,7 +270,7 @@ test('wait timeout on cooldown returns busy rather than empty pool', async (t) =
     projectRoot: root,
     runtimeRepo: repo,
     accountQuota: { canAccept: () => ({ ok: true }) },
-    workerHealth: async () => ({ ok: true, credential: { generation: 1 } }),
+    workerHealth: async () => ({ ok: true, credential: { generation: 1, has_access: true } }),
     config: { fallback_wait_timeout_ms: 20, sticky_wait_timeout_ms: 20 },
   })
   repo.markCooldown('account-1', { vmId: 'vm-01', until: Date.now() + 60_000, reason: 'provider_transient_error' })
@@ -306,7 +323,7 @@ test('fable concurrency cap leaves room for other models', async (t) => {
     projectRoot: root,
     runtimeRepo: new RuntimeRepo(),
     accountQuota: { canAccept: () => ({ ok: true }) },
-    workerHealth: async () => ({ ok: true, credential: { generation: 1 } }),
+    workerHealth: async () => ({ ok: true, credential: { generation: 1, has_access: true } }),
     config: { fable_max_per_account: 1, fallback_wait_timeout_ms: 5, sticky_wait_timeout_ms: 5 },
   })
   const first = await pool.selectAndReserve({
@@ -390,6 +407,105 @@ test('weekly split disabled never intercepts even if halves look full', async (t
   assert.equal(sonnet.ok, true)
   assert.equal(sonnet.accountId, 'account-1')
   sonnet.release()
+})
+
+test('scheduler skips a slot with no Claude token', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const file = path.join(root, 'vms', 'vm-01.json')
+  const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  vm.claude = {}
+  fs.writeFileSync(file, JSON.stringify(vm))
+  const selected = await scheduler(root).selectAndReserve({
+    model: 'claude-test',
+    allowWait: false,
+  })
+  assert.equal(selected.ok, true)
+  assert.equal(selected.vmId, 'vm-02')
+  selected.release()
+})
+
+test('scheduler hard-excludes worker refresh failure', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const pool = new PoolScheduler({
+    projectRoot: root,
+    runtimeRepo: new RuntimeRepo(),
+    accountQuota: { canAccept: () => ({ ok: true }) },
+    workerHealth: async (exec) => exec.vmId === 'vm-01'
+      ? { ok: false, last_error: 'credential_refresh_failed' }
+      : { ok: true, credential: { generation: 1, has_access: true } },
+    config: { fallback_wait_timeout_ms: 5, sticky_wait_timeout_ms: 5 },
+  })
+  const selected = await pool.selectAndReserve({ model: 'claude-test', allowWait: false })
+  assert.equal(selected.ok, true)
+  assert.equal(selected.vmId, 'vm-02')
+  selected.release()
+})
+
+test('maxConcurrency 0 does not fall back to 20', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  for (const id of ['vm-01', 'vm-02']) {
+    const file = path.join(root, 'vms', `${id}.json`)
+    const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+    vm.policy.maxConcurrency = 0
+    fs.writeFileSync(file, JSON.stringify(vm))
+  }
+  const selected = await scheduler(root).selectAndReserve({
+    model: 'claude-test',
+    allowWait: false,
+  })
+  assert.equal(selected.ok, false)
+  assert.equal(selected.reason, 'no_eligible_accounts')
+})
+
+test('maxConcurrency 8 is the actual reserve cap', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const file = path.join(root, 'vms', 'vm-01.json')
+  const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  vm.policy.maxConcurrency = 8
+  fs.writeFileSync(file, JSON.stringify(vm))
+  const pool = scheduler(root)
+  const held = []
+  for (let i = 0; i < 8; i++) {
+    const selected = await pool.selectAndReserve({
+      model: 'claude-test',
+      excluded: new Set(['account-2']),
+      allowWait: false,
+    })
+    assert.equal(selected.ok, true)
+    held.push(selected)
+  }
+  const ninth = await pool.selectAndReserve({
+    model: 'claude-test',
+    excluded: new Set(['account-2']),
+    allowWait: false,
+  })
+  assert.equal(ninth.ok, false)
+  for (const item of held) item.release()
+})
+
+test('dead sticky binding is unbound then WRR continues', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const unbound = []
+  const pool = scheduler(root, {
+    stickyRouter: {
+      resolve: () => ({ vmId: 'vm-gone', accountId: 'account-gone' }),
+      unbind: (key) => unbound.push(key),
+    },
+  })
+  const selected = await pool.selectAndReserve({
+    model: 'claude-test',
+    stickyKey: 'stale-session',
+    allowWait: false,
+  })
+  assert.equal(selected.ok, true)
+  assert.deepEqual(unbound, ['stale-session'])
+  assert.notEqual(selected.selectionReason, 'sticky')
+  selected.release()
 })
 
 test('scheduler fails closed when every account is ineligible', async (t) => {

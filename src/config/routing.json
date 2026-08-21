@@ -3,7 +3,20 @@
     "enabled": true,
     "mode": "conversation",
     "ttl_seconds": 86400,
-    "header_keys": ["x-session-id"]
+    "header_keys": [
+      "x-session-id",
+      "x-conversation-id",
+      "x-claude-code-session-id",
+      "x-client-request-id",
+      "session-id",
+      "thread-id"
+    ],
+    "body_keys": [
+      "conversation_id",
+      "session_id",
+      "thread_id",
+      "prompt_cache_key"
+    ]
   },
   "concurrency": {
     "default_max_per_account": 20,

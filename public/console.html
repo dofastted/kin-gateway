@@ -1844,7 +1844,8 @@ function vmRunning(v) {
   const s = String(v.status || '').toLowerCase()
   if (s === 'stopped' || s === 'dead' || s === 'disabled') return false
   if (v.schedulable === false) return false
-  return !!(v.active || v.has_token || s === 'running' || s === 'ok' || !s)
+  if (!v.has_token) return false
+  return !!(v.active || s === 'running' || s === 'ok' || !s)
 }
 function statusDot(v) {
   const acc = accountStatus(v)

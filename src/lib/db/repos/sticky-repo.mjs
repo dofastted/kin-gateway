@@ -32,6 +32,7 @@ export class StickyRepo {
         hits = excluded.hits
     `)
     this._delete = db.prepare('DELETE FROM sticky_sessions WHERE key = ?')
+    this._deleteByAccount = db.prepare('DELETE FROM sticky_sessions WHERE account_id = ? OR vm_id = ?')
     this._purge = db.prepare('DELETE FROM sticky_sessions WHERE expires_at < ?')
     this._all = db.prepare('SELECT * FROM sticky_sessions')
     this._count = db.prepare('SELECT COUNT(*) c FROM sticky_sessions')
@@ -55,6 +56,11 @@ export class StickyRepo {
 
   remove(key) {
     this._delete.run(key)
+  }
+
+  removeByAccount({ accountId = null, vmId = null } = {}) {
+    if (!accountId && !vmId) return 0
+    return this._deleteByAccount.run(accountId || '', vmId || '').changes
   }
 
   purgeExpired(now = Date.now()) {

@@ -12,6 +12,7 @@ import { listVms, getVm, summarizeVm, getActiveVmId } from '../vm/vm-registry.mj
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 import { computeWeeklySplit, publicWeeklySplit, weeklySplitConfig } from '../pool/weekly-split.mjs'
+import { credPanelUnavailable } from '../pool/schedule-eligibility.mjs'
 
 export function ok(data, meta) {
   const out = { ok: true, data }
@@ -467,11 +468,7 @@ export function credStatusFromQuota(hasToken, q = {}, expiresAt = null, extras =
   const probeAt = Date.parse(fb.probed_at || lastProbe.at || '')
   const refreshedAt = Date.parse(extras.refreshed_at || extras.oauth_refreshed_at || '')
   const probeStale = Number.isFinite(probeAt) && Number.isFinite(refreshedAt) && probeAt < refreshedAt
-  // Go worker is the refresh owner. Prefer its live credential over stale vm.json expires_at.
-  const worker = extras.worker_credential || extras.worker || null
-  const workerLive = !!(worker && worker.has_access && worker.needs_refresh === false)
-  const expMs = expiresAtToMs(expiresAt)
-  if (!workerLive && expMs && expMs <= Date.now()) return { key: 'bad', text: '不可用', tone: 'bad' }
+  if (credPanelUnavailable(extras, expiresAt)) return { key: 'bad', text: '不可用', tone: 'bad' }
   // Ignore fable.banned from a probe that ran before the current token was written.
   if (fb.banned && !probeStale) return { key: 'bad', text: '被吊销', tone: 'bad' }
   const utilPct = (u) => {
@@ -634,6 +631,9 @@ function enrichVm(v, accountQuota, active, extras = {}) {
       refreshed_at: v.refreshed_at || null,
       worker_credential: workerCred,
       fable_cooldown_until: fablePool.fable_cooldown_until,
+      schedulable: v.schedulable !== false,
+      schedule_disabled_reason: v.schedule_disabled_reason || null,
+      runtime,
     }),
     inflight: acc?.inflight ?? 0,
     requests: acc?.requests ?? v.stats?.requests ?? 0,
@@ -653,9 +653,12 @@ function enrichVm(v, accountQuota, active, extras = {}) {
 function findAccount(accountQuota, vm) {
   if (!accountQuota || typeof accountQuota.snapshot !== 'function') return null
   const snap = accountQuota.snapshot()
-  return (snap.accounts || []).find(
-    (a) => a.vm_id === vm.id || a.account_id === vm.account_uuid,
-  )
+  const accounts = snap.accounts || []
+  if (vm.account_uuid) {
+    const byUuid = accounts.find((a) => a.account_id === vm.account_uuid)
+    if (byUuid) return byUuid
+  }
+  return accounts.find((a) => a.vm_id === vm.id || a.account_id === vm.id)
 }
 
 function findRuntime(accountQuota, vm) {

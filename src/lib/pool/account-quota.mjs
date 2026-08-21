@@ -277,7 +277,7 @@ export class AccountQuota {
     const inflight = this.inflight.get(accountId) || 0
 
     const limit = this.limitFor(acc)
-    if (limit > 0 && inflight >= limit) {
+    if (inflight >= limit) {
       return {
         ok: false,
         reason: 'concurrency_limit',
@@ -431,11 +431,23 @@ export class AccountQuota {
     return Number.isFinite(n) && n >= 0 ? n : 20
   }
 
-  /** 0 = unlimited. Missing/invalid falls back to routing default. */
+  /** 0 = reject. Missing/invalid falls back to routing default. */
   limitFor(acc) {
     const n = Number(acc?.max_concurrency)
     if (Number.isFinite(n) && n >= 0) return n
     return this.defaultMax()
+  }
+
+  rebindToVm(accountUuid, vmId, { email = null } = {}) {
+    if (!accountUuid || !vmId) return null
+    const acc = this.ensure({ account_id: accountUuid, vm_id: vmId, email })
+    if (!acc) return null
+    if (acc.vm_id !== vmId || (email && acc.email !== email)) {
+      acc.vm_id = vmId
+      if (email) acc.email = email
+      return this.repo.save(acc)
+    }
+    return acc
   }
 
   setMaxConcurrency(accountId, n) {

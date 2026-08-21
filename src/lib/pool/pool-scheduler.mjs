@@ -1,7 +1,12 @@
-import { getVm, isVmScheduleReady, listVms } from '../vm/vm-registry.mjs'
+import { getVm, listVms, setVmSchedulable } from '../vm/vm-registry.mjs'
 import { vmCliHomePath, vmJsonPath } from '../vm/execution-context.mjs'
 import { mirrorWorkerCredentialsToVm } from '../oauth/oauth-credentials.mjs'
 import { FABLE_FAMILY_KEY, isFableModel, modelCooldownKeys } from './upstream-error-policy.mjs'
+import {
+  evaluateCredentialEligibility,
+  evaluateSlotGate,
+  isCredentialRuntimeBlocked,
+} from './schedule-eligibility.mjs'
 import { splitBlocksModel } from './weekly-split.mjs'
 
 const DEFAULT_CONFIG = {
@@ -12,14 +17,22 @@ const DEFAULT_CONFIG = {
   worker_health_ttl_ms: 5000,
   heartbeat_stale_ms: 15000,
   fable_max_per_account: 4,
+  default_max_per_account: 20,
 }
 
 function accountIdOf(vm) {
   return vm?.claude?.account_uuid || vm?.id || null
 }
 
-function maxConcurrencyOf(vm) {
-  return Math.max(1, Number(vm?.policy?.maxConcurrency) || 20)
+function parseConcurrency(value, fallback) {
+  if (value == null || value === '') return fallback
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(0, n)
+}
+
+function maxConcurrencyOf(vm, fallback = 20) {
+  return parseConcurrency(vm?.policy?.maxConcurrency, fallback)
 }
 
 function priorityOf(vm, state) {
@@ -84,7 +97,7 @@ export class PoolScheduler {
       if (signal?.aborted) throw makeAbortError()
       const candidates = await this.eligibleCandidates({ model, excluded, signal })
       const available = candidates.filter((candidate) => !candidate.busy)
-      const selected = this.pick(available, { model, stickyKey })
+      const selected = this.pick(available, { model, stickyKey, eligible: candidates })
       if (selected) {
         const reservation = this.reserve(selected)
         if (reservation) {
@@ -138,7 +151,7 @@ export class PoolScheduler {
       const state = this.runtimeRepo?.get?.(accountId) || null
       const eligibility = await this.checkEligibility({ vm, accountId, state, model, now, signal })
       if (!eligibility.ok) continue
-      const maxConcurrency = maxConcurrencyOf(vm)
+      const maxConcurrency = maxConcurrencyOf(vm, parseConcurrency(this.config.default_max_per_account, 20))
       const inflight = this.inflight.get(accountId) || 0
       candidates.push({
         ok: true,
@@ -164,8 +177,15 @@ export class PoolScheduler {
   }
 
   async checkEligibility({ vm, accountId, state, model, now, signal }) {
-    if (!isVmScheduleReady(vm)) return { ok: false, reason: 'vm_unschedulable' }
-    if (!vm.proxy_cli_enabled || !vm.proxy?.url) return { ok: false, reason: 'proxy_required' }
+    const gate = evaluateSlotGate(vm)
+    if (!gate.ok) return gate
+    const expired = evaluateCredentialEligibility({ vm, now })
+    if (!expired.ok && expired.reason === 'oauth_expired') return expired
+    if (!expired.ok && expired.reason === 'no_credential') return expired
+    if (isCredentialRuntimeBlocked(state, now)) return { ok: false, reason: 'credential_blocked' }
+    const fallbackCap = parseConcurrency(this.config.default_max_per_account, 20)
+    const maxConcurrency = maxConcurrencyOf(vm, fallbackCap)
+    if (maxConcurrency <= 0) return { ok: false, reason: 'concurrency_disabled' }
     let busy = false
     let availableAt = null
     let waitReason = null
@@ -201,23 +221,22 @@ export class PoolScheduler {
       }
     }
     const inflight = this.inflight.get(accountId) || 0
-    if (inflight >= maxConcurrencyOf(vm)) markWait('concurrency_limit')
+    if (inflight >= maxConcurrency) markWait('concurrency_limit')
     const fableCap = Number(this.config.fable_max_per_account)
     if (isFableModel(modelKey) && Number.isFinite(fableCap) && fableCap > 0) {
       const familyInflight = this.familyInflight(accountId, FABLE_FAMILY_KEY)
       if (familyInflight >= fableCap) markWait('fable_concurrency')
     }
     if (this.accountQuota) {
-      const gate = this.accountQuota.canAccept(accountId)
-      if (!gate.ok) {
-        if (gate.reason === 'concurrency_limit') markWait('concurrency_limit')
-        else return { ok: false, reason: gate.reason || 'quota_gate' }
+      const quotaGate = this.accountQuota.canAccept(accountId)
+      if (!quotaGate.ok) {
+        if (quotaGate.reason === 'concurrency_limit') markWait('concurrency_limit')
+        else return { ok: false, reason: quotaGate.reason || 'quota_gate' }
       }
     }
     const workerStatus = await this.getWorkerHealth(this.executionContext(vm, accountId), { signal })
-    if (!workerStatus?.ok) {
-      markWait('worker_unhealthy', now + Number(this.config.worker_health_ttl_ms || 5000))
-    }
+    const cred = evaluateCredentialEligibility({ vm, workerStatus, now })
+    if (!cred.ok) return cred
     return { ok: true, workerStatus, busy, availableAt, waitReason }
   }
 
@@ -279,23 +298,48 @@ export class PoolScheduler {
       ) {
         try {
           const vmPath = String(exec.homeDir).replace(/\/cli-home\/?$/, '.json')
-          mirrorWorkerCredentialsToVm(vmPath, exec.homeDir)
+          const mirrored = mirrorWorkerCredentialsToVm(vmPath, exec.homeDir)
+          const uuid = mirrored?.claude?.account_uuid || exec.accountId
+          if (uuid && uuid !== exec.vmId) {
+            this.accountQuota?.rebindToVm?.(uuid, exec.vmId, { email: mirrored?.claude?.email })
+          }
+        } catch {}
+      }
+      if (
+        value?.ok &&
+        value?.credential?.has_access &&
+        !value?.credential?.needs_refresh &&
+        exec.vmId
+      ) {
+        try {
+          const live = getVm(this.projectRoot, exec.vmId)
+          if (/^oauth_/.test(String(live?.schedule_disabled_reason || ''))) {
+            setVmSchedulable(this.projectRoot, exec.vmId, true)
+          }
         } catch {}
       }
     }
     return value
   }
 
-  pick(candidates, { model, stickyKey } = {}) {
-    if (!candidates.length) return null
+  pick(candidates, { model, stickyKey, eligible = candidates } = {}) {
+    if (!candidates.length && !eligible?.length) return null
     const bound = stickyKey ? this.stickyRouter?.resolve?.(stickyKey) : null
     if (bound) {
-      const sticky = candidates.find((candidate) => (
+      const match = (candidate) => (
         candidate.vmId === bound.vmId &&
         candidate.accountId === bound.accountId
-      ))
-      if (sticky) return { ...sticky, selectionReason: 'sticky' }
+      )
+      const amongEligible = (eligible || candidates).find(match)
+      if (!amongEligible) {
+        this.stickyRouter?.unbind?.(stickyKey)
+      } else if (amongEligible.busy) {
+        return null
+      } else {
+        return { ...amongEligible, selectionReason: 'sticky' }
+      }
     }
+    if (!candidates.length) return null
     const highestPriority = Math.max(...candidates.map((candidate) => candidate.priority))
     let pool = candidates.filter((candidate) => candidate.priority === highestPriority)
     const minLoad = Math.min(...pool.map((candidate) => candidate.loadRatio))
@@ -378,7 +422,7 @@ export class PoolScheduler {
 
   reserve(candidate) {
     const current = this.inflight.get(candidate.accountId) || 0
-    if (current >= candidate.maxConcurrency) return null
+    if (!candidate.maxConcurrency || current >= candidate.maxConcurrency) return null
     const family = isFableModel(candidate.model) ? FABLE_FAMILY_KEY : null
     const fableCap = Number(this.config.fable_max_per_account)
     if (family && Number.isFinite(fableCap) && fableCap > 0 && this.familyInflight(candidate.accountId, family) >= fableCap) {

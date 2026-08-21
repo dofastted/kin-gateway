@@ -48,6 +48,31 @@ test('sticky sessions persist across re-open', () => {
   assert.equal(hit.accountId, 'acc-4')
 })
 
+test('extractKey uses default header_keys when config omits them', () => {
+  const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true, mode: 'conversation' } } })
+  const key = r.extractKey({ headers: { 'x-session-id': 'sess-default' } }, {})
+  assert.equal(key, 'sess-default')
+})
+
+test('extractKey isolates the same session per API key', () => {
+  const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true } } })
+  const raw = { headers: { 'x-session-id': 'same-session' } }
+  assert.equal(r.extractKey(raw, {}), 'same-session')
+  assert.equal(r.extractKey({ ...raw, apiKeyRecord: { id: 7 } }, {}), 'k7:same-session')
+})
+
+test('unbind and unbindByAccount drop dead bindings', () => {
+  const r = new StickyRouter({ dataDir: tmpDir(), config: { sticky: { enabled: true, ttl_seconds: 60 } } })
+  r.bind('conv-dead', { accountId: 'acc-x', vmId: 'vm-02' })
+  r.bind('conv-other', { accountId: 'acc-y', vmId: 'vm-04' })
+  r.unbind('conv-dead')
+  assert.equal(r.resolve('conv-dead'), null)
+  r.bind('conv-dead', { accountId: 'acc-x', vmId: 'vm-02' })
+  r.unbindByAccount({ vmId: 'vm-02' })
+  assert.equal(r.resolve('conv-dead'), null)
+  assert.equal(r.resolve('conv-other').vmId, 'vm-04')
+})
+
 test('proxy pool import/bind/config persist across re-open', () => {
   const dir = tmpDir('kin-proxy-')
   const pool = new ProxyPool({ dataDir: dir })
