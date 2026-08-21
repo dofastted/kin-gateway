@@ -1408,7 +1408,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, panel.ok(result.data))
       }
       if (req.method === 'GET' && p === '/api/panel/probe-test') {
-        const includeText = url.searchParams.get('text') === '1'
+        const includeText = url.searchParams.get('text') === '1' || url.searchParams.get('raw') === '1'
         return json(res, 200, panel.ok(getProbeTest(null, { includeText })))
       }
       if (req.method === 'GET' && p === '/api/panel/probe-tests') {
@@ -1422,7 +1422,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && /^\/api\/panel\/probe-test\/[^/]+$/.test(p)) {
         const id = p.split('/')[4]
-        const includeText = url.searchParams.get('text') === '1'
+        const includeText = url.searchParams.get('text') === '1' || url.searchParams.get('raw') === '1'
         const data = getProbeTest(id, { includeText })
         if (!data) return json(res, 404, { ok: false, error: { message: 'run not found' } })
         return json(res, 200, panel.ok(data))
