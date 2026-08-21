@@ -7,6 +7,7 @@ import {
   ensureOutputConfigSchema,
   pairMissingToolResults,
   rectifyUnofficialRequest,
+  rectifyUnofficialRequestForRetry,
 } from '../../src/lib/protocol/request-rectifier.mjs'
 import { prepareAnthropicRequest } from '../../src/lib/protocol/anthropic-policy.mjs'
 
@@ -49,7 +50,7 @@ test('output_config object schema gets additionalProperties=false', () => {
   assert.equal(body.output_config.format.schema.additionalProperties, false)
 })
 
-test('unofficial prepare applies rectifier; official prefill is kept', () => {
+test('unofficial first pass does not invent continue or dummy tool_result', () => {
   const raw = {
     model: 'claude-sonnet-5',
     thinking: { type: 'adaptive' },
@@ -59,7 +60,7 @@ test('unofficial prepare applies rectifier; official prefill is kept', () => {
     ],
   }
   const unofficial = prepareAnthropicRequest(raw, { unofficial: true })
-  assert.equal(unofficial.messages.at(-1).role, 'user')
+  assert.equal(unofficial.messages.at(-1).role, 'assistant')
   const official = prepareAnthropicRequest(raw, { unofficial: false })
   assert.equal(official.messages.at(-1).role, 'assistant')
 })
@@ -79,8 +80,22 @@ test('short thinking signatures are stripped as truncated', () => {
   assert.deepEqual(body.messages[0].content, [{ type: 'text', text: 'answer' }])
 })
 
-test('rectifyUnofficialRequest pairs tools then ends on user', () => {
+test('rectifyUnofficialRequest first pass leaves assistant tool_use alone', () => {
   const body = rectifyUnofficialRequest({
+    messages: [{
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'toolu_x', name: 'x', input: {} },
+        { type: 'text', text: 'done' },
+      ],
+    }],
+  })
+  assert.equal(body.messages.length, 1)
+  assert.equal(body.messages[0].role, 'assistant')
+})
+
+test('retry rectifier pairs tools then ends on user', () => {
+  const body = rectifyUnofficialRequestForRetry({
     messages: [{
       role: 'assistant',
       content: [
