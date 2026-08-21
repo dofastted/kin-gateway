@@ -131,7 +131,13 @@ export function ensureOutputConfigSchema(body = {}) {
   return { ...body, output_config: next }
 }
 
+/** First-pass unofficial fix: schema only. Do not invent tool_result / continue. */
 export function rectifyUnofficialRequest(body = {}) {
+  return ensureOutputConfigSchema(clone(body))
+}
+
+/** Retry-only (upstream 400 prefill / unpaired tool_use). sub2api does not do this on first hop. */
+export function rectifyUnofficialRequestForRetry(body = {}) {
   let out = clone(body)
   out = ensureOutputConfigSchema(out)
   out = pairMissingToolResults(out)
