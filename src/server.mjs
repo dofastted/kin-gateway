@@ -65,7 +65,7 @@ import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
 import { BackupService } from './lib/admin/backup-service.mjs'
 import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
-import { applyCrsUnofficialPersona, personaModeFromRouting, isOfficialClaudeCodeTraffic } from './lib/identity/crs-persona.mjs'
+import { applyCrsUnofficialPersona, personaModeFromRoutingFile, isOfficialClaudeCodeTraffic } from './lib/identity/crs-persona.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './lib/protocol/web-search.mjs'
 import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
 import {
@@ -650,7 +650,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   const officialTraffic = isOfficialClaudeCodeTraffic(req.headers, inbound)
   ctx.body = applyCrsUnofficialPersona(ctx.body, {
     officialClient: officialTraffic,
-    mode: personaModeFromRouting(routingConfig),
+    mode: personaModeFromRoutingFile(routingConfigPath),
   })
   if (!officialClient) {
     ctx.body = ensureClaudeWebSearch(ctx.body, {

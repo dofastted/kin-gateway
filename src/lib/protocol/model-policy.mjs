@@ -16,6 +16,13 @@ import {
   shouldPassContext1m,
   stripClaudeCode1mSuffix,
 } from "./context-1m.mjs"
+import {
+  defaultOfficialBetaHeader,
+  ensureOauthBeta,
+  fullClaudeCodeMimicryBetas,
+  HAIKU_BETA_HEADER,
+  joinBetas,
+} from "./claude-code-betas.mjs"
 
 function isCatalogModelId(id) {
   const s = String(id || "")
@@ -566,27 +573,22 @@ export function applyBetaPolicyToHeader(existingBeta = "", modelId = "", { isOff
         strip: policy.defaults.strip_context_1m !== false,
       })
       : shouldPassContext1mByPolicy(modelId)
-    if (!pass) return stripTokens(existingBeta, [CONTEXT_1M])
-    return existingBeta
+    const beta = String(existingBeta || "").trim()
+      ? ensureOauthBeta(existingBeta)
+      : defaultOfficialBetaHeader(modelId)
+    if (!pass) return stripTokens(beta, [CONTEXT_1M])
+    return beta
   }
-  const betas = getBetaPolicy(modelId)
-  const drop = new Set(betas.drop || [])
-  // Unofficial/mimic: never inject or replay context-1m (FullClaudeCodeMimicryBetas).
-  drop.add(CONTEXT_1M)
+  // Unofficial / OAuth mimic. Client/stored betas are ignored. Never context-1m.
+  return unofficialMimicryBetaHeader(modelId)
+}
 
-  let parts = []
-  if (betas.allow_client && existingBeta) {
-    for (const p of String(existingBeta).split(",")) {
-      const t = p.trim()
-      if (t && !drop.has(t)) parts.push(t)
-    }
+export function unofficialMimicryBetaHeader(modelId = "") {
+  const caps = getCapabilities(modelId)
+  if (caps?.supports_context_management === false || /haiku/i.test(String(modelId || ""))) {
+    return HAIKU_BETA_HEADER
   }
-  for (const r of betas.required || []) {
-    if (r === CONTEXT_1M) continue
-    if (!drop.has(r) && !parts.includes(r)) parts.push(r)
-  }
-  parts = parts.filter((t) => !drop.has(t))
-  return parts.join(",")
+  return joinBetas(fullClaudeCodeMimicryBetas().filter((t) => t !== CONTEXT_1M))
 }
 
 export function filterPublicModelIds(workerIds = []) {

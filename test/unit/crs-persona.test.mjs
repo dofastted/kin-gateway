@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   applyCrsUnofficialPersona,
   buildBillingAttributionText,
@@ -8,10 +11,12 @@ import {
   CRS_OFFICIAL_SYSTEM,
   CRS_SYSTEM_EXPANSION,
   DEFAULT_CLI_VERSION,
+  DEFAULT_PERSONA_MODE,
   FINGERPRINT_SALT,
   isOfficialClaudeCodeTraffic,
   normalizePersonaMode,
   personaModeFromRouting,
+  personaModeFromRoutingFile,
   SYSTEM_INSTRUCTIONS_ACK,
   SYSTEM_INSTRUCTIONS_PREFIX,
 } from '../../src/lib/identity/crs-persona.mjs'
@@ -177,9 +182,21 @@ test('official claude-cli UA plus valid user_id skips mimic', () => {
 })
 
 test('persona_inject aliases normalize from routing', () => {
+  assert.equal(DEFAULT_PERSONA_MODE, 'rewrite')
   assert.equal(normalizePersonaMode('append'), 'append')
   assert.equal(normalizePersonaMode('off'), 'none')
   assert.equal(normalizePersonaMode(''), 'rewrite')
   assert.equal(personaModeFromRouting({ compatibility: { persona_inject: 'none' } }), 'none')
   assert.equal(personaModeFromRouting({ compatibility: { persona_inject: 'attach' } }), 'append')
+  assert.equal(personaModeFromRouting({ compatibility: { persona_inject: 'rewrite' } }), 'rewrite')
+})
+
+test('personaModeFromRoutingFile rereads disk so scp applies without restart', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-persona-'))
+  const file = path.join(dir, 'routing.json')
+  fs.writeFileSync(file, JSON.stringify({ compatibility: { persona_inject: 'append' } }))
+  assert.equal(personaModeFromRoutingFile(file), 'append')
+  fs.writeFileSync(file, JSON.stringify({ compatibility: { persona_inject: 'rewrite' } }))
+  assert.equal(personaModeFromRoutingFile(file), 'rewrite')
+  fs.rmSync(dir, { recursive: true, force: true })
 })

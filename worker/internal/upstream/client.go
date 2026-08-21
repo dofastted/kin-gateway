@@ -35,34 +35,26 @@ type Response struct {
 }
 
 func NewHTTPClient(proxyURL string, proxyRequired bool, timeout time.Duration) (*http.Client, error) {
-	dialContext, dialTLS, err := slotDialers(proxyURL, proxyRequired)
+	dialContext, _, err := slotDialers(proxyURL, proxyRequired)
 	if err != nil {
 		return nil, err
-	}
-	transport := &http.Transport{
-		Proxy:                 noProxy,
-		DialContext:           dialContext,
-		DialTLSContext:        dialTLS,
-		ForceAttemptHTTP2:     false,
-		MaxIdleConns:          32,
-		MaxIdleConnsPerHost:   16,
-		MaxConnsPerHost:       32,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		ExpectContinueTimeout: time.Second,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	if timeout <= 0 {
 		timeout = 180 * time.Second
 	}
-	return &http.Client{
-		Transport: transport,
-		Timeout:   timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return errors.New("upstream redirects are disabled")
-		},
-	}, nil
+	// Inference: Node.js 24 / Claude Code ClientHello + HTTP/2. Not Chrome.
+	// SOCKS dial only — req/v3 owns the uTLS handshake (same as OAuth).
+	client := req.C().
+		SetTimeout(timeout).
+		SetTLSFingerprintSpec(node24ClientHelloSpecValue).
+		SetCookieJar(nil).
+		SetProxy(noProxy).
+		SetDial(dialContext)
+	httpClient := client.GetClient()
+	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return errors.New("upstream redirects are disabled")
+	}
+	return httpClient, nil
 }
 
 // NewOAuthHTTPClient mirrors Sub2API's Claude OAuth transport: Chrome TLS

@@ -197,10 +197,11 @@ test('loadtest third-party goes through sanitization; outbound UA is still Claud
   assert.equal(sanitized.metadata, undefined)
   const withPersona = applyCrsUnofficialPersona(sanitized, {
     officialClient: false,
-    mode: 'append',
+    mode: 'rewrite',
     headers,
   })
-  assert.match(String(withPersona.system || ''), /You are Claude Code/)
+  assert.equal(withPersona.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(withPersona.system.length, 3)
   const outbound = prepareOutboundAttempt({
     canonicalBody: withPersona,
     inbound: sanitized,
@@ -212,6 +213,7 @@ test('loadtest third-party goes through sanitization; outbound UA is still Claud
   assert.match(outboundHeaders['user-agent'], /^claude-cli\//)
   assert.doesNotMatch(outboundHeaders['user-agent'], /kin-console-loadtest/)
   assert.match(String(outboundHeaders['anthropic-beta'] || ''), /oauth-2025-04-20/)
+  assert.match(String(outboundHeaders['anthropic-beta'] || ''), /context-management-2025-06-27/)
   assert.doesNotMatch(String(outboundHeaders['anthropic-beta'] || ''), /context-1m/)
   assert.equal(outbound.body.max_tokens, 32000)
   fs.rmSync(dir, { recursive: true, force: true })
@@ -244,7 +246,7 @@ test('same identity + same messages: probe official and loadtest unofficial diff
   })
   const loadPersona = applyCrsUnofficialPersona(sanitizeInboundBody(load.body, defaultSeedPolicy()), {
     officialClient: false,
-    mode: 'append',
+    mode: 'rewrite',
     headers: load.headers,
   })
   const loadOut = prepareOutboundAttempt({
@@ -260,7 +262,21 @@ test('same identity + same messages: probe official and loadtest unofficial diff
   assert.match(probeH['user-agent'], /^claude-cli\//)
   assert.equal(probeOut.body.model, loadOut.body.model)
   assert.ok(probeOut.body.system)
-  assert.ok(loadOut.body.system)
+  assert.equal(loadOut.body.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(loadOut.body.system.length, 3)
+  assert.equal(probeH['x-stainless-os'], loadH['x-stainless-os'])
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('same slot different unofficial UAs share outbound headers except inbound-only noise', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-same-'))
+  const identity = fixtureIdentity(dir)
+  const a = resolveCrsHeaders({ 'user-agent': 'Go-http-client/2.0', 'anthropic-beta': 'claude-code-20250219' }, dir, identity, 'claude-opus-5')
+  const b = resolveCrsHeaders({ 'user-agent': LOADTEST_UA, 'anthropic-beta': 'oauth-2025-04-20,interleaved-thinking-2025-05-14' }, dir, identity, 'claude-opus-5')
+  assert.equal(a['user-agent'], b['user-agent'])
+  assert.equal(a['anthropic-beta'], b['anthropic-beta'])
+  assert.equal(a['x-stainless-os'], b['x-stainless-os'])
+  assert.match(String(a['anthropic-beta'] || ''), /context-management-2025-06-27/)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 

@@ -138,23 +138,10 @@ function applyReplayBetaPolicy(headers, model = "", isOfficial = false) {
   return next
 }
 
-/** VM characteristics are the only fingerprint. Protocol betas may come from official inbound. */
-export function resolveVmCharacteristicHeaders(identity = {}, reqHeaders = {}, homeDir = "", model = "") {
-  const incoming = extractClaudeCodeHeaders(reqHeaders)
-  if (isOfficialClaudeUa(incoming["user-agent"] || "")) storeAccountHeaders(homeDir, reqHeaders)
-  const stored = loadStoredHeaders(homeDir) || {}
+function vmStainlessHeaders(identity = {}, stored = {}) {
   const fp = identity.fingerprint || {}
-  const protocol = {}
-  if (incoming["anthropic-version"]) protocol["anthropic-version"] = incoming["anthropic-version"]
-  if (incoming["anthropic-beta"]) protocol["anthropic-beta"] = incoming["anthropic-beta"]
-  if (incoming["anthropic-dangerous-direct-browser-access"]) {
-    protocol["anthropic-dangerous-direct-browser-access"] = incoming["anthropic-dangerous-direct-browser-access"]
-  }
-  const base = {
-    ...DEFAULTS,
-    ...stored,
-    ...protocol,
-    "user-agent": identity.userAgent || stored["user-agent"] || DEFAULTS["user-agent"],
+  return {
+    "user-agent": identity.userAgent || DEFAULTS["user-agent"],
     "x-app": fp.x_app || "cli",
     "x-stainless-lang": fp.stainless_lang || stored["x-stainless-lang"] || DEFAULTS["x-stainless-lang"],
     "x-stainless-os": fp.stainless_os || DEFAULTS["x-stainless-os"],
@@ -163,12 +150,45 @@ export function resolveVmCharacteristicHeaders(identity = {}, reqHeaders = {}, h
     "x-stainless-runtime-version": fp.stainless_runtime_version || stored["x-stainless-runtime-version"] || DEFAULTS["x-stainless-runtime-version"],
     "x-stainless-package-version": fp.stainless_package_version || stored["x-stainless-package-version"] || DEFAULTS["x-stainless-package-version"],
   }
-  // Official inbound: pass context-1m only for whitelist models. Unofficial never replays it.
-  if (isOfficialClaudeUa(incoming["user-agent"] || "")) return applyReplayBetaPolicy(base, model, true)
-  return applyReplayBetaPolicy(base, model)
 }
 
-/** Official inbound headers win; unofficial clients replay last official set (with unsafe betas stripped). */
+/** VM characteristics are the only unofficial fingerprint. Official inbound may pass protocol betas. */
+export function resolveVmCharacteristicHeaders(identity = {}, reqHeaders = {}, homeDir = "", model = "") {
+  const incoming = extractClaudeCodeHeaders(reqHeaders)
+  const official = isOfficialClaudeUa(incoming["user-agent"] || "")
+  if (official) storeAccountHeaders(homeDir, reqHeaders)
+  const stored = loadStoredHeaders(homeDir) || {}
+  const stainless = vmStainlessHeaders(identity, stored)
+  if (official) {
+    const protocol = {}
+    if (incoming["anthropic-version"]) protocol["anthropic-version"] = incoming["anthropic-version"]
+    if (incoming["anthropic-beta"]) protocol["anthropic-beta"] = incoming["anthropic-beta"]
+    if (incoming["anthropic-dangerous-direct-browser-access"]) {
+      protocol["anthropic-dangerous-direct-browser-access"] = incoming["anthropic-dangerous-direct-browser-access"]
+    }
+    const base = {
+      ...DEFAULTS,
+      ...stored,
+      ...protocol,
+      ...stainless,
+    }
+    return applyReplayBetaPolicy(base, model, true)
+  }
+  // Unofficial: ignore inbound protocol / UA. Stored CLI fills gaps; VM fingerprint wins.
+  const base = {
+    ...DEFAULTS,
+    ...stored,
+    ...stainless,
+  }
+  delete base["anthropic-dangerous-direct-browser-access"]
+  return applyReplayBetaPolicy(base, model, false)
+}
+
+/**
+ * Protocol betas: official empty → DefaultBetaHeader; unofficial → FullClaudeCodeMimicryBetas.
+ * VM identity still overwrites UA / stainless / device. Stored CLI betas replay only when
+ * official inbound omitted anthropic-beta (so probes do not wipe kin-cc-headers.json).
+ */
 export function resolveCrsHeaders(reqHeaders = {}, homeDir = "", identity = null, model = "") {
   if (identity) return resolveVmCharacteristicHeaders(identity, reqHeaders, homeDir, model)
   const incoming = extractClaudeCodeHeaders(reqHeaders)
@@ -177,8 +197,6 @@ export function resolveCrsHeaders(reqHeaders = {}, homeDir = "", identity = null
     return applyReplayBetaPolicy({ ...DEFAULTS, ...incoming }, model, true)
   }
   const stored = loadStoredHeaders(homeDir) || {}
-  const incomingSafe = { ...incoming }
-  delete incomingSafe["user-agent"]
-  const merged = { ...DEFAULTS, ...stored, ...incomingSafe }
-  return applyReplayBetaPolicy(merged, model)
+  const merged = { ...DEFAULTS, ...stored }
+  return applyReplayBetaPolicy(merged, model, false)
 }
