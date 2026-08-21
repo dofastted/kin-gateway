@@ -15,6 +15,9 @@ test('sessionKey import writes via persistOauthToVm (fake oauth)', async () => {
       },
     })
     assert.equal(r.status, 200, r.text)
+    assert.equal(r.json?.data?.persisted, true)
+    assert.equal(r.json?.data?.vm?.access_preview, 'sk-ant-oat01…FAKE-SIM')
+    assert.equal(r.json?.data?.vm?.email, 'fake-oauth@kin.test')
     const rec = JSON.parse(fs.readFileSync(path.join(gw.project, 'vms', 'vm-sim-01.json'), 'utf8'))
     assert.equal(rec.claude.email, 'fake-oauth@kin.test')
     assert.equal(rec.claude.access_token, 'sk-ant-oat01-FAKE-SIM')

@@ -26,13 +26,22 @@ import {
   claudeSSELineToOpenAICompletionChunks,
   createResponsesStreamState,
   claudeSSELineToResponsesEvents,
+  createClaudeMessageAssembler,
+  applyClaudeSSELineToMessage,
 } from './lib/protocol/convert.mjs'
 import { sanitizeInboundBody, defaultSeedPolicy } from './lib/protocol/seed-policy.mjs'
 import { sessionKeyToOAuth } from '../scripts/session-to-oauth.mjs'
-import { persistOauthToVm, applyOauthToCfg } from './lib/oauth/oauth-credentials.mjs'
+import { persistOauthToVm, applyOauthToCfg, mirrorWorkerCredentialsToVm } from './lib/oauth/oauth-credentials.mjs'
 import crypto from 'node:crypto'
 import { fingerprintRequest } from './lib/protocol/client-fingerprint.mjs'
-import { validateOfficialModel, ingestWorkerModels } from './lib/protocol/models.mjs'
+import { validateOfficialModel, ingestWorkerModels, listOfficialModels, seedModelCatalog, getCatalogIds } from './lib/protocol/models.mjs'
+import {
+  loadModelPolicy, getModelPolicy, saveModelPolicy, resetModelPolicy,
+  listPolicyModels, syncWorkerModelsIntoPolicy, filterPublicModelIds,
+} from './lib/protocol/model-policy.mjs'
+import { runVmTestChat, listTestableModels } from './lib/admin/vm-test-chat.mjs'
+import { startConcurrentTest, getConcurrentTest, listConcurrentTests, cancelConcurrentTest, listSavedReports, readSavedReport } from './lib/admin/concurrent-test.mjs'
+import { startProbeTest, getProbeTest, listProbeTests, cancelProbeTest, getProbeCatalog } from './lib/admin/probe-test.mjs'
 import { StickyRouter } from './lib/pool/sticky-router.mjs'
 import { AccountQuota } from './lib/pool/account-quota.mjs'
 import { ApiKeyStore, publicKeyView } from './lib/admin/api-keys.mjs'
@@ -40,7 +49,7 @@ import { RequestLogStore, summarizeBody } from './lib/admin/request-log.mjs'
 import { listVms, getVm, summarizeVm, getActiveVmId, setActiveVm, setVmSchedulable, bindVmProxy } from './lib/vm/vm-registry.mjs'
 import {
   makeError, mapUpstreamError, validateRequestBody,
-  mapModelError, ErrorType, ErrorCode,
+  mapModelError, isClientCancelledResult, ErrorType, ErrorCode,
 } from './lib/core/errors.mjs'
 import * as panel from './lib/admin/panel-api.mjs'
 import { ProxyPool } from './lib/vm/proxy-pool.mjs'
@@ -54,16 +63,16 @@ import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
 import { BackupService } from './lib/admin/backup-service.mjs'
 import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
-import { applyCrsUnofficialPersona } from './lib/identity/crs-persona.mjs'
+import { applyCrsUnofficialPersona, personaModeFromRouting, isOfficialClaudeCodeTraffic } from './lib/identity/crs-persona.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './lib/protocol/web-search.mjs'
-import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
+import { startVmRuntime, stopVmRuntime, ensureSlotOwnership, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
 import {
-  callGoWorker,
   streamGoWorker,
   workerHealth,
   ensureWorkerCredential,
   importWorkerCredential,
   callWorkerGet,
+  workerPaths,
 } from './lib/transport/go-worker-client.mjs'
 import { PoolScheduler } from './lib/pool/pool-scheduler.mjs'
 import { FailoverRunner } from './lib/pool/failover-runner.mjs'
@@ -137,6 +146,7 @@ const allowRate = createRateLimiter({
 // --- Persistent store (SQLite, sub2api-inspired) ---
 const dataDir = cfg.paths.data || path.join(cfg.paths.root, 'data')
 openDatabase({ dataDir })
+try { loadModelPolicy() } catch (e) { console.warn("[model-policy] boot load failed", e?.message || e) }
 // one-time migration of legacy JSON files (data/*.json + request-logs) into the DB
 const legacyImport = runLegacyImport({ dataDir, projectRoot: cfg.paths.project })
 if (legacyImport?.imported) {
@@ -193,6 +203,12 @@ let runtimeRepo
 let attemptsRepo
 let poolScheduler
 let failoverRunner
+function poolSchedulerConfig() {
+  return {
+    ...(routingConfig.pool || {}),
+    fable_max_per_account: Number(routingConfig.concurrency?.fable_max_per_account ?? 4),
+  }
+}
 function initPoolRuntime() {
   runtimeRepo = new AccountRuntimeRepo()
   attemptsRepo = new RequestAttemptsRepo()
@@ -204,7 +220,7 @@ function initPoolRuntime() {
     accountQuota,
     runtimeRepo,
     workerHealth,
-    config: routingConfig.pool || {},
+    config: poolSchedulerConfig(),
   })
   failoverRunner = new FailoverRunner({
     scheduler: poolScheduler,
@@ -445,6 +461,42 @@ function reloadRules() {
   return cfg.intercept.rules
 }
 
+async function streamAndAssembleClaudeMessage({
+  candidate,
+  body,
+  reqHeaders,
+  timeoutMs,
+  signal,
+  deliveryMode,
+  toolNames = {},
+  onCommit,
+}) {
+  const assembler = createClaudeMessageAssembler()
+  const workerResult = await streamGoWorker({
+    exec: candidate.exec,
+    body,
+    reqHeaders,
+    timeoutMs,
+    identity: loadVmIdentity(candidate.exec),
+    signal,
+    deliveryMode,
+    onCommit,
+    onEvent: async (line) => {
+      applyClaudeSSELineToMessage(restoreToolNamesInSSELine(line, toolNames), assembler)
+    },
+  })
+  if (assembler.message) {
+    workerResult.body = assembler.message
+    if (assembler.message.usage) workerResult.usage = assembler.message.usage
+    if (assembler.message.model) workerResult.model = assembler.message.model
+    if (assembler.message.stop_reason) workerResult.stopReason = assembler.message.stop_reason
+  }
+  if (workerResult?.body) {
+    workerResult.body = restoreToolNames(workerResult.body, toolNames)
+  }
+  return workerResult
+}
+
 async function handleProtocol(req, res, protocol, pathName) {
   if (!requireAuth(req, res)) return
 
@@ -563,8 +615,12 @@ async function handleProtocol(req, res, protocol, pathName) {
 
   ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: converted.claude })
   const officialClient = isOfficialClaudeClient(fp.client_class)
+  const officialTraffic = isOfficialClaudeCodeTraffic(req.headers, inbound)
+  ctx.body = applyCrsUnofficialPersona(ctx.body, {
+    officialClient: officialTraffic,
+    mode: personaModeFromRouting(routingConfig),
+  })
   if (!officialClient) {
-    ctx.body = applyCrsUnofficialPersona(ctx.body, { officialClient: false })
     ctx.body = ensureClaudeWebSearch(ctx.body, {
       enabled: shouldInjectClaudeWebSearch({ clientClass: fp.client_class, headers: req.headers }),
     })
@@ -592,8 +648,12 @@ async function handleProtocol(req, res, protocol, pathName) {
   }
   req.once('aborted', onAborted)
 
-  const wantStream = !!inbound.stream
-  const deliveryMode = String(req.headers['x-kin-delivery'] || routingConfig?.failover?.delivery_mode || 'realtime')
+  const clientStream = !!inbound.stream
+  const upstreamStream = true
+  const requestedDelivery = String(req.headers['x-kin-delivery'] || routingConfig?.failover?.delivery_mode || 'realtime')
+  const deliveryMode = !clientStream
+    ? 'verified'
+    : (requestedDelivery === 'verified' ? 'verified' : 'realtime')
   let result
   try {
     result = await failoverRunner.run({
@@ -601,34 +661,35 @@ async function handleProtocol(req, res, protocol, pathName) {
       canonicalBody,
       model: canonicalBody.model,
       stickyKey,
-      stream: wantStream,
-      deliveryMode: deliveryMode === 'verified' ? 'verified' : 'realtime',
+      stream: upstreamStream,
+      deliveryMode,
       signal: abortController.signal,
       applyAttempt: (body, selected) => {
         const identity = loadVmIdentity(selected.exec)
-        const identified = applyCrsIdentityReplace(officialMessagesBody(body, { stream: wantStream }), identity, inbound)
+        const identified = applyCrsIdentityReplace(officialMessagesBody(body, { stream: upstreamStream }), identity, inbound)
         const cleaned = prepareAnthropicRequest(identified, {
           cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
+          unofficial: !officialClient,
         })
         const tools = rewriteToolNames(cleaned, {
           enabled: routingConfig?.compatibility?.tool_name_rewrite !== false,
         })
+        logBag.outbound_body = tools.body
+        logBag.outbound_summary = summarizeBody(tools.body)
         return { body: tools.body, meta: { toolNames: tools.reverse } }
       },
-      callAttempt: async ({ candidate, body, attemptMeta, stream, deliveryMode: attemptDelivery, signal, onCommit }) => {
-        if (!stream) {
-          const workerResult = await callGoWorker({
-            exec: candidate.exec,
+      callAttempt: async ({ candidate, body, attemptMeta, deliveryMode: attemptDelivery, signal, onCommit }) => {
+        if (!clientStream) {
+          return streamAndAssembleClaudeMessage({
+            candidate,
             body,
             reqHeaders: req.headers,
             timeoutMs: cfg.limits.upstream_timeout_ms,
-            identity: loadVmIdentity(candidate.exec),
             signal,
+            deliveryMode: attemptDelivery,
+            toolNames: attemptMeta?.toolNames || {},
+            onCommit,
           })
-          if (workerResult?.body) {
-            workerResult.body = restoreToolNames(workerResult.body, attemptMeta?.toolNames || {})
-          }
-          return workerResult
         }
         let state
         if (protocol === 'openai.chat') {
@@ -695,6 +756,10 @@ async function handleProtocol(req, res, protocol, pathName) {
   logBag.first_token_ms = result?.ttftMs ?? null
   logBag.stop_reason = result?.body?.stop_reason || result?.stopReason || null
   logBag.via = result?.via || 'go-worker-pool'
+  if (result?.finalState === 'content_filter' || logBag.stop_reason === 'refusal') {
+    logBag.error_code = logBag.error_code || 'content_filter_refusal'
+    logBag.error_message = logBag.error_message || 'upstream stop_reason=refusal'
+  }
 
   if (result?.ok && result?.accountId) {
     try { accountQuota.ingestHeaders(result.accountId, result.headers || {}, logBag.usage) } catch {}
@@ -703,30 +768,35 @@ async function handleProtocol(req, res, protocol, pathName) {
     }
   }
 
-  if (wantStream) {
+  if (clientStream) {
     if (!res.headersSent) {
-      stats.errors++
       const mapped = mapUpstreamError(result?.status || 503, result?.body, result?.headers || {})
       logBag.error_code = mapped.body?.error?.code || 'account_pool_exhausted'
       logBag.error_message = mapped.body?.error?.message || null
+      if (!isClientCancelledResult(result) && mapped.body?.error?.code !== 'client_cancelled') stats.errors++
       return json(res, mapped.status, mapped.body)
     }
     if (result?.ok && protocol !== 'anthropic.messages') {
       res.write('data: [DONE]\n\n')
     }
     if (!result?.ok) {
-      stats.errors++
-      logBag.error_code = result?.body?.error?.code || 'stream_incomplete'
-      logBag.error_message = result?.body?.error?.message || 'Stream did not reach a verified terminal state'
+      if (isClientCancelledResult(result)) {
+        logBag.error_code = 'client_cancelled'
+        logBag.error_message = result?.body?.error?.message || 'Client closed the connection'
+      } else {
+        stats.errors++
+        logBag.error_code = result?.body?.error?.code || 'stream_incomplete'
+        logBag.error_message = result?.body?.error?.message || 'Stream did not reach a verified terminal state'
+      }
     }
     return res.end()
   }
 
   if (!result?.ok) {
-    stats.errors++
     const mapped = mapUpstreamError(result?.status || 503, result?.body, result?.headers || {})
     logBag.error_code = mapped.body?.error?.code || 'upstream_error'
     logBag.error_message = mapped.body?.error?.message || null
+    if (mapped.body?.error?.code !== 'client_cancelled') stats.errors++
     return json(res, mapped.status, mapped.body)
   }
 
@@ -797,21 +867,33 @@ async function oauthStatusWithWorker(id = null) {
 }
 
 async function fetchWorkerModels() {
+  seedModelCatalog()
+try { loadModelPolicy() } catch (e) { console.warn('[model-policy] load failed', e?.message || e) }
   const active = getActiveVmId(cfg.paths.project)
   const order = [
     active,
     ...listVms(cfg.paths.project).map((vm) => vm.id).filter((id) => id !== active),
   ].filter(Boolean)
   let last = null
+  let liveCount = 0
   for (const id of order) {
     const exec = workerExecForVm(id)
     if (!exec) continue
+    const { socketPath } = workerPaths(exec)
+    if (!socketPath) continue
+    try {
+      if (!fs.statSync(socketPath).isSocket()) continue
+    } catch {
+      continue
+    }
+    liveCount += 1
     const result = await callWorkerGet(exec, '/internal/v1/models')
     last = result
     if (result.ok) {
       try { ingestWorkerModels(result.body) } catch {}
       return {
-        ...(result.body || {}),
+        object: 'list',
+        data: listOfficialModels(),
         source: 'go-slot-worker',
         vm_id: id,
       }
@@ -819,9 +901,10 @@ async function fetchWorkerModels() {
   }
   return {
     object: 'list',
-    data: [],
-    source: 'go-slot-worker',
-    error: last?.body?.error?.message || 'No healthy slot worker can fetch models',
+    data: listOfficialModels(),
+    source: 'go-slot-worker-seed',
+    live_workers: liveCount,
+    error: last?.body?.error?.message || (liveCount ? undefined : 'No live slot worker socket'),
   }
 }
 
@@ -867,10 +950,12 @@ const server = http.createServer(async (req, res) => {
       if (body.pool) routingConfig.pool = { ...(routingConfig.pool || {}), ...body.pool }
       if (body.failover) routingConfig.failover = { ...(routingConfig.failover || {}), ...body.failover }
       if (body.compatibility) routingConfig.compatibility = { ...(routingConfig.compatibility || {}), ...body.compatibility }
+      if (body.concurrency) routingConfig.concurrency = { ...(routingConfig.concurrency || {}), ...body.concurrency }
       fs.mkdirSync(path.dirname(routingConfigPath), { recursive: true })
       fs.writeFileSync(routingConfigPath, JSON.stringify(routingConfig, null, 2))
       stickyRouter.reloadConfig(routingConfig)
       accountQuota.reloadConfig(routingConfig)
+      poolScheduler.reloadConfig(poolSchedulerConfig())
       if (body.pool || body.failover) initPoolRuntime()
       return json(res, 200, { ok: true, routing: routingConfig })
     }
@@ -1069,6 +1154,7 @@ const server = http.createServer(async (req, res) => {
           model: u.searchParams.get('model') || null,
           protocol: u.searchParams.get('protocol') || null,
           status: u.searchParams.get('status') || null,
+          error_class: u.searchParams.get('error_class') || null,
           since: u.searchParams.get('since') || null,
           until: u.searchParams.get('until') || null,
           q: u.searchParams.get('q') || null,
@@ -1098,6 +1184,7 @@ const server = http.createServer(async (req, res) => {
           until,
           totals: requestLog.totals(),
           buckets: requestLog.aggregate({ since, until, bucket }),
+          window: requestLog.windowStats({ since, until }),
         })
       }
       if (req.method === 'GET' && /^\/api\/panel\/request-logs\/[^/]+\/attempts$/.test(p)) {
@@ -1183,16 +1270,16 @@ const server = http.createServer(async (req, res) => {
 
       // GET /api/panel/dashboard
       if (req.method === 'GET' && p === '/api/panel/dashboard') {
-        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog }))
+        return json(res, 200, panel.buildDashboard({ cfg, accountQuota, stickyRouter, routingConfig, stats, requestLog, poolScheduler }))
       }
       // GET /api/panel/vms
       if (req.method === 'GET' && p === '/api/panel/vms') {
-        return json(res, 200, panel.buildVmList({ cfg, accountQuota }))
+        return json(res, 200, panel.buildVmList({ cfg, accountQuota, routingConfig, poolScheduler }))
       }
       // GET /api/panel/vms/:id
       if (req.method === 'GET' && /^\/api\/panel\/vms\/[^/]+$/.test(p)) {
         const id = p.split('/').pop()
-        const result = panel.buildVmDetail({ cfg, accountQuota, id })
+        const result = panel.buildVmDetail({ cfg, accountQuota, id, routingConfig, poolScheduler, requestLog })
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
@@ -1206,7 +1293,7 @@ const server = http.createServer(async (req, res) => {
         }
         const vm = applyVmConcurrency(id, next, { override: true })
         if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        return json(res, 200, panel.buildVmDetail({ cfg, accountQuota, id }))
+        return json(res, 200, panel.buildVmDetail({ cfg, accountQuota, id, routingConfig, poolScheduler, requestLog }))
       }
       // POST /api/panel/vms/:id/probe
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/probe$/.test(p)) {
@@ -1215,6 +1302,132 @@ const server = http.createServer(async (req, res) => {
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
+
+      // POST /api/panel/vms/:id/test-chat — sub2api-style model connectivity test
+      if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/test-chat$/.test(p)) {
+        const id = p.split('/')[4]
+        const body = await readBody(req, 64 * 1024).catch(() => ({}))
+        const result = await runVmTestChat({
+          projectRoot: cfg.paths.project,
+          vmId: id,
+          model: body.model || body.model_id || '',
+          prompt: body.prompt || body.message || '',
+          max_tokens: body.max_tokens,
+          timeoutMs: body.timeout_ms || body.timeoutMs,
+          requestLog,
+          personaMode: personaModeFromRouting(routingConfig),
+        })
+        return json(res, 200, panel.ok(result))
+      }
+      // GET /api/panel/test-models — models available for test dropdown
+      if (req.method === 'GET' && p === '/api/panel/test-models') {
+        return json(res, 200, panel.ok({ items: listTestableModels() }))
+      }
+
+
+      // Concurrent persistent-conversation load test
+      if (req.method === 'POST' && p === '/api/panel/concurrent-test') {
+        const body = await readBody(req, 32 * 1024).catch(() => ({}))
+        const result = startConcurrentTest({
+          concurrency: body.concurrency,
+          turns: body.turns,
+          models: body.models,
+          stocks: body.stocks,
+          max_tokens: body.max_tokens,
+          stream: body.stream,
+          timeout_ms: body.timeout_ms,
+          baseUrl: `http://127.0.0.1:${cfg.port}`,
+          apiKey: cfg.api_key,
+          dataDir: cfg.paths?.data || path.join(cfg.paths.project, 'data'),
+        })
+        if (!result.ok) {
+          const status = result.error?.code === 'run_in_progress' ? 409 : 400
+          return json(res, status, { ok: false, error: result.error, data: result.data || null })
+        }
+        return json(res, 200, panel.ok(result.data))
+      }
+      if (req.method === 'GET' && p === '/api/panel/concurrent-test') {
+        const includeText = url.searchParams.get('text') === '1'
+        return json(res, 200, panel.ok(getConcurrentTest(null, { includeText })))
+      }
+      if (req.method === 'GET' && p === '/api/panel/concurrent-tests') {
+        return json(res, 200, panel.ok({ items: listConcurrentTests() }))
+      }
+      if (req.method === 'GET' && p === '/api/panel/concurrent-test-reports') {
+        const day = url.searchParams.get('day') || null
+        const dataDir = cfg.paths?.data || path.join(cfg.paths.project, 'data')
+        return json(res, 200, panel.ok(listSavedReports(dataDir, day)))
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/concurrent-test-reports\/\d{4}-\d{2}-\d{2}\/[^/]+$/.test(p)) {
+        const day = p.split('/')[4]
+        const name = decodeURIComponent(p.split('/')[5] || '')
+        const dataDir = cfg.paths?.data || path.join(cfg.paths.project, 'data')
+        const data = readSavedReport(dataDir, day, name)
+        if (!data) return json(res, 404, { ok: false, error: { message: 'report not found' } })
+        return json(res, 200, panel.ok(data))
+      }
+      if (req.method === 'POST' && /^\/api\/panel\/concurrent-test\/[^/]+\/cancel$/.test(p)) {
+        const id = p.split('/')[4]
+        const result = cancelConcurrentTest(id)
+        if (!result.ok) return json(res, 404, { ok: false, error: result.error })
+        return json(res, 200, panel.ok(result.data))
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/concurrent-test\/[^/]+$/.test(p)) {
+        const id = p.split('/')[4]
+        const includeText = url.searchParams.get('text') === '1'
+        const data = getConcurrentTest(id, { includeText })
+        if (!data) return json(res, 404, { ok: false, error: { message: 'run not found' } })
+        return json(res, 200, panel.ok(data))
+      }
+
+      if (req.method === 'GET' && p === '/api/panel/probe-test/catalog') {
+        return json(res, 200, panel.ok(getProbeCatalog()))
+      }
+      if (req.method === 'POST' && p === '/api/panel/probe-test') {
+        const body = await readBody(req, 32 * 1024).catch(() => ({}))
+        const result = startProbeTest({
+          suite: body.suite,
+          models: body.models,
+          cases: body.cases,
+          forms: body.forms,
+          questions: body.questions,
+          sample: body.sample ?? body.sample_size,
+          random: body.random,
+          seed: body.seed,
+          max_tokens: body.max_tokens,
+          concurrency: body.concurrency,
+          timeout_ms: body.timeout_ms,
+          baseUrl: `http://127.0.0.1:${cfg.port}`,
+          apiKey: cfg.api_key,
+          dataDir: cfg.paths?.data || path.join(cfg.paths.project, 'data'),
+        })
+        if (!result.ok) {
+          const status = result.error?.code === 'run_in_progress' ? 409 : 400
+          return json(res, status, { ok: false, error: result.error, data: result.data || null })
+        }
+        return json(res, 200, panel.ok(result.data))
+      }
+      if (req.method === 'GET' && p === '/api/panel/probe-test') {
+        const includeText = url.searchParams.get('text') === '1'
+        return json(res, 200, panel.ok(getProbeTest(null, { includeText })))
+      }
+      if (req.method === 'GET' && p === '/api/panel/probe-tests') {
+        return json(res, 200, panel.ok({ items: listProbeTests() }))
+      }
+      if (req.method === 'POST' && /^\/api\/panel\/probe-test\/[^/]+\/cancel$/.test(p)) {
+        const id = p.split('/')[4]
+        const result = cancelProbeTest(id)
+        if (!result.ok) return json(res, 404, { ok: false, error: result.error })
+        return json(res, 200, panel.ok(result.data))
+      }
+      if (req.method === 'GET' && /^\/api\/panel\/probe-test\/[^/]+$/.test(p)) {
+        const id = p.split('/')[4]
+        const includeText = url.searchParams.get('text') === '1'
+        const data = getProbeTest(id, { includeText })
+        if (!data) return json(res, 404, { ok: false, error: { message: 'run not found' } })
+        return json(res, 200, panel.ok(data))
+      }
+
       // POST /api/panel/vms/:id/activate
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/activate$/.test(p)) {
         const id = p.split('/')[4]
@@ -1494,7 +1707,16 @@ const server = http.createServer(async (req, res) => {
         const id = p.split('/')[4]
         const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
         if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
-        const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        let vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+        const bound = proxyPool.ensureBoundToVm(id, vm.proxy?.id || null)
+        if (!bound) {
+          return json(res, 409, {
+            ok: false,
+            error: { code: 'proxy_required', message: 'No SOCKS5 is bound or free for this VM' },
+          })
+        }
+        bindVmProxy(cfg.paths.project, id, bound)
+        vm = getVm(cfg.paths.project, id) || vm
         const boot = startVmRuntime(vm, cfg.paths.project)
         if (!boot.ok) return json(res, 500, { ok: false, error: { message: boot.error || 'runtime start failed' } })
         vm.status = 'running'
@@ -1504,6 +1726,7 @@ const server = http.createServer(async (req, res) => {
         atomicWriteJson(vmPath, vm, { mode: 0o600 })
         return json(res, 200, panel.ok({
           vm: summarizeVm(vm),
+          allocated_proxy: bound,
           runtime: vm.runtime || GATEWAY_CAPABILITIES.runtime,
           kernel: GATEWAY_CAPABILITIES.kernel,
           boot,
@@ -1546,21 +1769,17 @@ const server = http.createServer(async (req, res) => {
             return json(res, 404, { ok: false, error: { message: 'vm not found, 请先创建种子虚拟机' } })
           }
           const existing = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-          // resolve proxy for conversion
+          // resolve proxy for conversion — prefer in-memory pool (has username/password)
           let proxyUrl = body.proxy_url || null
+          if (!proxyUrl) {
+            const bound = proxyPool.getProxyForVm?.(vmId)
+            if (bound?.url) proxyUrl = bound.url
+          }
           if (!proxyUrl && existing.proxy) {
             const px = existing.proxy
             if (px.url) proxyUrl = px.url
             else if (px.host && px.port) {
-              // try pool credentials
-              const snap = proxyPool.snapshot?.() || {}
-              const list = snap.proxies || []
-              const hit = list.find((x) => x.id === px.id) || list.find((x) => x.host === px.host && String(x.port) === String(px.port))
-              if (hit && hit.username) {
-                proxyUrl = `socks5h://${encodeURIComponent(hit.username)}:${encodeURIComponent(hit.password || '')}@${hit.host}:${hit.port}`
-              } else {
-                proxyUrl = `socks5h://${px.host}:${px.port}`
-              }
+              proxyUrl = `socks5h://${px.host}:${px.port}`
             }
           }
           if (sessionKey && !proxyUrl && body.require_proxy !== false) {
@@ -1597,53 +1816,14 @@ const server = http.createServer(async (req, res) => {
               ? oauth.scopes
               : String(oauth.scope || '').split(/\s+/).filter(Boolean),
           }
-          const workerExec = {
-            vmId,
-            vm: existing,
-            homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
-          }
-          if (process.env.KIN_CRS_MOCK !== '1') {
-            const socket = existing.runtime?.worker_socket
-            if (!socket || !fs.existsSync(socket)) {
-              const boot = startVmRuntime(existing, cfg.paths.project, { recreate: true })
-              if (!boot.ok) {
-                return json(res, 502, { ok: false, error: { code: 'worker_start_failed', message: boot.error } })
-              }
-              existing.runtime = boot.runtime
-              existing.status = 'running'
-              existing.schedulable = true
-              existing.schedule_disabled_reason = null
-              atomicWriteJson(vmPath, existing, { mode: 0o600 })
-              workerExec.vm = existing
-            }
-          }
-          let workerImport = null
-          for (let attempt = 0; attempt < 30; attempt++) {
-            workerImport = await importWorkerCredential(workerExec, importedCredential)
-            if (workerImport.ok) break
-            if (process.env.KIN_CRS_MOCK === '1') break
-            await new Promise((resolve) => setTimeout(resolve, 100))
-          }
-          if (!workerImport.ok) {
-            return json(res, workerImport.status || 502, {
-              ok: false,
-              error: {
-                type: 'worker_error',
-                code: 'worker_credential_import_failed',
-                message: workerImport.error?.message || 'Go slot worker rejected credential import',
-              },
-            })
-          }
-          // Serialize the token read-modify-write against concurrent harvests (T7).
+          // Persist immediately after exchange so a worker write failure cannot drop the ticket.
           await withVmLock(vmPath, () => {
-            // Single OAuth writer: persistOauthToVm only
             persistOauthToVm(vmPath, {
               ...importedCredential,
               source: oauth.source || 'sessionKey-cookie-auth',
               session_key: sessionKey ? String(sessionKey).trim() : (existing.claude?.session_key || null),
               mode: 'oauth',
             })
-            // Reload after single-writer persist
             const refreshed = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
             existing.claude = refreshed.claude || existing.claude
             if (body.name) existing.name = body.name
@@ -1653,7 +1833,6 @@ const server = http.createServer(async (req, res) => {
               existing.schedulable = true
               existing.schedule_disabled_reason = null
             }
-            // Non-oauth fields only (status/name) — tokens already written by persistOauthToVm
             atomicWriteJson(vmPath, {
               ...refreshed,
               name: existing.name,
@@ -1664,6 +1843,37 @@ const server = http.createServer(async (req, res) => {
               claude: existing.claude,
             })
           })
+          try { ensureSlotOwnership(existing, cfg.paths.project) } catch {}
+          const workerExec = {
+            vmId,
+            vm: existing,
+            homeDir: path.join(cfg.paths.project, 'vms', vmId, 'cli-home'),
+          }
+          let workerImport = { ok: true, status: 200 }
+          if (process.env.KIN_CRS_MOCK !== '1') {
+            const socket = existing.runtime?.worker_socket
+            if (!socket || !fs.existsSync(socket)) {
+              const boot = startVmRuntime(existing, cfg.paths.project, { recreate: true })
+              if (boot.ok) {
+                existing.runtime = boot.runtime
+                existing.status = 'running'
+                existing.schedulable = true
+                existing.schedule_disabled_reason = null
+                atomicWriteJson(vmPath, existing, { mode: 0o600 })
+                workerExec.vm = existing
+              } else {
+                workerImport = { ok: false, status: 502, error: { message: boot.error } }
+              }
+            }
+          }
+          if (workerImport.ok) {
+            for (let attempt = 0; attempt < 30; attempt++) {
+              workerImport = await importWorkerCredential(workerExec, importedCredential)
+              if (workerImport.ok) break
+              if (process.env.KIN_CRS_MOCK === '1') break
+              await new Promise((resolve) => setTimeout(resolve, 100))
+            }
+          }
           if (body.activate !== false) {
             try { activateVmSlot(vmId) } catch {}
             applyOauthToCfg(cfg, {
@@ -1681,9 +1891,20 @@ const server = http.createServer(async (req, res) => {
             vm: summarizeVm(existing),
             proxy_used: !!proxyUrl,
             oauth_email: existing.claude.email,
+            persisted: true,
+            worker_ok: !!workerImport.ok,
+            worker_error: workerImport.ok ? null : (workerImport.error?.message || 'Go slot worker rejected credential import'),
           }))
         } catch (e) {
-          return json(res, 500, { ok: false, error: { message: String(e.message || e) } })
+          const raw = String(e.message || e)
+          const cf = /just a moment|cloudflare|doctype html/i.test(raw)
+          return json(res, cf ? 502 : 500, {
+            ok: false,
+            error: {
+              code: e.code || (cf ? 'cloudflare_challenge' : 'import_failed'),
+              message: raw.slice(0, 300),
+            },
+          })
         }
       }
 
@@ -1693,17 +1914,24 @@ const server = http.createServer(async (req, res) => {
         if (!fs.existsSync(vmPath)) {
           return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
+        const homeDir = path.join(cfg.paths.project, 'vms', id, 'cli-home')
         const vm = getVm(cfg.paths.project, id)
         const result = await ensureWorkerCredential({
           vmId: id,
           vm,
-          homeDir: path.join(cfg.paths.project, 'vms', id, 'cli-home'),
+          homeDir,
         }, { force: true })
+        let mirrored = null
+        if (result?.ok) {
+          try { mirrored = mirrorWorkerCredentialsToVm(vmPath, homeDir) } catch {}
+        }
         return json(res, result.ok ? 200 : (result.status || 502), panel.ok({
           ...result,
           vm_id: id,
           refresh_owner: 'go-slot-worker',
           proxy_required: true,
+          mirrored: !!mirrored,
+          expires_at: mirrored?.claude?.expires_at || result?.credential?.expires_at || null,
         }))
       }
       if (req.method === 'GET' && p === '/api/panel/oauth') {
@@ -1717,12 +1945,62 @@ const server = http.createServer(async (req, res) => {
       }
       // GET /api/panel/usage
       if (req.method === 'GET' && p === '/api/panel/usage') {
-        return json(res, 200, panel.buildUsage({ accountQuota, cfg }))
+        return json(res, 200, panel.buildUsage({ accountQuota, cfg, requestLog }))
       }
       // GET /api/panel/models
       if (req.method === 'GET' && p === '/api/panel/models') {
         return json(res, 200, panel.ok(await fetchWorkerModels()))
       }
+
+      // GET /api/panel/model-policy
+      if (req.method === 'GET' && p === '/api/panel/model-policy') {
+        const pol = getModelPolicy()
+        const workerIds = listOfficialModels().map((m) => m.id)
+        // listOfficialModels already policy-filtered; also expose raw worker if needed
+        return json(res, 200, panel.ok({
+          policy: pol,
+          models: listPolicyModels(),
+          effective: listOfficialModels(),
+        }))
+      }
+      // PUT /api/panel/model-policy
+      if (req.method === 'PUT' && p === '/api/panel/model-policy') {
+        const body = await readBody(req, 2 * 1024 * 1024)
+        const saved = saveModelPolicy(body.policy || body)
+        return json(res, 200, panel.ok({
+          policy: saved,
+          models: listPolicyModels(),
+          effective: listOfficialModels(),
+        }))
+      }
+      // POST /api/panel/model-policy/reset
+      if (req.method === 'POST' && p === '/api/panel/model-policy/reset') {
+        const saved = resetModelPolicy()
+        return json(res, 200, panel.ok({
+          policy: saved,
+          models: listPolicyModels(),
+          effective: listOfficialModels(),
+        }))
+      }
+      // POST /api/panel/model-policy/sync-worker
+      if (req.method === 'POST' && p === '/api/panel/model-policy/sync-worker') {
+        let workerIds = []
+        try { workerIds = getCatalogIds() } catch {}
+        if (!workerIds.length) {
+          try {
+            const raw = JSON.parse(fs.readFileSync('/opt/kin-gateway/data/cli-models.json', 'utf8'))
+            if (Array.isArray(raw?.ids)) workerIds = raw.ids
+          } catch {}
+        }
+        const saved = syncWorkerModelsIntoPolicy(workerIds)
+        return json(res, 200, panel.ok({
+          policy: saved,
+          models: listPolicyModels(),
+          effective: listOfficialModels(),
+          synced: workerIds.length,
+        }))
+      }
+
       // GET /api/panel/routing
       if (req.method === 'GET' && p === '/api/panel/routing') {
         return json(res, 200, panel.buildRouting({ routingConfig, stickyRouter }))
@@ -1748,6 +2026,7 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(routingConfigPath, JSON.stringify(routingConfig, null, 2))
         stickyRouter.reloadConfig(routingConfig)
         accountQuota.reloadConfig(routingConfig)
+        poolScheduler.reloadConfig(poolSchedulerConfig())
         if (body.pool || body.failover) initPoolRuntime()
         let applied = null
         if (body.concurrency && (body.concurrency.default_max_per_account != null || body.concurrency.default_key_concurrency != null)) {
@@ -1764,8 +2043,30 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/panel/proxies/import') {
         const body = await readBody(req, 2 * 1024 * 1024)
         const text = body.text || body.lines || (Array.isArray(body) ? body.join('\n') : '')
-        const result = proxyPool.importLines(text)
-        return json(res, 200, panel.ok(result))
+        const result = proxyPool.importLines(text, {
+          fields: body.proxies || body.entries || null,
+          host: body.host,
+          port: body.port,
+          username: body.username ?? body.user,
+          password: body.password ?? body.pass,
+        })
+        const bindVmId = String(body.bind_vm_id || body.vm_id || '').trim()
+        let bound = null
+        let worker = null
+        if (bindVmId && result.items?.[0]?.id) {
+          const bind = proxyPool.bind(result.items[0].id, bindVmId)
+          if (bind.ok) {
+            bindVmProxy(cfg.paths.project, bindVmId, proxyPool.getProxyForVm(bindVmId))
+            bound = bind.proxy
+            const vm = getVm(cfg.paths.project, bindVmId)
+            if (vm?.status === 'running' && process.env.KIN_CRS_MOCK !== '1') {
+              setVmSchedulable(cfg.paths.project, bindVmId, false, 'proxy_rebind_worker_restart')
+              worker = startVmRuntime(getVm(cfg.paths.project, bindVmId), cfg.paths.project, { recreate: true })
+              if (worker.ok) setVmSchedulable(cfg.paths.project, bindVmId, true)
+            }
+          }
+        }
+        return json(res, 200, panel.ok({ ...result, bound, worker }))
       }
       if (req.method === 'POST' && p === '/api/panel/proxies/probe') {
         const result = await proxyPool.probeAll({ onlyEnabled: true })
@@ -1856,8 +2157,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && (p === '/console' || p === '/console/')) {
-      const htmlPath = path.join(cfg.paths.root, 'public', 'console.html')
-      if (!fs.existsSync(htmlPath)) return json(res, 404, { error: { message: 'console not found' } })
+      const candidates = [
+        path.join(cfg.paths.root, 'public', 'console.html'),
+        path.join(cfg.paths.root, 'gateway', 'public', 'console.html'),
+        '/var/www/kin-console/index.html',
+      ]
+      const htmlPath = candidates.find((f) => { try { return fs.existsSync(f) } catch { return false } })
+      if (!htmlPath) return json(res, 404, { error: { message: 'console not found' } })
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(fs.readFileSync(htmlPath))
     }
@@ -1954,11 +2260,20 @@ const server = http.createServer(async (req, res) => {
       const exec = workerExecForVm(id)
       if (!exec) return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })
       const result = await ensureWorkerCredential(exec, { force: body.force === true })
+      let mirrored = null
+      if (result?.ok && exec?.homeDir) {
+        try {
+          const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
+          mirrored = mirrorWorkerCredentialsToVm(vmPath, exec.homeDir)
+        } catch {}
+      }
       return json(res, result.ok ? 200 : (result.status || 502), {
         ...result,
         vm_id: id,
         refresh_owner: 'go-slot-worker',
         proxy_required: true,
+        mirrored: !!mirrored,
+        expires_at: mirrored?.claude?.expires_at || result?.credential?.expires_at || null,
       })
     }
 

@@ -133,12 +133,36 @@ export function ensureOuterSocks(vm) {
   return { ok: true, uid: socksUidFor(vm), transport: 'go-explicit-socks5' }
 }
 
-function runtimeUser(vm) {
+export function runtimeUser(vm) {
   return `${socksUidFor(vm)}:${GID}`
 }
 
-function runtimeUidNum(vm) {
+export function runtimeUidNum(vm) {
   return Number((runtimeUser(vm).split(':')[0]))
+}
+
+/** Slot worker runs as 10000+N:987. Seeded .claude must match or import cannot write. */
+export function chownTree(dir, uid, gid) {
+  if (!dir || !fs.existsSync(dir)) return
+  try { fs.chownSync(dir, uid, gid) } catch {}
+  let entries
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+  for (const entry of entries) {
+    const dest = path.join(dir, entry.name)
+    if (entry.isSymbolicLink()) continue
+    if (entry.isDirectory()) chownTree(dest, uid, gid)
+    else try { fs.chownSync(dest, uid, gid) } catch {}
+  }
+}
+
+export function ensureSlotOwnership(vm, projectRoot) {
+  if (!vm?.id || !projectRoot) return
+  const uid = runtimeUidNum(vm)
+  const gid = Number(GID)
+  if (!Number.isFinite(uid) || !Number.isFinite(gid)) return
+  const slot = path.join(projectRoot, 'vms', vm.id)
+  chownTree(path.join(slot, 'cli-home'), uid, gid)
+  chownTree(path.join(slot, 'run'), uid, gid)
 }
 
 function runtimePatch(vm, info, extra = {}) {
@@ -225,6 +249,16 @@ function writeWorkerFiles(vm, projectRoot) {
   return paths
 }
 
+/** Running slots survive Node deploy. Only an explicit recreate may docker rm -f. */
+export function shouldReplaceSlotContainer({ existing, recreate = false, network, image } = {}) {
+  if (!existing) return false
+  if (recreate === true) return true
+  if (existing.running) return false
+  const wrongNet = network != null && existing.networkMode && existing.networkMode !== network
+  const wrongImg = image != null && existing.image && existing.image !== image
+  return !!(wrongNet || wrongImg)
+}
+
 export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
   const name = containerName(vm.id)
   const host = displayName(vm.id)
@@ -240,19 +274,28 @@ export function startVmRuntime(vm, projectRoot, { recreate = false } = {}) {
   if (!fs.existsSync(WORKER_BIN)) {
     return { ok: false, error: `Go worker binary not found: ${WORKER_BIN}` }
   }
+
+  let existing = inspectContainer(name)
+  const paths = workerPaths(projectRoot, vm.id)
+  // Node restart / 开机 must not bounce a live slot. Skip config rewrite too.
+  if (existing?.running && !recreate) {
+    runtimePatch(vm, existing, {
+      worker_socket: paths.socket,
+      worker_run_dir: paths.runDir,
+      worker_token_file: paths.token,
+    })
+    return { ok: true, action: 'already-running', runtime: vm.runtime }
+  }
+
   let worker
   try {
     worker = writeWorkerFiles(vm, projectRoot)
   } catch (error) {
     return { ok: false, error: String(error.message || error) }
   }
-  try { fs.chownSync(home, runtimeUidNum(vm), Number(GID)) } catch {}
+  ensureSlotOwnership(vm, projectRoot)
 
-  let existing = inspectContainer(name)
-  const wrongNet = existing && existing.networkMode !== NET
-  const wrongImg = existing && existing.image !== image
-  const wrongWorker = existing && !fs.existsSync(worker.socket)
-  if (existing && (recreate || wrongNet || wrongImg || wrongWorker)) {
+  if (shouldReplaceSlotContainer({ existing, recreate, network: NET, image })) {
     sh(['docker', 'rm', '-f', name])
     existing = null
   }

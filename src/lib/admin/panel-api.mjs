@@ -499,6 +499,8 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     account_uuid: v.account_uuid,
     org_uuid: v.org_uuid || null,
     has_token: hasToken,
+    access_preview: v.access_preview || null,
+    refresh_preview: v.refresh_preview || null,
     expires_at: expiresAt,
     oauth_source: v.oauth_source || null,
     has_refresh: !!(v.has_refresh || workerCred?.has_refresh),

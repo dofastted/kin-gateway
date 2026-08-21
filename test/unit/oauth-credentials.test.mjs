@@ -9,6 +9,7 @@ import {
   normalizeOauth,
   applyOauthToCfg,
   persistOauthToVm,
+  redactOauthToken,
   REFRESH_SKEW_MS,
 } from '../../src/lib/oauth/oauth-credentials.mjs'
 
@@ -63,4 +64,10 @@ test('persist + apply keep other vm fields', () => {
 
 test('persistOauthToVm returns null for a missing vm file', () => {
   assert.equal(persistOauthToVm('/nonexistent/vm.json', { access_token: 'x' }), null)
+})
+
+test('redactOauthToken keeps prefix and tail only', () => {
+  assert.equal(redactOauthToken(''), null)
+  assert.equal(redactOauthToken('sk-ant-oat01-ABCDEFGH12345678TAILXXXX'), 'sk-ant-oat01…TAILXXXX')
+  assert.equal(redactOauthToken('short'), 'shor…')
 })

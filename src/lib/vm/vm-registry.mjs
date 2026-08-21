@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { atomicWriteJson } from './vm-file.mjs'
+import { redactOauthToken } from '../oauth/oauth-credentials.mjs'
 
 export function listVms(projectRoot) {
   const dir = path.join(projectRoot, 'vms')
@@ -41,7 +42,10 @@ export function summarizeVm(vm) {
     account_uuid: vm.claude?.account_uuid || null,
     org_uuid: vm.claude?.org_uuid || null,
     has_token: !!vm.claude?.access_token,
+    access_preview: redactOauthToken(vm.claude?.access_token),
+    refresh_preview: redactOauthToken(vm.claude?.refresh_token),
     expires_at: vm.claude?.expires_at || null,
+    refreshed_at: vm.claude?.refreshed_at || null,
     oauth_source: vm.claude?.source || null,
     has_refresh: !!vm.claude?.refresh_token,
     has_session_key: !!vm.claude?.session_key,
@@ -80,16 +84,34 @@ export function setActiveVm(projectRoot, id) {
 }
 
 
+/** Statuses that mean the slot is actually down — not a soft UI pause. */
+const HARD_UNAVAILABLE = new Set(['stopped', 'dead', 'error', 'disabled'])
+
+/**
+ * Soft `paused` is only a UI mark written by setVmSchedulable(false).
+ * If schedulable is back on, the account must remain selectable.
+ */
+export function isVmScheduleReady(vm) {
+  if (!vm) return false
+  if (vm.schedulable === false) return false
+  const status = String(vm.status || '').toLowerCase()
+  if (HARD_UNAVAILABLE.has(status)) return false
+  return true
+}
+
 export function setVmSchedulable(projectRoot, id, schedulable, reason = null) {
   const file = path.join(projectRoot, 'vms', `${id}.json`)
   if (!fs.existsSync(file)) return null
   const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
   vm.schedulable = !!schedulable
-  vm.schedule_disabled_reason = schedulable ? null : (reason || 'disabled')
   vm.schedule_updated_at = new Date().toISOString()
-  if (!schedulable) {
-    // mark soft status for UI
-    vm.status = vm.status === 'running' ? 'paused' : vm.status
+  vm.updated_at = vm.schedule_updated_at
+  if (schedulable) {
+    vm.schedule_disabled_reason = null
+    if (String(vm.status || '').toLowerCase() === 'paused') vm.status = 'running'
+  } else {
+    vm.schedule_disabled_reason = reason || 'disabled'
+    if (String(vm.status || '').toLowerCase() === 'running') vm.status = 'paused'
   }
   atomicWriteJson(file, vm)
   return summarizeVm(vm)
@@ -108,6 +130,7 @@ export function bindVmProxy(projectRoot, id, proxyInfo) {
         url: proxyInfo.url || null,
       }
     : null
+  if (proxyInfo) vm.proxy_cli_enabled = true
   atomicWriteJson(file, vm)
   return summarizeVm(vm)
 }
