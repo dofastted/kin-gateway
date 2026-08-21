@@ -1,15 +1,14 @@
-import { applyBetaPolicyToHeader } from '../protocol/model-policy.mjs'
+import { applyBetaPolicyToHeader, shouldPassContext1mByPolicy } from '../protocol/model-policy.mjs'
+import { CONTEXT_1M_BETA } from '../protocol/context-1m.mjs'
 
 /**
  * Store / replay official Claude Code headers (CRS claudeCodeHeadersService analog).
  * Never stores Authorization / x-api-key / cookies.
  *
- * 2026-08-20: Strip context-1m-2025-08-07 on replay.
- * Official Anthropic data (Aug 2026):
- *   - Haiku family: 200K only → beta causes 400 "long context beta is not yet available for this subscription"
- *   - Sonnet 4.6 / Opus 4.6+ / Sonnet 5 / Fable 5: native 1M, beta not required
- *   - This OAuth subscription also rejects long-context with "Usage credits are required"
- * sub2api reference: stripBetaToken / mergeAnthropicBetaDropping + temporary Context1M strip to avoid 429.
+ * context-1m-2025-08-07 (sub2api OAuth):
+ *   - Official Claude Code: pass if matrix betas.pass_context_1m or fallback whitelist
+ *   - Unofficial/mimic: never inject or replay
+ *   - Other models: filter (Haiku 400; Opus/Fable use native window)
  */
 import fs from "node:fs"
 import path from "node:path"
@@ -45,9 +44,9 @@ const DEFAULTS = {
   "x-stainless-package-version": "0.112.1",
 }
 
-/** Betas that must not be replayed for unofficial clients / models that lack entitlement. */
+/** Betas that must not be replayed for unofficial clients. */
 const REPLAY_DROP_BETAS = new Set([
-  "context-1m-2025-08-07",
+  CONTEXT_1M_BETA,
 ])
 
 function lowerHeaders(h = {}) {
@@ -71,15 +70,9 @@ export function stripBetaTokens(header, dropSet = REPLAY_DROP_BETAS) {
   return parts.join(",")
 }
 
-/**
- * Model-aware: Haiku never supports 1M. For other models on this OAuth sub
- * the beta still fails with usage-credits / not-available, so we strip on
- * all replay paths. Official inbound is left untouched.
- */
+/** Official: strip unless the matrix / fallback whitelist says pass. Unofficial callers should always strip. */
 export function shouldStripContext1m(model = "") {
-  // Always strip on replay for safety (account has no long-context entitlement).
-  // Future: return !String(model || "").toLowerCase().includes("haiku") if entitlement returns.
-  return true
+  return !shouldPassContext1mByPolicy(model)
 }
 
 export function extractClaudeCodeHeaders(reqHeaders = {}) {
@@ -132,7 +125,8 @@ function applyReplayBetaPolicy(headers, model = "", isOfficial = false) {
   try {
     cleaned = applyBetaPolicyToHeader(beta, model, { isOfficial })
   } catch {
-    cleaned = shouldStripContext1m(model) ? stripBetaTokens(beta) : beta
+    const drop1m = !isOfficial || !shouldPassContext1mByPolicy(model)
+    cleaned = drop1m ? stripBetaTokens(beta) : beta
   }
   if (cleaned === beta) return headers
   const next = { ...headers }
@@ -166,7 +160,7 @@ export function resolveVmCharacteristicHeaders(identity = {}, reqHeaders = {}, h
     "x-stainless-runtime-version": fp.stainless_runtime_version || stored["x-stainless-runtime-version"] || DEFAULTS["x-stainless-runtime-version"],
     "x-stainless-package-version": fp.stainless_package_version || stored["x-stainless-package-version"] || DEFAULTS["x-stainless-package-version"],
   }
-  // Official inbound keeps protocol betas except context-1m (this sub has no entitlement).
+  // Official inbound: pass context-1m only for whitelist models. Unofficial never replays it.
   if (isOfficialClaudeUa(incoming["user-agent"] || "")) return applyReplayBetaPolicy(base, model, true)
   return applyReplayBetaPolicy(base, model)
 }
