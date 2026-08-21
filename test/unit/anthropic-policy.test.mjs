@@ -7,7 +7,7 @@ import {
   restoreToolNamesInSSELine,
 } from '../../src/lib/protocol/anthropic-policy.mjs'
 
-test('request policy strips empty blocks, caps cache controls and disables forced-tool thinking', () => {
+test('request policy strips empty blocks, caps cache controls and keeps forced-tool thinking', () => {
   const body = prepareAnthropicRequest({
     thinking: { type: 'enabled', budget_tokens: 1024 },
     tool_choice: { type: 'tool', name: 'run' },
@@ -32,7 +32,9 @@ test('request policy strips empty blocks, caps cache controls and disables force
       ],
     }],
   }, { cacheControlLimit: 4 })
-  assert.equal(body.thinking, undefined)
+  assert.equal(body.thinking.type, 'enabled')
+  assert.equal(body.thinking.budget_tokens, 1024)
+  assert.equal(body.context_management.edits[0].type, 'clear_thinking_20251015')
   assert.equal(body.system.length, 1)
   assert.equal(body.messages[0].content[0].text, 'keep')
   assert.equal(body.messages[0].content[1].content.length, 1)
@@ -83,6 +85,17 @@ test('unsigned and empty thinking blocks are stripped before hop', () => {
     { type: 'thinking', thinking: 'keep-me', signature: 'sig_real_1234567890abcdef' },
     { type: 'text', text: 'answer' },
   ])
+})
+
+test('existing context_management is not overwritten', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-sonnet-5',
+    thinking: { type: 'enabled', budget_tokens: 2048 },
+    context_management: { edits: [{ type: 'custom_strategy' }] },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  })
+  assert.equal(body.thinking.type, 'enabled')
+  assert.deepEqual(body.context_management.edits, [{ type: 'custom_strategy' }])
 })
 
 test('valid unique tool names are not changed', () => {
