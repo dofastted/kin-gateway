@@ -10,6 +10,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { getCapabilities } from '../protocol/model-policy.mjs'
+import { beginTestJob, busyMessage, endTestJob, getTestJob, isTestJobBusy, markTestJob } from './test-job-lock.mjs'
 
 export const DEFAULT_STOCKS = [
   { ticker: 'TSLA', name: 'Tesla' },
@@ -25,7 +26,7 @@ export const DEFAULT_MODELS = [
   'claude-fable-5',
 ]
 
-const TEST_UA = 'kin-console-loadtest/1.0'
+export const TEST_UA = 'kin-console-loadtest/1.0'
 const MAX_RUNS = 8
 export const REPORTS_PUBLIC_ROOT = '/opt/kin-gateway/data/loadtests/reports'
 /** Stagger session starts so N-way loadtests do not slam the pool at t=0. */
@@ -431,7 +432,7 @@ async function consumeMessagesResponse(res, { onFirstByte } = {}) {
   }
 }
 
-async function postTurn({ baseUrl, apiKey, model, messages, maxTokens, sessionId, stream, signal, timeoutMs }) {
+export function buildLoadtestTurnRequest({ model, messages, maxTokens, sessionId, stream = true }) {
   const caps = getCapabilities(model) || {}
   const body = {
     model,
@@ -442,6 +443,17 @@ async function postTurn({ baseUrl, apiKey, model, messages, maxTokens, sessionId
   if (caps.requires_adaptive || caps.thinking_mode === 'adaptive_only' || /claude-(opus|sonnet|fable)-5/.test(model)) {
     body.thinking = { type: 'adaptive' }
   }
+  const headers = {
+    'anthropic-version': '2023-06-01',
+    'user-agent': TEST_UA,
+    'x-session-id': sessionId,
+    accept: stream ? 'text/event-stream' : 'application/json',
+  }
+  return { body, headers }
+}
+
+async function postTurn({ baseUrl, apiKey, model, messages, maxTokens, sessionId, stream, signal, timeoutMs }) {
+  const { body, headers } = buildLoadtestTurnRequest({ model, messages, maxTokens, sessionId, stream })
   const ac = new AbortController()
   const onAbort = () => ac.abort()
   if (signal) {
@@ -456,10 +468,7 @@ async function postTurn({ baseUrl, apiKey, model, messages, maxTokens, sessionId
         'content-type': 'application/json',
         authorization: `Bearer ${apiKey}`,
         'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'user-agent': TEST_UA,
-        'x-session-id': sessionId,
-        accept: stream ? 'text/event-stream' : 'application/json',
+        ...headers,
       },
       body: JSON.stringify(body),
       signal: ac.signal,
@@ -725,13 +734,18 @@ export function cancelConcurrentTest(id) {
   if (run.status === 'running') {
     run.abort.abort()
     run.status = 'cancelling'
+    markTestJob(run.id, 'cancelling')
   }
   return { ok: true, data: publicRun(run) }
 }
 
 export function startConcurrentTest(opts = {}) {
-  if (activeId && runs.get(activeId)?.status === 'running') {
-    return { ok: false, error: { code: 'run_in_progress', message: '已有压测在运行，请等待结束或取消' }, data: publicRun(runs.get(activeId)) }
+  if ((activeId && runs.get(activeId)?.status === 'running') || isTestJobBusy()) {
+    return {
+      ok: false,
+      error: { code: 'run_in_progress', message: busyMessage() },
+      data: publicRun(runs.get(activeId)) || getTestJob(),
+    }
   }
   const concurrency = Math.max(1, Math.min(20, Number(opts.concurrency) || 10))
   const turns = Math.max(1, Math.min(3, Number(opts.turns) || 2))
@@ -750,6 +764,10 @@ export function startConcurrentTest(opts = {}) {
   }
 
   const id = `lt_${Date.now().toString(16)}_${crypto.randomBytes(3).toString('hex')}`
+  const lock = beginTestJob('loadtest', id)
+  if (!lock.ok) {
+    return { ok: false, error: { code: 'run_in_progress', message: busyMessage(lock.current) }, data: lock.current }
+  }
   const sessions = []
   for (let i = 0; i < concurrency; i++) {
     const stock = stocks[i % stocks.length]
@@ -821,6 +839,7 @@ export function startConcurrentTest(opts = {}) {
       run.finished_at = nowIso()
       run.duration_ms = Date.now() - started
       if (activeId === id) activeId = null
+      endTestJob(id)
       persistRun(run, run.dataDir)
     })
 

@@ -103,6 +103,9 @@ export function storeAccountHeaders(homeDir, reqHeaders = {}) {
   if (!homeDir) return { stored: false }
   const extracted = extractClaudeCodeHeaders(reqHeaders)
   if (!isOfficialClaudeUa(extracted["user-agent"] || "")) return { stored: false }
+  // Real Claude Code always sends anthropic-beta. Probe/mimic official UA
+  // omits it so stored CLI betas are not wiped by a short header set.
+  if (!extracted["anthropic-beta"]) return { stored: false }
   try {
     fs.mkdirSync(path.dirname(headerFile(homeDir)), { recursive: true })
     fs.writeFileSync(headerFile(homeDir), JSON.stringify({
