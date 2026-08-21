@@ -4,7 +4,7 @@
  * Streaming: Claude SSE events → OpenAI Chat chunks / Responses events
  */
 
-import { sanitizeAnthropicBody } from './sanitize.mjs'
+import { applyStructuredOutput, openaiResponseFormatToOutputConfig, sanitizeAnthropicBody } from './sanitize.mjs'
 import { openaiReasoningToClaudeThinking, claudeThinkingToOpenAIReasoning } from './thinking.mjs'
 import { openaiContentToClaudeContent } from './images.mjs'
 import { remapCodexTools } from './codex-tools.mjs'
@@ -79,6 +79,47 @@ export function openaiToolsToClaude(tools) {
     })
   }
   return out.length ? out : undefined
+}
+
+export { applyStructuredOutput, openaiResponseFormatToOutputConfig }
+
+export function claudeStopReasonToOpenAIFinish(stopReason) {
+  const sr = String(stopReason || '')
+  if (sr === 'tool_use') return 'tool_calls'
+  if (sr === 'max_tokens') return 'length'
+  if (sr === 'refusal') return 'content_filter'
+  return 'stop'
+}
+
+export function claudeRefusalText(claude = {}) {
+  const parts = []
+  for (const b of claude.content || []) {
+    if (b?.type === 'refusal') parts.push(b.refusal || b.text || '')
+  }
+  return parts.filter(Boolean).join('\n') || null
+}
+
+export function claudeHasVisibleOutput(claude = {}) {
+  for (const b of claude.content || []) {
+    if (b?.type === 'text' && String(b.text || '').trim()) return true
+    if (b?.type === 'tool_use') return true
+  }
+  return false
+}
+
+export function isClaudeRefusalStop(claude = {}) {
+  return String(claude.stop_reason || '') === 'refusal'
+}
+
+/** OpenAI-compat: do not leave refusal as a silent empty completion. */
+export function applyOpenAIRefusalFields(message, claude) {
+  const refusal = claudeRefusalText(claude)
+  if (refusal) message.refusal = refusal
+  if (isClaudeRefusalStop(claude) && !String(message.content || '').trim() && !message.tool_calls) {
+    message.content = refusal || '[content_filter]'
+    if (!message.refusal) message.refusal = message.content
+  }
+  return message
 }
 
 /** OpenAI tool_choice → Claude */
@@ -223,6 +264,7 @@ function openaiToClaude(body, opts) {
   if (tc) out.tool_choice = tc
   const thinking = openaiReasoningToClaudeThinking(body)
   if (thinking) out.thinking = thinking
+  applyStructuredOutput(out, body)
   if (body.stream) out.stream = true
   return out
 }
@@ -276,6 +318,7 @@ function responsesToClaude(body, opts) {
   if (tools?.length) out.tools = tools
   const thinking = openaiReasoningToClaudeThinking(body)
   if (thinking) out.thinking = thinking
+  applyStructuredOutput(out, body)
   if (body.stream) out.stream = true
   return out
 }
@@ -303,10 +346,8 @@ export function fromClaudeToOpenAIChat(claude, requestedModel, vmId, mode = 'con
     message.tool_calls = toolCalls
     if (!textParts.length) message.content = null
   }
-  let finish = 'stop'
-  if (claude.stop_reason === 'tool_use') finish = 'tool_calls'
-  else if (claude.stop_reason === 'max_tokens') finish = 'length'
-  else if (claude.stop_reason === 'end_turn') finish = 'stop'
+  applyOpenAIRefusalFields(message, claude)
+  const finish = claudeStopReasonToOpenAIFinish(claude.stop_reason)
 
   return {
     id: 'chatcmpl-' + (claude.id || 'kin'),
@@ -362,14 +403,20 @@ export function fromClaudeToResponses(claude, requestedModel, vmId, mode = 'conv
       })
     }
   }
+  const refused = isClaudeRefusalStop(claude)
+  const refusal = claudeRefusalText(claude)
+  if (refused && !text && refusal) {
+    output[0].content = [{ type: 'output_text', text: refusal }]
+  }
   return {
     id: 'resp_' + Math.random().toString(16).slice(2, 10),
     object: 'response',
     created_at: Math.floor(Date.now() / 1000),
-    status: 'completed',
+    status: refused ? 'incomplete' : 'completed',
+    incomplete_details: refused ? { reason: 'content_filter' } : undefined,
     model: requestedModel || claude.model,
     output,
-    output_text: text,
+    output_text: text || (refused ? (refusal || '') : text),
     usage: responsesUsage(claude.usage),
   }
 }
@@ -476,6 +523,7 @@ export function applyClaudeSSELineToMessage(line, state) {
     const block = { ...evt.content_block }
     if (block.type === 'text' && block.text == null) block.text = ''
     if (block.type === 'thinking' && block.thinking == null) block.thinking = ''
+    if (block.type === 'refusal' && block.refusal == null) block.refusal = ''
     const idx = Number.isInteger(evt.index) ? evt.index : message.content.length
     message.content[idx] = block
     return message
@@ -493,6 +541,8 @@ export function applyClaudeSSELineToMessage(line, state) {
       block.signature = evt.delta.signature
     } else if (evt.delta.type === 'input_json_delta') {
       block._inputJson = (block._inputJson || '') + (evt.delta.partial_json || '')
+    } else if (evt.delta.type === 'refusal_delta') {
+      block.refusal = (block.refusal || '') + (evt.delta.refusal || evt.delta.text || '')
     }
     return message
   }
@@ -597,13 +647,31 @@ export function claudeSSELineToOpenAIChatChunks(line, state) {
         }],
       })
     }
+    if (evt.delta?.type === 'refusal_delta') {
+      chunks.push({
+        ...base,
+        choices: [{
+          index: 0,
+          delta: { refusal: evt.delta.refusal || evt.delta.text || '' },
+          finish_reason: null,
+        }],
+      })
+    }
+  }
+
+  if (evt.type === 'content_block_start' && evt.content_block?.type === 'refusal') {
+    chunks.push({
+      ...base,
+      choices: [{
+        index: 0,
+        delta: { refusal: evt.content_block.refusal || '' },
+        finish_reason: null,
+      }],
+    })
   }
 
   if (evt.type === 'message_delta') {
-    let finish = 'stop'
-    const sr = evt.delta?.stop_reason
-    if (sr === 'tool_use') finish = 'tool_calls'
-    else if (sr === 'max_tokens') finish = 'length'
+    const finish = claudeStopReasonToOpenAIFinish(evt.delta?.stop_reason)
     chunks.push({
       ...base,
       choices: [{ index: 0, delta: {}, finish_reason: finish }],
@@ -697,21 +765,37 @@ export function claudeSSELineToResponsesEvents(line, state) {
     })
   }
 
+  if (evt.type === 'message_delta' && evt.delta?.stop_reason === 'refusal') {
+    state.refused = true
+    state.refusalText = state.refusalText || ''
+  }
+
+  if (evt.type === 'content_block_start' && evt.content_block?.type === 'refusal') {
+    state.refusalText = (state.refusalText || '') + (evt.content_block.refusal || '')
+  }
+
+  if (evt.type === 'content_block_delta' && evt.delta?.type === 'refusal_delta') {
+    state.refusalText = (state.refusalText || '') + (evt.delta.refusal || evt.delta.text || '')
+  }
+
   if (evt.type === 'message_stop') {
+    const refused = !!state.refused
+    const text = state.text || (refused ? (state.refusalText || '') : '')
     out.push({
-      type: 'response.completed',
+      type: refused ? 'response.incomplete' : 'response.completed',
       response: {
         id: state.id,
         object: 'response',
         model: state.model,
-        status: 'completed',
+        status: refused ? 'incomplete' : 'completed',
+        incomplete_details: refused ? { reason: 'content_filter' } : undefined,
         output: [{
           type: 'message',
           id: state.itemId,
           role: 'assistant',
-          content: [{ type: 'output_text', text: state.text }],
+          content: [{ type: 'output_text', text }],
         }],
-        output_text: state.text,
+        output_text: text,
       },
     })
   }
@@ -719,10 +803,11 @@ export function claudeSSELineToResponsesEvents(line, state) {
 }
 
 export function fromClaudeToOpenAICompletions(claude, requestedModel) {
-  const text = (claude.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('')
-  let finish = 'stop'
-  if (claude.stop_reason === 'max_tokens') finish = 'length'
-  else if (claude.stop_reason === 'stop_sequence') finish = 'stop'
+  let text = (claude.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('')
+  if (isClaudeRefusalStop(claude) && !String(text).trim()) {
+    text = claudeRefusalText(claude) || '[content_filter]'
+  }
+  const finish = claudeStopReasonToOpenAIFinish(claude.stop_reason)
   return {
     id: 'cmpl-' + (claude.id || 'kin'),
     object: 'text_completion',
