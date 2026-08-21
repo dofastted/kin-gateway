@@ -16,7 +16,8 @@ test('default POST /v1/messages uses Go worker pool, not CLI', async () => {
     const tr = readTrace(gw)
     assert.equal(tr.via, 'go-worker')
     assert.ok(!tr.argv)
-    assert.equal(tr.system, CRS_OFFICIAL_SYSTEM)
+    assert.equal(tr.system.length, 3)
+    assert.equal(tr.system[1].text, CRS_OFFICIAL_SYSTEM)
   } finally {
     await gw.stop()
   }

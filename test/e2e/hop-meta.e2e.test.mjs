@@ -36,6 +36,7 @@ test('CRS default does not truncate a long official system (unofficial is replac
         model: MODEL,
         max_tokens: 8,
         system: 'S'.repeat(30000),
+        metadata: { user_id: JSON.stringify({ device_id: 'dev-official', account_uuid: 'acct-seed', session_id: 'sess-official' }) },
         messages: [{ role: 'user', content: 'x' }],
       },
     })
