@@ -3,15 +3,14 @@
  *
  * Pins one credential slot. Inbound is official Claude Code body/headers
  * (no third-party UA, no inbound anthropic-beta). Outbound body+headers are
- * assembled by the same prepareOutboundAttempt / resolveCrsHeaders as /v1.
+ * assembled by the same prepareOutboundEnvelope as /v1.
  */
 import { getVm } from '../vm/vm-registry.mjs'
 import { vmJsonPath, vmCliHomePath } from '../vm/execution-context.mjs'
 import { streamGoWorker } from '../transport/go-worker-client.mjs'
 import { loadVmIdentity } from '../identity/vm-identity.mjs'
-import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
 import { claudeCodeInboundBody, claudeCodeInboundHeaders, CLAUDE_CLI_UA } from '../protocol/claude-code-inbound.mjs'
-import { prepareOutboundAttempt } from '../protocol/outbound-attempt.mjs'
+import { prepareOutboundEnvelope } from '../protocol/outbound-attempt.mjs'
 import { createClaudeMessageAssembler, applyClaudeSSELineToMessage } from '../protocol/convert.mjs'
 import {
   isModelEnabled,
@@ -254,18 +253,23 @@ export async function runVmTestChat(opts = {}) {
   let inbound
   let reqHeaders
   let body
+  let outboundHeaders = {}
   try {
     const built = buildVmTestInbound({ model, prompt, maxTokens, sessionId })
     inbound = built.inbound
     reqHeaders = built.headers
-    body = prepareOutboundAttempt({
+    const prepared = prepareOutboundEnvelope({
       canonicalBody: inbound,
       inbound,
       identity,
       unofficial: false,
       stream: true,
-    }).body
+      reqHeaders,
+      homeDir: exec.homeDir,
+    })
+    body = prepared.body
     body.stream = true
+    outboundHeaders = prepared.headers || {}
   } catch (e) {
     push('error', `请求准备失败: ${e.message || e}`)
     return done({
@@ -278,7 +282,6 @@ export async function runVmTestChat(opts = {}) {
     })
   }
 
-  const outboundHeaders = resolveCrsHeaders(reqHeaders, exec.homeDir, identity, model) || {}
   push('info', `出站 ua=${outboundHeaders['user-agent'] || '—'} beta=${outboundHeaders['anthropic-beta'] || '(none)'}`)
   push('info', `persona=${body.system ? 'claude-code' : 'none'} thinking=${body.thinking?.type || 'none'}`)
   push('info', '调用 Go slot worker /internal/v1/messages (upstream stream, assemble JSON) …')
