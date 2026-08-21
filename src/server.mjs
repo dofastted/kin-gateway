@@ -63,7 +63,7 @@ import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
 import { BackupService } from './lib/admin/backup-service.mjs'
 import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
-import { applyCrsUnofficialPersona } from './lib/identity/crs-persona.mjs'
+import { applyCrsUnofficialPersona, personaModeFromRouting, isOfficialClaudeCodeTraffic } from './lib/identity/crs-persona.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './lib/protocol/web-search.mjs'
 import { startVmRuntime, stopVmRuntime, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
 import {
@@ -634,8 +634,12 @@ async function handleProtocol(req, res, protocol, pathName) {
 
   ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: converted.claude })
   const officialClient = isOfficialClaudeClient(fp.client_class)
+  const officialTraffic = isOfficialClaudeCodeTraffic(req.headers, inbound)
+  ctx.body = applyCrsUnofficialPersona(ctx.body, {
+    officialClient: officialTraffic,
+    mode: personaModeFromRouting(routingConfig),
+  })
   if (!officialClient) {
-    ctx.body = applyCrsUnofficialPersona(ctx.body, { officialClient: false })
     ctx.body = ensureClaudeWebSearch(ctx.body, {
       enabled: shouldInjectClaudeWebSearch({ clientClass: fp.client_class, headers: req.headers }),
     })
@@ -1326,6 +1330,7 @@ const server = http.createServer(async (req, res) => {
           max_tokens: body.max_tokens,
           timeoutMs: body.timeout_ms || body.timeoutMs,
           requestLog,
+          personaMode: personaModeFromRouting(routingConfig),
         })
         return json(res, 200, panel.ok(result))
       }

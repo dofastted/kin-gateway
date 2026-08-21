@@ -36,8 +36,8 @@ test('Hermes unofficial: Go relay keeps persona/tools and never launches CLI', a
 
     const tr = readTrace(gw)
     assert.equal(tr?.via, 'go-worker')
-    assert.match(String(tr?.system || ''), /You are Hermes/)
-    assert.match(String(tr?.system || ''), /Claude Code/)
+    assert.equal(tr?.system?.[1]?.text, CRS_OFFICIAL_SYSTEM)
+    assert.match(JSON.stringify(tr?.body?.messages || []), /You are Hermes/)
     assert.ok(tr?.tools.includes('read_file'))
     assert.ok(!tr?.argv)
 
@@ -60,8 +60,8 @@ test('Hermes system blob without UA still classifies as hermes', async () => {
     assert.equal(r.status, 200, r.text)
     const tr = readTrace(gw)
     assert.equal(tr?.via, 'go-worker')
-    assert.match(String(tr?.system || ''), /You are Hermes/)
-    assert.match(String(tr?.system || ''), /Claude Code/)
+    assert.equal(tr?.system?.[1]?.text, CRS_OFFICIAL_SYSTEM)
+    assert.match(JSON.stringify(tr?.body?.messages || []), /You are Hermes/)
   } finally {
     await gw.stop()
   }

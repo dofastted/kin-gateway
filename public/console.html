@@ -774,7 +774,7 @@ const titles = {
   keys: ['密钥', 'sk-kin 只能调 /v1 · HMAC 落库'],
   logs: ['日志', '错误归类 · 首字 · attempts'],
   proxies: ['代理池', '每槽必须绑 SOCKS5'],
-  settings: ['设置', '粘性 · 池 · failover · 日志'],
+  settings: ['设置', '粘性 · 池 · failover · 日志 · 人设'],
 }
 
 
@@ -3289,6 +3289,13 @@ function renderSettings() {
             </select>
           </div>
           <p class="text-xs faint" style="margin:4px 0 0">普通记摘要（含缓存 token / 模型 mismatch / 首 token）。Debug 另存清洗后的请求体。保存即生效。</p>
+          <div class="set-sub">协议</div>
+          <div class="set-row"><span>非官方 mimic</span>
+            <select id="persona_inject" class="input">
+              ${[['rewrite','默认：覆盖（3 块）'],['append','附加一句'],['none','关闭']].map(([v,l]) => `<option value="${v}" ${((r.compatibility||{}).persona_inject || 'rewrite')===v?'selected':''}>${l}</option>`).join('')}
+            </select>
+          </div>
+          <p class="text-xs faint" style="margin:4px 0 0">对齐 sub2api：非官方默认整包覆盖（billing/身份/扩充，原文落到 messages）。可改附加一句或关闭。关闭时剥 system 上的 cache_control。官方 Claude Code（UA <code>claude-cli/x.y.z</code> + 合法 metadata.user_id）始终跳过。保存即生效。</p>
         </div>
       </div>
     </div>
@@ -3336,6 +3343,10 @@ async function saveRouting() {
         max_account_switches: Number(document.getElementById('fo_switches')?.value || 10),
         max_total_attempts: Number(document.getElementById('fo_attempts')?.value || 12),
         delivery_mode: document.getElementById('fo_delivery')?.value || 'realtime',
+      },
+      compatibility: {
+        ...(state.routing?.compatibility || {}),
+        persona_inject: document.getElementById('persona_inject')?.value || 'rewrite',
       },
     }
     await api('/api/panel/routing', { method: 'PUT', body: JSON.stringify(body) })

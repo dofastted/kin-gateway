@@ -18,7 +18,8 @@ test('POST /v1/completions old OpenAI prompt format', async () => {
     assert.equal(tr.via, 'go-worker')
     assert.match(JSON.stringify(tr.body.messages), /hello/)
     assert.equal(tr.body.stream, true)
-    assert.equal(tr.system, CRS_OFFICIAL_SYSTEM)
+    assert.equal(tr.system.length, 3)
+    assert.equal(tr.system[1].text, CRS_OFFICIAL_SYSTEM)
   } finally {
     await gw.stop()
   }

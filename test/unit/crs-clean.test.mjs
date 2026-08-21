@@ -139,7 +139,7 @@ test('normalizeAnthropicMessages is idempotent for legal turns', () => {
   ])
 })
 
-test('third-party persona appends official line and keeps caller system', () => {
+test('third-party persona rewrites to 3-block system and parks caller system', () => {
   const { claude } = toClaudeMessages('openai.chat', {
     model: 'claude-haiku-4-5-20251001',
     messages: [
@@ -151,13 +151,16 @@ test('third-party persona appends official line and keeps caller system', () => 
   })
   assert.deepEqual(claude.stop_sequences, ['END'])
   const cleaned = applyCrsUnofficialPersona(claude, { officialClient: false })
-  assert.match(cleaned.system, /you are a linter/)
-  assert.match(cleaned.system, new RegExp(CRS_OFFICIAL_SYSTEM.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.equal(cleaned.system.length, 3)
+  assert.equal(cleaned.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.match(cleaned.messages[0].content[0].text, /you are a linter/)
 })
 
-test('empty unofficial system becomes the official one-liner', () => {
+test('empty unofficial system becomes the 3-block Claude Code shape', () => {
   const out = applyCrsUnofficialPersona({ messages: [] }, { officialClient: false })
-  assert.equal(out.system, CRS_OFFICIAL_SYSTEM)
+  assert.equal(out.system.length, 3)
+  assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(out.messages.length, 0)
 })
 
 test('official Claude Code system is not replaced or appended', () => {
@@ -167,11 +170,12 @@ test('official Claude Code system is not replaced or appended', () => {
   assert.equal(out.system.length, 1)
 })
 
-test('Xcode unofficial system keeps Xcode and appends official line', () => {
-  const body = { system: 'You are currently in Xcode. Help with Swift.' }
+test('Xcode unofficial system is parked and official 3-block system is written', () => {
+  const body = { system: 'You are currently in Xcode. Help with Swift.', messages: [] }
   const out = applyCrsUnofficialPersona(body, { officialClient: false })
-  assert.match(out.system, /Xcode/)
-  assert.match(out.system, /Claude Code/)
+  assert.equal(out.system.length, 3)
+  assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.match(out.messages[0].content[0].text, /Xcode/)
 })
 
 test('legacy user_id: device becomes VM, session is CRS-hashed, account from OAuth', () => {

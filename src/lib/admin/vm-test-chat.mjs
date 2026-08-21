@@ -118,7 +118,7 @@ function extractError(result) {
   return out
 }
 
-function prepareTestBody(model, prompt, maxTokens) {
+function prepareTestBody(model, prompt, maxTokens, { mode } = {}) {
   let body = {
     model,
     max_tokens: maxTokens,
@@ -129,7 +129,7 @@ function prepareTestBody(model, prompt, maxTokens) {
   if (caps.requires_adaptive || caps.thinking_mode === 'adaptive_only') {
     body.thinking = { type: 'adaptive' }
   }
-  body = applyCrsUnofficialPersona(body, { officialClient: false })
+  body = applyCrsUnofficialPersona(body, { officialClient: false, mode })
   body = applyMaxTokensCap(body)
   return body
 }
@@ -157,7 +157,7 @@ function endTestLog(requestLog, logCtx, extra = {}) {
 }
 
 /**
- * @param {{ projectRoot: string, vmId: string, model?: string, prompt?: string, max_tokens?: number, timeoutMs?: number, requestLog?: object }} opts
+ * @param {{ projectRoot: string, vmId: string, model?: string, prompt?: string, max_tokens?: number, timeoutMs?: number, requestLog?: object, personaMode?: string }} opts
  */
 export async function runVmTestChat(opts = {}) {
   const projectRoot = opts.projectRoot
@@ -262,7 +262,7 @@ export async function runVmTestChat(opts = {}) {
   const identity = loadVmIdentity(exec)
   let body
   try {
-    body = prepareTestBody(model, prompt, maxTokens)
+    body = prepareTestBody(model, prompt, maxTokens, { mode: opts.personaMode })
     body = officialMessagesBody(body, { stream: true })
     body = applyCrsIdentityReplace(body, identity, {})
     const prepared = prepareAnthropicRequest(body, { cacheControlLimit: 4, unofficial: true })

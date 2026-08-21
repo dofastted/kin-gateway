@@ -178,10 +178,12 @@ test('HTTP path preserves long system without CLI argv truncation', async () => 
       },
     })
     const tr = readTrace(gw)
-    const text = Array.isArray(tr.body.system)
-      ? tr.body.system.map((block) => block.text || '').join('\n')
-      : tr.body.system
-    assert.ok(text.length >= 30000)
+    assert.equal(tr.body.system.length, 3)
+    const parked = tr.body.messages[0]
+    const parkedText = Array.isArray(parked.content)
+      ? parked.content.map((block) => block.text || '').join('')
+      : String(parked.content || '')
+    assert.ok(parkedText.length >= 30000)
     assert.equal(tr.argv, undefined)
   } finally {
     await gw.stop()
