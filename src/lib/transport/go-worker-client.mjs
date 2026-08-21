@@ -2,6 +2,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
+import { sanitizeAnthropicBodyForBetaTokens } from '../protocol/anthropic-policy.mjs'
 import { isCrsMock, writeCrsTrace, mockCrsPayload, emitMockSse } from './crs-mock.mjs'
 import { hasAccessPresence, hasCredentialPresence, hasRefreshPresence } from '../oauth/oauth-credentials.mjs'
 
@@ -168,11 +169,20 @@ function dumpSessionEnvelope(envelope) {
   } catch {}
 }
 
-function workerEnvelope({ body, reqHeaders, exec, identity, stream, deliveryMode }) {
+function finalizeWorkerPayload({ body, reqHeaders, exec, identity }) {
   const model = body?.model || ''
+  const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity, model)
+  return {
+    headers,
+    body: sanitizeAnthropicBodyForBetaTokens(body, headers?.['anthropic-beta'] || ''),
+  }
+}
+
+function workerEnvelope({ body, reqHeaders, exec, identity, stream, deliveryMode }) {
+  const finalized = finalizeWorkerPayload({ body, reqHeaders, exec, identity })
   const envelope = {
-    body,
-    headers: resolveCrsHeaders(reqHeaders, exec?.homeDir, identity, model),
+    body: finalized.body,
+    headers: finalized.headers,
     stream: !!stream,
     delivery_mode: deliveryMode || 'realtime',
   }
@@ -199,8 +209,8 @@ export async function callGoWorker({
   signal,
 } = {}) {
   if (isCrsMock()) {
-    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity, body?.model || '')
-    writeCrsTrace({ body, headers, stream: false })
+    const { body: outboundBody, headers } = finalizeWorkerPayload({ body, reqHeaders, exec, identity })
+    writeCrsTrace({ body: outboundBody, headers, stream: false })
     const mock = mockCrsPayload({ scenario: mockScenario(exec) })
     return {
       ...mock,
@@ -259,8 +269,8 @@ export async function streamGoWorker({
   onCommit,
 } = {}) {
   if (isCrsMock()) {
-    const headers = resolveCrsHeaders(reqHeaders, exec?.homeDir, identity, body?.model || '')
-    writeCrsTrace({ body, headers, stream: true })
+    const { body: outboundBody, headers } = finalizeWorkerPayload({ body, reqHeaders, exec, identity })
+    writeCrsTrace({ body: outboundBody, headers, stream: true })
     const scenario = mockScenario(exec)
     const mockStartedAt = Date.now()
     if (scenario === 'incomplete_stream') {

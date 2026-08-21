@@ -5,6 +5,9 @@ import {
   rewriteToolNames,
   restoreToolNames,
   restoreToolNamesInSSELine,
+  sanitizeAnthropicBodyForBetaTokens,
+  anthropicBetaTokensContains,
+  CONTEXT_MANAGEMENT_BETA,
 } from '../../src/lib/protocol/anthropic-policy.mjs'
 
 test('request policy strips empty blocks, caps cache controls and keeps forced-tool thinking', () => {
@@ -96,6 +99,37 @@ test('existing context_management is not overwritten', () => {
   })
   assert.equal(body.thinking.type, 'enabled')
   assert.deepEqual(body.context_management.edits, [{ type: 'custom_strategy' }])
+})
+
+test('sanitize strips context_management when final beta lacks the token', () => {
+  const filled = prepareAnthropicRequest({
+    model: 'claude-sonnet-5',
+    thinking: { type: 'enabled', budget_tokens: 2048 },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  })
+  assert.equal(filled.context_management.edits[0].type, 'clear_thinking_20251015')
+  assert.equal(anthropicBetaTokensContains('oauth-2025-04-20', CONTEXT_MANAGEMENT_BETA), false)
+  const stripped = sanitizeAnthropicBodyForBetaTokens(filled, 'oauth-2025-04-20,interleaved-thinking-2025-05-14')
+  assert.equal(stripped.context_management, undefined)
+  assert.equal(stripped.thinking.type, 'enabled')
+  assert.equal(filled.context_management.edits[0].type, 'clear_thinking_20251015')
+})
+
+test('sanitize keeps context_management when final beta has the token', () => {
+  const filled = prepareAnthropicRequest({
+    model: 'claude-opus-5',
+    thinking: { type: 'adaptive' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  })
+  const header = `oauth-2025-04-20, ${CONTEXT_MANAGEMENT_BETA} ,interleaved-thinking-2025-05-14`
+  const kept = sanitizeAnthropicBodyForBetaTokens(filled, header)
+  assert.equal(kept.context_management.edits[0].type, 'clear_thinking_20251015')
+})
+
+test('sanitize is a no-op when the body has no context_management', () => {
+  const body = { model: 'claude-haiku-4-5', messages: [] }
+  assert.equal(sanitizeAnthropicBodyForBetaTokens(body, ''), body)
+  assert.equal(sanitizeAnthropicBodyForBetaTokens(body, CONTEXT_MANAGEMENT_BETA), body)
 })
 
 test('valid unique tool names are not changed', () => {

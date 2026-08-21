@@ -6,7 +6,8 @@ import path from 'node:path'
 import { applyCrsUnofficialPersona, isOfficialClaudeCodeTraffic, CRS_OFFICIAL_SYSTEM } from '../../src/lib/identity/crs-persona.mjs'
 import { storeAccountHeaders, resolveCrsHeaders } from '../../src/lib/identity/crs-headers.mjs'
 import { sanitizeInboundBody, defaultSeedPolicy } from '../../src/lib/protocol/seed-policy.mjs'
-import { prepareOutboundAttempt, prepareOutboundHeaders } from '../../src/lib/protocol/outbound-attempt.mjs'
+import { prepareOutboundAttempt, prepareOutboundHeaders, prepareOutboundEnvelope } from '../../src/lib/protocol/outbound-attempt.mjs'
+import { CONTEXT_MANAGEMENT_BETA } from '../../src/lib/protocol/anthropic-policy.mjs'
 import {
   CLAUDE_CLI_UA,
   LOADTEST_UA,
@@ -260,6 +261,70 @@ test('same identity + same messages: probe official and loadtest unofficial diff
   assert.equal(probeOut.body.model, loadOut.body.model)
   assert.ok(probeOut.body.system)
   assert.ok(loadOut.body.system)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+function thinkingInbound(sessionId) {
+  const inbound = claudeCodeInboundBody({
+    model: 'claude-sonnet-5',
+    messages: [{ role: 'user', content: 'hello' }],
+    maxTokens: 8192,
+    thinking: { type: 'adaptive' },
+    sessionId,
+    stream: true,
+  })
+  const headers = claudeCodeInboundHeaders({ sessionId })
+  return { inbound, headers }
+}
+
+test('official envelope without context-management beta strips the body field', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-ctx-'))
+  const identity = fixtureIdentity(dir)
+  const { inbound, headers } = thinkingInbound('vm-test-vm-04')
+  const raw = prepareOutboundAttempt({
+    canonicalBody: inbound,
+    inbound,
+    identity,
+    unofficial: false,
+    stream: true,
+  })
+  assert.equal(raw.body.context_management.edits[0].type, 'clear_thinking_20251015')
+  const envelope = prepareOutboundEnvelope({
+    canonicalBody: inbound,
+    inbound,
+    identity,
+    unofficial: false,
+    stream: true,
+    reqHeaders: headers,
+    homeDir: dir,
+  })
+  assert.equal(envelope.body.thinking.type, 'adaptive')
+  assert.doesNotMatch(String(envelope.headers['anthropic-beta'] || ''), /context-management-2025-06-27/)
+  assert.equal(envelope.body.context_management, undefined)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('official envelope keeps context_management when stored CLI beta has the token', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-ctxkeep-'))
+  storeAccountHeaders(dir, {
+    'user-agent': CLAUDE_CLI_UA,
+    'anthropic-version': '2023-06-01',
+    'anthropic-beta': `claude-code-20250219,oauth-2025-04-20,${CONTEXT_MANAGEMENT_BETA}`,
+    'x-app': 'cli',
+  })
+  const identity = fixtureIdentity(dir)
+  const { inbound, headers } = thinkingInbound('vm-test-vm-01')
+  const envelope = prepareOutboundEnvelope({
+    canonicalBody: inbound,
+    inbound,
+    identity,
+    unofficial: false,
+    stream: true,
+    reqHeaders: headers,
+    homeDir: dir,
+  })
+  assert.match(String(envelope.headers['anthropic-beta'] || ''), /context-management-2025-06-27/)
+  assert.equal(envelope.body.context_management.edits[0].type, 'clear_thinking_20251015')
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
