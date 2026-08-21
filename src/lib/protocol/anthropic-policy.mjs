@@ -70,10 +70,10 @@ function enforceCacheLimit(body, maximum = 4) {
   }
 }
 
-function forcedToolChoice(toolChoice) {
-  if (!toolChoice || typeof toolChoice !== 'object') return false
-  return toolChoice.type === 'tool' || toolChoice.type === 'any'
-}
+const CLEAR_THINKING_EDIT = Object.freeze({
+  type: 'clear_thinking_20251015',
+  keep: 'all',
+})
 
 const DUMMY_THINKING_SIGNATURES = new Set([
   '',
@@ -127,6 +127,16 @@ export function stripInvalidThinkingBlocks(body = {}) {
   return { ...body, messages }
 }
 
+/** sub2api OAuth: real CLI attaches this when thinking is enabled/adaptive. */
+export function ensureClearThinkingContextManagement(body = {}) {
+  if (!thinkingModeEnabled(body)) return body
+  if (body.context_management != null) return body
+  return {
+    ...body,
+    context_management: { edits: [{ ...CLEAR_THINKING_EDIT }] },
+  }
+}
+
 export function prepareAnthropicRequest(body = {}, {
   cacheControlLimit = 4,
   unofficial = false,
@@ -148,9 +158,7 @@ export function prepareAnthropicRequest(body = {}, {
   }
   const stripped = stripInvalidThinkingBlocks(out)
   if (stripped.messages) out.messages = stripped.messages
-  if (forcedToolChoice(out.tool_choice) && out.thinking?.type === 'enabled') {
-    delete out.thinking
-  }
+  out = ensureClearThinkingContextManagement(out)
   normalizeCacheTTL(out)
   enforceCacheLimit(out, cacheControlLimit)
   return out

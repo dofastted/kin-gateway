@@ -5,8 +5,8 @@ import { normalizeThinkingByPolicy, getCapabilities, getModelParams } from './mo
  * Official (Aug 2026):
  *   Adaptive: Opus 4.6+, Sonnet 4.6+, Opus 4.7/4.8/5, Sonnet 5, Fable 5, Mythos
  *   Manual enabled+budget only: Haiku 4.5, Sonnet/Opus 4.5 and earlier
- *   Adaptive-only (enabled rejected): Opus 4.7+, Claude 5 series, Fable 5
- * Client RikkaHub etc. send adaptive even on Haiku -> 400; convert/strip here.
+ *   OAuth (sub2api): Claude 5 / Fable / Opus 4.7+ keep thinking.enabled as-is.
+ * Client RikkaHub etc. send adaptive even on Haiku -> 400; convert only there.
  */
 
 const EFFORT_TO_BUDGET = {
@@ -84,7 +84,7 @@ export function modelRequiresAdaptiveThinking(model = '') {
 /**
  * Normalize body.thinking for the target model (mutates body).
  * - adaptive on unsupported (Haiku / 4.5) -> enabled + budget (keep thinking intent)
- * - enabled on adaptive-only models -> adaptive
+ * - enabled is kept on Claude 5 / Fable / Opus 4.7+ (OAuth passthrough)
  */
 export function normalizeThinkingForModel(body = {}) {
   // Prefer model-policy matrix; fall back to hardcoded heuristics if policy unavailable
@@ -104,13 +104,6 @@ export function normalizeThinkingForModel(body = {}) {
       ? Number(thinking.budget_tokens)
       : DEFAULT_FALLBACK_BUDGET
     body.thinking = { type: 'enabled', budget_tokens: budget }
-    return body
-  }
-
-  if (type === 'enabled' && modelRequiresAdaptiveThinking(model)) {
-    const next = { type: 'adaptive' }
-    if (thinking.display) next.display = thinking.display
-    body.thinking = next
     return body
   }
 
