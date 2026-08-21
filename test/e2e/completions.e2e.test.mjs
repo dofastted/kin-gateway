@@ -17,6 +17,7 @@ test('POST /v1/completions old OpenAI prompt format', async () => {
     const tr = readTrace(gw)
     assert.equal(tr.via, 'go-worker')
     assert.match(JSON.stringify(tr.body.messages), /hello/)
+    assert.equal(tr.body.stream, true)
     assert.equal(tr.system, CRS_OFFICIAL_SYSTEM)
   } finally {
     await gw.stop()

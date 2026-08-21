@@ -14,13 +14,14 @@
  */
 import { getVm } from '../vm/vm-registry.mjs'
 import { vmJsonPath, vmCliHomePath } from '../vm/execution-context.mjs'
-import { callGoWorker } from '../transport/go-worker-client.mjs'
+import { streamGoWorker } from '../transport/go-worker-client.mjs'
 import { loadVmIdentity } from '../identity/vm-identity.mjs'
 import { applyCrsIdentityReplace } from '../identity/identity-rewrite.mjs'
 import { applyCrsUnofficialPersona } from '../identity/crs-persona.mjs'
 import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
 import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
 import { prepareAnthropicRequest } from '../protocol/anthropic-policy.mjs'
+import { createClaudeMessageAssembler, applyClaudeSSELineToMessage } from '../protocol/convert.mjs'
 import {
   isModelEnabled,
   getModelParams,
@@ -121,7 +122,7 @@ function prepareTestBody(model, prompt, maxTokens) {
   let body = {
     model,
     max_tokens: maxTokens,
-    stream: false,
+    stream: true,
     messages: [{ role: 'user', content: prompt }],
   }
   const caps = getCapabilities(model) || {}
@@ -262,11 +263,11 @@ export async function runVmTestChat(opts = {}) {
   let body
   try {
     body = prepareTestBody(model, prompt, maxTokens)
-    body = officialMessagesBody(body, { stream: false })
+    body = officialMessagesBody(body, { stream: true })
     body = applyCrsIdentityReplace(body, identity, {})
     const prepared = prepareAnthropicRequest(body, { cacheControlLimit: 4, unofficial: true })
     body = prepared?.body || prepared || body
-    body.stream = false
+    body.stream = true
   } catch (e) {
     push('error', `请求准备失败: ${e.message || e}`)
     return done({
@@ -288,18 +289,29 @@ export async function runVmTestChat(opts = {}) {
   const outboundHeaders = resolveCrsHeaders(reqHeaders, exec.homeDir, identity, model) || {}
   push('info', `出站 ua=${outboundHeaders['user-agent'] || '—'} beta=${outboundHeaders['anthropic-beta'] || '(none)'}`)
   push('info', `persona=${body.system ? 'claude-code' : 'none'} thinking=${body.thinking?.type || 'none'}`)
-  push('info', '调用 Go slot worker /internal/v1/messages (non-stream) …')
+  push('info', '调用 Go slot worker /internal/v1/messages (upstream stream, assemble JSON) …')
 
   const timeoutMs = Math.min(Math.max(Number(opts.timeoutMs) || 90000, 10000), 180000)
   let result
   try {
-    result = await callGoWorker({
+    const assembler = createClaudeMessageAssembler()
+    result = await streamGoWorker({
       exec,
       body,
       reqHeaders,
       timeoutMs,
       identity,
+      deliveryMode: 'verified',
+      onEvent: async (line) => {
+        applyClaudeSSELineToMessage(line, assembler)
+      },
     })
+    if (assembler.message) {
+      result.body = assembler.message
+      if (assembler.message.usage) result.usage = assembler.message.usage
+      if (assembler.message.model) result.model = assembler.message.model
+      if (assembler.message.stop_reason) result.stopReason = assembler.message.stop_reason
+    }
   } catch (e) {
     push('error', `worker 异常: ${e.message || e}`)
     return done({

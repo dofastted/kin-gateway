@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { startGateway, api } from '../harness.mjs'
+import { startGateway, api, readTrace } from '../harness.mjs'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 
@@ -21,6 +21,9 @@ test('POST /v1/responses non-stream shape: object + output_text + usage', async 
     assert.equal(typeof r.json.usage.input_tokens, 'number')
     assert.equal(typeof r.json.usage.output_tokens, 'number')
     assert.equal(r.json.usage.total_tokens, r.json.usage.input_tokens + r.json.usage.output_tokens)
+    const tr = readTrace(gw)
+    assert.equal(tr.body.stream, true)
+    assert.notEqual(r.headers.get('content-type'), 'text/event-stream')
   } finally {
     await gw.stop()
   }
