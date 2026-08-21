@@ -24,7 +24,9 @@ test('alias resolves to latest non-fast catalog id', () => {
   assert.equal(latestIdForFamily('sonnet', ids), 'claude-sonnet-5')
   assert.equal(latestIdForFamily('opus', ids), 'claude-opus-5')
   assert.equal(resolveCatalogModel('sonnet', ids).model, 'claude-sonnet-5')
-  assert.equal(resolveCatalogModel('opus[1m]', ids).model, 'claude-opus-5[1m]')
+  const opus1m = resolveCatalogModel('opus[1m]', ids)
+  assert.equal(opus1m.model, 'claude-opus-5')
+  assert.equal(opus1m.want1m, true)
 })
 
 test('haiku calling aliases resolve to the dated catalog id', () => {

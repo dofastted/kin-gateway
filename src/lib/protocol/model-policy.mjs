@@ -9,6 +9,13 @@
  */
 
 import { SettingsRepo } from "../db/repos/settings-repo.mjs"
+import {
+  CONTEXT_1M_BETA,
+  DEFAULT_CONTEXT_1M_WHITELIST,
+  normalizeContext1mWhitelist,
+  shouldPassContext1m,
+  stripClaudeCode1mSuffix,
+} from "./context-1m.mjs"
 
 function isCatalogModelId(id) {
   const s = String(id || "")
@@ -19,7 +26,7 @@ function isCatalogModelId(id) {
 }
 
 const SETTINGS_KEY = "model_policy"
-const CONTEXT_1M = "context-1m-2025-08-07"
+const CONTEXT_1M = CONTEXT_1M_BETA
 
 const CAP_HAIKU = {
   context_window: 200000,
@@ -76,6 +83,9 @@ function entry(partial) {
       required: partial.betas?.required || ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"],
       drop: partial.betas?.drop || [CONTEXT_1M],
       allow_client: partial.betas?.allow_client !== false,
+      ...(typeof partial.betas?.pass_context_1m === "boolean"
+        ? { pass_context_1m: partial.betas.pass_context_1m }
+        : {}),
     },
     params: {
       max_tokens_default: partial.params?.max_tokens_default ?? 16384,
@@ -101,6 +111,7 @@ export function seedDefaultPolicy() {
     betas: {
       required: ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"],
       drop: [CONTEXT_1M, "effort-2025-11-24", "context-management-2025-06-27"],
+      pass_context_1m: false,
     },
     params: {
       max_tokens_default: 8192,
@@ -120,6 +131,7 @@ export function seedDefaultPolicy() {
     betas: {
       required: ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"],
       drop: [CONTEXT_1M, "effort-2025-11-24", "context-management-2025-06-27"],
+      pass_context_1m: false,
     },
     params: {
       max_tokens_default: 8192,
@@ -135,6 +147,7 @@ export function seedDefaultPolicy() {
     family: "sonnet",
     sort: 15,
     capabilities: CAP_SONNET45,
+    betas: { pass_context_1m: false },
     params: { on_adaptive: "convert_to_enabled", max_tokens_default: 16384 },
     aliases: ["claude-sonnet-4-5"],
   })
@@ -147,6 +160,7 @@ export function seedDefaultPolicy() {
     betas: {
       required: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14"],
       drop: [CONTEXT_1M],
+      pass_context_1m: false,
     },
     params: { max_tokens_default: 16384, max_tokens_cap: 64000, on_adaptive: "passthrough" },
     aliases: ["sonnet"],
@@ -160,6 +174,7 @@ export function seedDefaultPolicy() {
     betas: {
       required: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14"],
       drop: [CONTEXT_1M],
+      pass_context_1m: false,
     },
     params: { max_tokens_default: 32000, max_tokens_cap: 128000, on_adaptive: "passthrough" },
     aliases: [],
@@ -170,11 +185,12 @@ export function seedDefaultPolicy() {
     family: "opus",
     sort: 28,
     capabilities: CAP_ADAPTIVE_ONLY,
+    betas: { pass_context_1m: false },
     params: {
       max_tokens_default: 32000,
       max_tokens_cap: 128000,
       on_adaptive: "passthrough",
-      on_enabled: "convert_to_adaptive",
+      on_enabled: "passthrough",
     },
   })
 
@@ -183,11 +199,12 @@ export function seedDefaultPolicy() {
     family: "opus",
     sort: 29,
     capabilities: CAP_ADAPTIVE_ONLY,
+    betas: { pass_context_1m: false },
     params: {
       max_tokens_default: 32000,
       max_tokens_cap: 128000,
       on_adaptive: "passthrough",
-      on_enabled: "convert_to_adaptive",
+      on_enabled: "passthrough",
     },
   })
 
@@ -196,11 +213,12 @@ export function seedDefaultPolicy() {
     family: "sonnet",
     sort: 30,
     capabilities: CAP_ADAPTIVE_ONLY,
+    betas: { pass_context_1m: true },
     params: {
       max_tokens_default: 16384,
       max_tokens_cap: 128000,
       on_adaptive: "passthrough",
-      on_enabled: "convert_to_adaptive",
+      on_enabled: "passthrough",
     },
     aliases: [],
   })
@@ -210,11 +228,12 @@ export function seedDefaultPolicy() {
     family: "opus",
     sort: 35,
     capabilities: CAP_ADAPTIVE_ONLY,
+    betas: { pass_context_1m: false },
     params: {
       max_tokens_default: 32000,
       max_tokens_cap: 128000,
       on_adaptive: "passthrough",
-      on_enabled: "convert_to_adaptive",
+      on_enabled: "passthrough",
     },
     aliases: ["opus"],
   })
@@ -224,11 +243,12 @@ export function seedDefaultPolicy() {
     family: "fable",
     sort: 40,
     capabilities: CAP_ADAPTIVE_ONLY,
+    betas: { pass_context_1m: false },
     params: {
       max_tokens_default: 32000,
       max_tokens_cap: 128000,
       on_adaptive: "passthrough",
-      on_enabled: "convert_to_adaptive",
+      on_enabled: "passthrough",
     },
     aliases: ["fable"],
   })
@@ -242,6 +262,8 @@ export function seedDefaultPolicy() {
       max_tokens: 16384,
       thinking_fallback_budget: 4096,
       strip_context_1m: true,
+      // Fallback only: used when models[id].betas.pass_context_1m is unset.
+      context_1m_whitelist: [...DEFAULT_CONTEXT_1M_WHITELIST],
       normalize_thinking: true,
     },
     models,
@@ -296,11 +318,33 @@ export function normalizePolicy(raw) {
       models[id] = deepMergeEntry(base, cfg)
     }
   }
+  for (const [id, cfg] of Object.entries(models)) {
+    if (cfg.params?.on_enabled === "convert_to_adaptive") {
+      cfg.params = { ...cfg.params, on_enabled: "passthrough" }
+    }
+    if (typeof cfg.betas?.pass_context_1m !== "boolean") {
+      const seeded = seed.models[id]?.betas?.pass_context_1m
+      cfg.betas = {
+        ...cfg.betas,
+        pass_context_1m: typeof seeded === "boolean"
+          ? seeded
+          : shouldPassContext1m(id, seed.defaults.context_1m_whitelist),
+      }
+    }
+  }
+  const rawDefaults = raw.defaults && typeof raw.defaults === "object" ? raw.defaults : {}
+  const hasWhitelist = Object.prototype.hasOwnProperty.call(rawDefaults, "context_1m_whitelist")
   return {
     version: Number(raw.version) || 1,
     updated_at: raw.updated_at || new Date().toISOString(),
     source: raw.source || "panel",
-    defaults: { ...seed.defaults, ...(raw.defaults || {}) },
+    defaults: {
+      ...seed.defaults,
+      ...rawDefaults,
+      context_1m_whitelist: hasWhitelist
+        ? normalizeContext1mWhitelist(rawDefaults.context_1m_whitelist, [])
+        : [...seed.defaults.context_1m_whitelist],
+    },
     models,
     aliases: { ...seed.aliases, ...(raw.aliases || {}) },
     catalog_mode: raw.catalog_mode || seed.catalog_mode,
@@ -371,7 +415,7 @@ export function resolvePolicyModelId(raw = "") {
   const m = String(raw || "").trim()
   if (!m) return null
   const bare = m.split("/").filter(Boolean).pop() || m
-  const lower = bare.toLowerCase().replace(/\[[1m]+\]$/i, "")
+  const lower = stripClaudeCode1mSuffix(bare).toLowerCase()
 
   const aliasTarget = policy.aliases[lower] || policy.aliases[bare]
   if (aliasTarget && policy.models[aliasTarget]) return aliasTarget
@@ -413,7 +457,7 @@ export function getModelEntry(modelId = "") {
       max_tokens_cap: 64000,
       thinking_fallback_budget: policy.defaults.thinking_fallback_budget || 4096,
       on_adaptive: caps.supports_adaptive ? "passthrough" : "convert_to_enabled",
-      on_enabled: caps.requires_adaptive ? "convert_to_adaptive" : "passthrough",
+      on_enabled: "passthrough",
     },
     aliases: [],
     _heuristic: true,
@@ -430,6 +474,34 @@ export function getCapabilities(modelId = "") {
 
 export function getBetaPolicy(modelId = "") {
   return getModelEntry(modelId).betas
+}
+
+export function getContext1mWhitelist() {
+  if (!loaded) loadModelPolicy()
+  return normalizeContext1mWhitelist(policy.defaults?.context_1m_whitelist, DEFAULT_CONTEXT_1M_WHITELIST)
+}
+
+/**
+ * Official 1M beta: matrix flag wins; whitelist is fallback for unset / heuristic ids.
+ * strip_context_1m=false passes every official model.
+ */
+export function resolveContext1mPass(modelId = "", {
+  entry = null,
+  whitelist = DEFAULT_CONTEXT_1M_WHITELIST,
+  strip = true,
+} = {}) {
+  if (strip === false) return true
+  if (typeof entry?.betas?.pass_context_1m === "boolean") return entry.betas.pass_context_1m
+  return shouldPassContext1m(modelId, whitelist)
+}
+
+export function shouldPassContext1mByPolicy(modelId = "") {
+  if (!loaded) loadModelPolicy()
+  return resolveContext1mPass(modelId, {
+    entry: getModelEntry(modelId),
+    whitelist: getContext1mWhitelist(),
+    strip: policy.defaults.strip_context_1m !== false,
+  })
 }
 
 export function getModelParams(modelId = "") {
@@ -465,15 +537,10 @@ export function normalizeThinkingByPolicy(body = {}) {
   }
 
   if (type === "enabled") {
-    const action = params.on_enabled || (caps.requires_adaptive ? "convert_to_adaptive" : "passthrough")
+    // OAuth (sub2api): keep thinking.enabled. convert_to_adaptive is ignored.
+    const action = params.on_enabled || "passthrough"
     if (action === "strip") {
       delete body.thinking
-      return body
-    }
-    if (action === "convert_to_adaptive") {
-      const next = { type: "adaptive" }
-      if (thinking.display) next.display = thinking.display
-      body.thinking = next
       return body
     }
   }
@@ -490,17 +557,22 @@ function stripTokens(header, tokens) {
     .join(",")
 }
 
-export function applyBetaPolicyToHeader(existingBeta = "", modelId = "", { isOfficial = false } = {}) {
+export function applyBetaPolicyToHeader(existingBeta = "", modelId = "", { isOfficial = false, whitelist } = {}) {
   if (!loaded) loadModelPolicy()
   if (isOfficial) {
-    if (policy.defaults.strip_context_1m !== false) {
-      return stripTokens(existingBeta, [CONTEXT_1M])
-    }
+    const pass = whitelist !== undefined
+      ? resolveContext1mPass(modelId, {
+        whitelist: normalizeContext1mWhitelist(whitelist, []),
+        strip: policy.defaults.strip_context_1m !== false,
+      })
+      : shouldPassContext1mByPolicy(modelId)
+    if (!pass) return stripTokens(existingBeta, [CONTEXT_1M])
     return existingBeta
   }
   const betas = getBetaPolicy(modelId)
   const drop = new Set(betas.drop || [])
-  if (policy.defaults.strip_context_1m !== false) drop.add(CONTEXT_1M)
+  // Unofficial/mimic: never inject or replay context-1m (FullClaudeCodeMimicryBetas).
+  drop.add(CONTEXT_1M)
 
   let parts = []
   if (betas.allow_client && existingBeta) {
@@ -510,6 +582,7 @@ export function applyBetaPolicyToHeader(existingBeta = "", modelId = "", { isOff
     }
   }
   for (const r of betas.required || []) {
+    if (r === CONTEXT_1M) continue
     if (!drop.has(r) && !parts.includes(r)) parts.push(r)
   }
   parts = parts.filter((t) => !drop.has(t))
@@ -558,9 +631,10 @@ export function syncWorkerModelsIntoPolicy(workerIds = []) {
       capabilities: caps,
       params: {
         on_adaptive: caps.supports_adaptive ? "passthrough" : "convert_to_enabled",
-        on_enabled: caps.requires_adaptive ? "convert_to_adaptive" : "passthrough",
+        on_enabled: "passthrough",
       },
     })
+    // pass_context_1m left unset → inherit defaults.context_1m_whitelist
     changed = true
   }
   if (changed) {

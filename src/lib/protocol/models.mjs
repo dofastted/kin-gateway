@@ -5,16 +5,13 @@
  */
 
 import { isModelEnabled, filterPublicModelIds, getModelEntry, getModelPolicy, loadModelPolicy } from './model-policy.mjs'
+import { hasClaudeCode1mSuffix, stripClaudeCode1mSuffix } from './context-1m.mjs'
 
 const FAMILY_ALIASES = new Map([
   ['sonnet', 'sonnet'],
   ['opus', 'opus'],
   ['haiku', 'haiku'],
   ['fable', 'fable'],
-  ['sonnet[1m]', 'sonnet'],
-  ['opus[1m]', 'opus'],
-  ['haiku[1m]', 'haiku'],
-  ['fable[1m]', 'fable'],
 ])
 
 /** @type {{ at: number, ids: string[], aliases: string[], source: string|null }} */
@@ -111,26 +108,25 @@ function resolvePolicyAliasToCatalog(raw, ids) {
 export function resolveCatalogModel(raw, ids = cache.ids) {
   const m = String(raw || '').trim()
   if (!m) return { ok: false, reason: 'empty' }
-  const bare = m.split('/').filter(Boolean).pop() || m
+  const popped = m.split('/').filter(Boolean).pop() || m
+  const want1m = hasClaudeCode1mSuffix(popped)
+  const bare = stripClaudeCode1mSuffix(popped)
   const lower = bare.toLowerCase()
-  const want1m = /\[[1m]+\]$/i.test(bare)
-  const aliasKey = lower
-  if (FAMILY_ALIASES.has(aliasKey) || FAMILY_ALIASES.has(lower.replace(/\[1m\]$/i, '') + (want1m ? '[1m]' : ''))) {
-    const fam = FAMILY_ALIASES.get(aliasKey) || FAMILY_ALIASES.get(lower.replace(/\[1m\]$/i, ''))
+  if (FAMILY_ALIASES.has(lower)) {
+    const fam = FAMILY_ALIASES.get(lower)
     const latest = latestIdForFamily(fam, ids)
-    if (latest) return { ok: true, model: want1m ? `${latest}[1m]` : latest, alias: fam }
+    if (latest) return { ok: true, model: latest, alias: fam, want1m }
   }
-  const id = /^claude-/i.test(bare) ? bare : m
-  const idBare = id.replace(/\[[1m]+\]$/i, '')
-  if (ids.length && ids.some((x) => x.toLowerCase() === idBare.toLowerCase())) {
-    return { ok: true, model: want1m ? `${idBare}[1m]` : id }
+  const id = /^claude-/i.test(bare) ? bare : stripClaudeCode1mSuffix(m)
+  if (ids.length && ids.some((x) => x.toLowerCase() === id.toLowerCase())) {
+    return { ok: true, model: id, want1m }
   }
-  const dated = latestIdForUndatedAlias(idBare, ids)
-  if (dated) return { ok: true, model: want1m ? `${dated}[1m]` : dated, alias: idBare }
-  const viaPolicy = resolvePolicyAliasToCatalog(idBare, ids)
-  if (viaPolicy) return { ok: true, model: want1m ? `${viaPolicy}[1m]` : viaPolicy, alias: idBare }
+  const dated = latestIdForUndatedAlias(id, ids)
+  if (dated) return { ok: true, model: dated, alias: id, want1m }
+  const viaPolicy = resolvePolicyAliasToCatalog(id, ids)
+  if (viaPolicy) return { ok: true, model: viaPolicy, alias: id, want1m }
   // Fail closed: empty catalog or unknown id → reject. Never passthrough unverified claude-*.
-  return { ok: false, model: id, reason: ids.length ? 'not_in_catalog' : 'catalog_unavailable' }
+  return { ok: false, model: id, want1m, reason: ids.length ? 'not_in_catalog' : 'catalog_unavailable' }
 }
 
 /**
@@ -209,7 +205,7 @@ export function validateOfficialModel(model) {
     }
   }
 
-  const bare = m.split('/').filter(Boolean).pop() || m
+  const bare = stripClaudeCode1mSuffix(m.split('/').filter(Boolean).pop() || m)
   const id = bare
 
   if (/^(gpt-|o1|o3|o4|text-|davinci|gemini|deepseek|mistral|grok)/i.test(id)) {
@@ -242,10 +238,10 @@ export function validateOfficialModel(model) {
         }
       }
     } catch {}
-    return { ok: true, model: resolved.model, alias: resolved.alias || null }
+    return { ok: true, model: resolved.model, alias: resolved.alias || null, want1m: !!resolved.want1m }
   }
   if (!cache.ids.length && isCatalogModelId(id)) {
-    return { ok: true, model: id, alias: null, source: 'worker_catalog_pending' }
+    return { ok: true, model: id, alias: null, want1m: hasClaudeCode1mSuffix(m), source: 'worker_catalog_pending' }
   }
 
   return {
