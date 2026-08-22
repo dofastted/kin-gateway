@@ -1,10 +1,19 @@
 /**
  * Official Claude model catalog.
- * GET /v1/models is local seed + model-policy only. Never hop a slot worker
+ * Authority: console #/models (persisted model-policy). GET /v1/models and
+ * validateOfficialModel use that set. Never hop a slot worker
  * `/internal/v1/models` (that 401-forced OAuth refresh).
  */
 
-import { isModelEnabled, filterPublicModelIds, getModelEntry, getModelPolicy, loadModelPolicy } from './model-policy.mjs'
+import {
+  isModelEnabled,
+  filterPublicModelIds,
+  getModelEntry,
+  getModelPolicy,
+  getPolicyCatalogIds,
+  loadModelPolicy,
+  seedDefaultPolicy,
+} from './model-policy.mjs'
 import { hasClaudeCode1mSuffix, stripClaudeCode1mSuffix } from './context-1m.mjs'
 
 const FAMILY_ALIASES = new Map([
@@ -17,17 +26,19 @@ const FAMILY_ALIASES = new Map([
 /** @type {{ at: number, ids: string[], aliases: string[], source: string|null }} */
 let cache = { at: 0, ids: [], aliases: [], source: null }
 
-/** Local catalog so GET /v1/models is never empty when Anthropic OAuth /v1/models is unusable. */
-export const SEED_MODEL_IDS = [
-  'claude-opus-4-6',
-  'claude-sonnet-5',
-  'claude-haiku-4-5-20251001',
-  'claude-fable-5',
-]
+function catalogIsTestPinned() {
+  return cache.source === 'go-slot-worker' && (cache.ids || []).length > 0
+}
 
 export function seedModelCatalog() {
-  if (cache.ids.length) return cache
-  return setModelCatalog(SEED_MODEL_IDS, { source: 'gateway-catalog' })
+  if (catalogIsTestPinned()) return cache
+  let ids = [...SEED_MODEL_IDS]
+  try {
+    loadModelPolicy()
+    const fromPolicy = getPolicyCatalogIds()
+    if (fromPolicy.length) ids = fromPolicy
+  } catch {}
+  return setModelCatalog(ids, { source: 'model-policy' })
 }
 
 /** Local catalog for GET /v1/models and boot. Does not touch workers. */
@@ -37,7 +48,7 @@ export function gatewayModelCatalog() {
   return {
     object: 'list',
     data: listOfficialModels(),
-    source: 'gateway-catalog',
+    source: cache.source || 'model-policy',
   }
 }
 
@@ -48,6 +59,11 @@ export function isCatalogModelId(id) {
   if (/\.md$/i.test(s)) return false
   return s.split('-').length >= 3
 }
+
+/** Default seed = every id on the console models page (seedDefaultPolicy). */
+export const SEED_MODEL_IDS = Object.freeze(
+  Object.keys(seedDefaultPolicy().models || {}).filter((id) => isCatalogModelId(id)),
+)
 
 function modelRank(id) {
   const body = String(id).replace(/^claude-(opus|sonnet|haiku|fable|3)-/i, '')
@@ -192,7 +208,7 @@ export function listOfficialModels() {
       type: 'model',
       display_name: display,
       owned_by: 'anthropic',
-      source: cache.source || 'worker_catalog',
+      source: cache.source || 'model-policy',
       ...extra,
     }
   })
@@ -209,7 +225,7 @@ export function validateOfficialModel(model) {
     return {
       ok: false,
       error: {
-        message: 'model is required. Use a model the slot workers recognize.',
+        message: 'model is required. Use a model from the gateway model catalog.',
         type: 'invalid_request_error',
         code: 'model_required',
       },
@@ -231,9 +247,7 @@ export function validateOfficialModel(model) {
     }
   }
 
-  // Go slot workers own the live model catalog. Request validation remains
-  // fail-closed for non-Claude providers while allowing well-formed official
-  // Claude IDs when the asynchronous worker catalog is not yet cached.
+  if (!catalogIsTestPinned()) seedModelCatalog()
   const resolved = resolveCatalogModel(m, cache.ids)
   if (resolved.ok) {
     try {
@@ -258,7 +272,7 @@ export function validateOfficialModel(model) {
   return {
     ok: false,
     error: {
-      message: `model '${m}' is not recognized by the slot worker catalog. Request rejected; no hop.`,
+      message: `model '${m}' is not recognized by the gateway model catalog. Request rejected; no hop.`,
       type: 'invalid_request_error',
       code: 'model_not_supported',
       param: 'model',

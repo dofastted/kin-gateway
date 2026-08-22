@@ -93,33 +93,50 @@ export function applyOauthToCfg(cfg, cred) {
   return cfg
 }
 
+/** The Go worker's only credential file. Never the leftover `.credentials.json`. */
+export function slotWorkerCredentialPath(homeDir) {
+  if (!homeDir) return null
+  return path.join(homeDir, '.claude', 'credentials.json')
+}
+
 /** Read the slot worker credentials.json without logging secrets. */
 export function readWorkerCredentialFile(homeDir) {
-  if (!homeDir) return null
-  const candidates = [
-    path.join(homeDir, '.claude', 'credentials.json'),
-    path.join(homeDir, '.claude', '.credentials.json'),
-  ]
-  for (const file of candidates) {
-    try {
-      if (!fs.existsSync(file)) continue
-      const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
-      const oauth = doc?.claudeAiOauth && typeof doc.claudeAiOauth === 'object' ? doc.claudeAiOauth : doc
-      if (!oauth || typeof oauth !== 'object') continue
-      return {
-        access_token: oauth.accessToken || oauth.access_token || '',
-        refresh_token: oauth.refreshToken || oauth.refresh_token || '',
-        expires_at: oauth.expiresAt || oauth.expires_at || null,
-        email: oauth.email || oauth.emailAddress || oauth.email_address || null,
-        account_uuid: oauth.accountUuid || oauth.account_uuid || null,
-        org_uuid: oauth.orgUuid || oauth.org_uuid || null,
-        scope: Array.isArray(oauth.scopes) ? oauth.scopes.join(' ') : (oauth.scope || null),
-        source: 'go-slot-worker',
-        _token_version: oauth.kinGeneration || oauth.kin_generation || null,
-      }
-    } catch {}
+  const file = slotWorkerCredentialPath(homeDir)
+  if (!file) return null
+  try {
+    if (!fs.existsSync(file)) return null
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const oauth = doc?.claudeAiOauth && typeof doc.claudeAiOauth === 'object' ? doc.claudeAiOauth : doc
+    if (!oauth || typeof oauth !== 'object') return null
+    return {
+      access_token: oauth.accessToken || oauth.access_token || '',
+      refresh_token: oauth.refreshToken || oauth.refresh_token || '',
+      expires_at: oauth.expiresAt || oauth.expires_at || null,
+      email: oauth.email || oauth.emailAddress || oauth.email_address || null,
+      account_uuid: oauth.accountUuid || oauth.account_uuid || null,
+      org_uuid: oauth.orgUuid || oauth.org_uuid || null,
+      scope: Array.isArray(oauth.scopes) ? oauth.scopes.join(' ') : (oauth.scope || null),
+      source: 'go-slot-worker',
+      _token_version: oauth.kinGeneration || oauth.kin_generation || null,
+    }
+  } catch {
+    return null
   }
-  return null
+}
+
+/** Metadata only — never tokens. Identity/scheduler must use this location. */
+export function readSlotCredentialIdentity(homeDir) {
+  const cred = readWorkerCredentialFile(homeDir)
+  if (!cred) return null
+  return {
+    account_uuid: cred.account_uuid || null,
+    org_uuid: cred.org_uuid || null,
+    email: cred.email || null,
+    has_access: !!cred.access_token,
+    has_refresh: !!cred.refresh_token,
+    expires_at: cred.expires_at || null,
+    source: 'slot-credentials.json',
+  }
 }
 
 /**
@@ -129,6 +146,25 @@ export function mirrorWorkerCredentialsToVm(vmPath, homeDir) {
   const cred = readWorkerCredentialFile(homeDir)
   if (!cred?.access_token && !cred?.refresh_token) return null
   return persistOauthToVm(vmPath, cred)
+}
+
+/**
+ * Reset leftover oauth_cleared / oauth_* / no_credential after a live
+ * credential is written. Operator `disabled` and explicit `stopped` stay.
+ */
+export function restoreScheduleAfterLiveCredential(vm) {
+  if (!vm || !hasCredentialPresence(vm.claude)) return vm
+  const reason = String(vm.schedule_disabled_reason || '')
+  if (!(reason === 'oauth_cleared' || reason === 'no_credential' || /^oauth_/.test(reason))) {
+    return vm
+  }
+  vm.schedule_disabled_reason = null
+  vm.schedulable = true
+  const status = String(vm.status || '').toLowerCase()
+  if (status === 'stopped' || status === 'paused' || status === 'disabled') {
+    vm.status = 'running'
+  }
+  return vm
 }
 
 export function persistOauthToVm(vmPath, cred) {
@@ -149,6 +185,7 @@ export function persistOauthToVm(vmPath, cred) {
   vm.claude.refresh_error = null
   vm.claude.refreshed_at = new Date().toISOString()
   vm.claude._token_version = n._token_version || Date.now()
+  restoreScheduleAfterLiveCredential(vm)
   vm.updated_at = new Date().toISOString()
   atomicWriteJson(vmPath, vm, { mode: 0o600 })
   return vm

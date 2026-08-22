@@ -23,7 +23,7 @@ test('ingestHeaders updates unified windows + counters + allocations', () => {
   q.ingestHeaders('a2', {
     'anthropic-ratelimit-unified-5h-utilization': '0.42',
     'anthropic-ratelimit-unified-7d-utilization': '0.10',
-    'anthropic-ratelimit-unified-5h-reset': '2026-08-18T12:00:00Z',
+    'anthropic-ratelimit-unified-5h-reset': '2026-08-23T12:00:00Z',
   }, { input_tokens: 100, output_tokens: 20 })
   const snap = q.snapshot()
   const acc = snap.accounts.find((a) => a.account_id === 'a2')
@@ -77,6 +77,14 @@ test('cli rate_limit_event blocks via status', () => {
   const gate = q.canAccept('a4')
   assert.equal(gate.ok, false)
   assert.equal(gate.reason, 'quota_5h_cli')
+})
+test('tryAcquire enforces and releases the configured concurrency cap', () => {
+  const q = new AccountQuota({ accounts: [{ account_id: 'acc-reserve', max_concurrency: 1 }] })
+  assert.equal(q.tryAcquire('acc-reserve').ok, true)
+  assert.equal(q.tryAcquire('acc-reserve').reason, 'concurrency_limit')
+  q.release('acc-reserve')
+  assert.equal(q.tryAcquire('acc-reserve').ok, true)
+  q.release('acc-reserve')
 })
 
 test('state persists across re-open (same dataDir)', () => {
@@ -158,6 +166,61 @@ test('ingestOAuthUsage stores 5h/7d and isolated fable limit', () => {
   assert.equal(gate.ok, true, 'fable weekly limit must not block the whole account')
 })
 
+test('usage ok plus fable 401 does not poison last_probe with revoke text', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  q.ingestOAuthUsage('acc-pro-401', {
+    ok: true,
+    usage_status: 200,
+    five_hour: { utilization: 0, status: 'allowed' },
+    seven_day: { utilization: 0, status: 'allowed' },
+    fable: { ok: false, banned: true, plan_denied: false, status: 401, error: 'OAuth access token has been revoked.', model: 'claude-fable-5' },
+    probed_at: '2026-08-22T08:42:00.000Z',
+  })
+  const acc = q.repo.get('acc-pro-401')
+  assert.equal(acc.unified.last_probe.error, null)
+  assert.equal(acc.unified.last_probe.ok, true)
+  assert.equal(acc.unified.fable.banned, false)
+  assert.equal(acc.unified.fable.plan_denied, true)
+  q.clearGrantRevokeLeftover('acc-pro-401')
+  const after = q.repo.get('acc-pro-401')
+  assert.equal(after.unified.last_probe.error, null)
+  assert.equal(after.unified.fable.plan_denied, true)
+})
+
+test('clearGrantRevokeLeftover drops stale revoke after refresh', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  q.ingestOAuthUsage('acc-stale', {
+    ok: false,
+    usage_status: 401,
+    fable: { ok: false, banned: true, status: 401, error: 'OAuth access token has been revoked.' },
+    usage_error: 'OAuth access token has been revoked.',
+    probed_at: '2026-08-22T08:42:00.000Z',
+  })
+  assert.match(String(q.repo.get('acc-stale').unified.last_probe.error || ''), /revoked/i)
+  q.clearGrantRevokeLeftover('acc-stale')
+  const acc = q.repo.get('acc-stale')
+  assert.equal(acc.unified.last_probe.error, null)
+  assert.equal(acc.unified.fable.banned, false)
+  assert.equal(acc.unified.fable.plan_denied, true)
+})
+
+test('fable 429 without 7d_oi window does not invent a full Fable quota', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  q.ingestOAuthUsage('acc-pro', {
+    ok: true,
+    five_hour: { utilization: 0.1, status: 'allowed' },
+    seven_day: { utilization: 0.2, status: 'allowed' },
+    fable: { ok: false, limited: true, banned: false, plan_denied: false, status: 429, model: 'claude-fable-5' },
+    probed_at: '2026-08-22T00:00:00Z',
+  })
+  const acc = q.repo.get('acc-pro')
+  assert.equal(acc.unified.fable.limited, false)
+  assert.equal(acc.unified.fable.plan_denied, false)
+  assert.equal(acc.unified['7d_oi']?.status || null, null)
+  assert.equal(q.canAccept('acc-pro').ok, true)
+  assert.equal(q.fableWindowLimited('acc-pro'), false)
+})
+
 test('7d_oi window is Fable-only and does not block the account', () => {
   const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
   q.ingestHeaders('acc-oi', {
@@ -169,4 +232,47 @@ test('7d_oi window is Fable-only and does not block the account', () => {
   assert.equal(q.canAccept('acc-oi').ok, true)
   assert.equal(q.fableWindowLimited('acc-oi'), true)
   assert.equal(q.fableWindowResetAt('acc-oi'), Date.parse('2026-08-25T00:00:00Z'))
+})
+
+test('probe 5h rejected with no in-window usage is not a hard block', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  const reset = new Date(Date.now() + 4 * 3600_000).toISOString()
+  q.ingestOAuthUsage('acc-sticky', {
+    ok: true,
+    five_hour: { utilization: 1, resets_at: reset, status: 'rejected' },
+    seven_day: { utilization: 0, status: 'allowed' },
+    probed_at: new Date().toISOString(),
+  })
+  assert.equal(q.canAccept('acc-sticky').ok, true)
+  const acc = q.snapshot().accounts.find((a) => a.account_id === 'acc-sticky')
+  assert.equal(acc.unified['5h'].utilization, 0)
+  assert.equal(acc.unified['5h'].status, 'active')
+  assert.equal(acc.unified['5h'].stale, true)
+})
+
+test('probe 5h rejected stays blocked when the slot was used in this window', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  const reset = new Date(Date.now() + 4 * 3600_000).toISOString()
+  q.attachRuntimeRepo({
+    get: () => ({ last_used_at: Date.now() - 60_000 }),
+  })
+  q.ingestOAuthUsage('acc-hot', {
+    ok: true,
+    five_hour: { utilization: 1, resets_at: reset, status: 'rejected' },
+    seven_day: { utilization: 0, status: 'allowed' },
+    probed_at: new Date().toISOString(),
+  })
+  const gate = q.canAccept('acc-hot')
+  assert.equal(gate.ok, false)
+  assert.equal(gate.reason, 'quota_5h_cli')
+})
+
+test('elapsed 5h reset is not a hard block even after a live header write', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: { quota: { safety_ratio: 0.95, block_on_5h: true, block_on_7d: true } } })
+  q.ingestHeaders('acc-elapsed', {
+    'anthropic-ratelimit-unified-5h-utilization': '1',
+    'anthropic-ratelimit-unified-5h-status': 'rejected',
+    'anthropic-ratelimit-unified-5h-reset': new Date(Date.now() - 60_000).toISOString(),
+  })
+  assert.equal(q.canAccept('acc-elapsed').ok, true)
 })

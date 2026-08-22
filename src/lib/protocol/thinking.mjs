@@ -1,4 +1,12 @@
-import { normalizeThinkingByPolicy, getCapabilities, getModelParams } from './model-policy.mjs'
+import {
+  normalizeThinkingByPolicy,
+  getCapabilities,
+  getModelParams,
+  clampEnabledThinkingBudget,
+  MIN_THINKING_BUDGET,
+} from './model-policy.mjs'
+
+export { clampEnabledThinkingBudget, MIN_THINKING_BUDGET }
 
 /**
  * OpenAI reasoning <-> Claude thinking mapping + model-aware normalize.
@@ -104,8 +112,8 @@ export function normalizeThinkingForModel(body = {}) {
       ? Number(thinking.budget_tokens)
       : DEFAULT_FALLBACK_BUDGET
     body.thinking = { type: 'enabled', budget_tokens: budget }
-    return body
+    return clampEnabledThinkingBudget(body)
   }
 
-  return body
+  return clampEnabledThinkingBudget(body)
 }

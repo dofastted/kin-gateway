@@ -343,6 +343,10 @@ export class RequestLogStore {
     return this.repo.billingStats()
   }
 
+  costByModel(opts = {}) {
+    return this.repo.costByModel(opts)
+  }
+
   /** Windowed SLA / QPS / TTFT snapshot for overview + log analysis. */
   windowStats(opts = {}) {
     return this.repo.windowStats(opts)

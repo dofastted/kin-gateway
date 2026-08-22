@@ -40,7 +40,7 @@ export function claudeCodeInboundBody({
   maxTokens,
   thinking = null,
   sessionId,
-  temperature = 0,
+  temperature = 1,
   stream = true,
 } = {}) {
   const body = {

@@ -1,8 +1,8 @@
 /**
  * SOCKS5 Proxy Pool (SQLite-backed)
  * - Bulk import
- * - 1 proxy ↔ 1 VM binding
- * - Auto-assign free proxy on VM create
+ * - 1 proxy ↔ up to 5 VMs (`MAX_VMS_PER_PROXY`)
+ * - Auto-assign a proxy with remaining capacity on VM create
  * - Health probe every 5/10/30/60 min
  * - On failure: disable proxy + disable bound VM scheduling
  *
@@ -14,12 +14,73 @@ import crypto from 'node:crypto'
 import { resolveStoreDb } from '../db/database.mjs'
 import { ProxiesRepo } from '../db/repos/proxies-repo.mjs'
 
+export const MAX_VMS_PER_PROXY = 5
+
 const DEFAULT_CONFIG = {
   probe_interval_min: 10, // 5 | 10 | 30 | 60
   probe_timeout_ms: 8000,
   max_failures: 2, // consecutive failures before disable
   enabled: true,
   disconnect_on_error: false, // experimental: stop slot + tear SOCKS on runtime errors
+}
+
+export function parseBoundVmIds(value) {
+  if (Array.isArray(value)) return normalizeVmIds(value)
+  if (value && typeof value === 'object' && Array.isArray(value.ids)) return normalizeVmIds(value.ids)
+  if (value == null || value === '') return []
+  const raw = String(value).trim()
+  if (!raw) return []
+  if (raw.startsWith('[')) {
+    try { return normalizeVmIds(JSON.parse(raw)) } catch { return [] }
+  }
+  if (raw.includes(',')) return normalizeVmIds(raw.split(','))
+  return normalizeVmIds([raw])
+}
+
+export function encodeBoundVmIds(ids) {
+  const next = parseBoundVmIds(ids)
+  if (!next.length) return null
+  if (next.length === 1) return next[0]
+  return JSON.stringify(next)
+}
+
+function normalizeVmIds(list) {
+  const out = []
+  const seen = new Set()
+  for (const item of list || []) {
+    const id = String(item || '').trim()
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
+    if (out.length >= MAX_VMS_PER_PROXY) break
+  }
+  return out
+}
+
+export function boundVmIdsOf(proxy) {
+  if (!proxy) return []
+  if (Array.isArray(proxy.bound_vm_ids) && proxy.bound_vm_ids.length) {
+    return parseBoundVmIds(proxy.bound_vm_ids)
+  }
+  return parseBoundVmIds(proxy.bound_vm_id)
+}
+
+export function proxyHasVm(proxy, vmId) {
+  if (!proxy || !vmId) return false
+  return boundVmIdsOf(proxy).includes(String(vmId))
+}
+
+function setBoundVmIds(proxy, ids) {
+  const next = parseBoundVmIds(ids)
+  proxy.bound_vm_ids = next
+  proxy.bound_vm_id = next[0] || null
+  return next
+}
+
+function hydrateProxy(proxy) {
+  if (!proxy) return proxy
+  const ids = parseBoundVmIds(proxy.bound_vm_ids?.length ? proxy.bound_vm_ids : proxy.bound_vm_id)
+  return { ...proxy, bound_vm_ids: ids, bound_vm_id: ids[0] || null }
 }
 
 function uid(prefix = 'px') {
@@ -152,7 +213,7 @@ export class ProxyPool {
   load() {
     try {
       this.state.config = { ...DEFAULT_CONFIG, ...(this.repo.getConfig({}) || {}) }
-      this.state.proxies = this.repo.loadAll()
+      this.state.proxies = this.repo.loadAll().map(hydrateProxy)
     } catch {
       this.state = { config: { ...DEFAULT_CONFIG }, proxies: [] }
     }
@@ -171,30 +232,40 @@ export class ProxyPool {
 
   save() {
     this.repo.setConfig(this.state.config)
-    this.repo.replaceAll(this.state.proxies)
+    this.repo.replaceAll(this.state.proxies.map((p) => ({
+      ...p,
+      bound_vm_id: encodeBoundVmIds(boundVmIdsOf(p)),
+    })))
   }
 
   snapshot() {
     const proxies = this.state.proxies
-    const free = proxies.filter((p) => p.enabled && !p.bound_vm_id && p.status !== 'dead').length
-    const bound = proxies.filter((p) => p.bound_vm_id).length
+    const unused = proxies.filter((p) => p.enabled && boundVmIdsOf(p).length === 0 && p.status !== 'dead').length
+    const open = proxies.filter((p) => p.enabled && p.status !== 'dead' && boundVmIdsOf(p).length < MAX_VMS_PER_PROXY).length
+    const bound = proxies.filter((p) => boundVmIdsOf(p).length > 0).length
     const dead = proxies.filter((p) => !p.enabled || p.status === 'dead').length
     const ok = proxies.filter((p) => p.enabled && p.status === 'ok').length
+    const slotsUsed = proxies.reduce((n, p) => n + boundVmIdsOf(p).length, 0)
     return {
-      config: this.state.config,
+      config: { ...this.state.config, bind_limit: MAX_VMS_PER_PROXY },
       totals: {
         total: proxies.length,
-        free,
+        free: unused,
+        open,
         bound,
         ok,
         dead,
         probing: this._probing,
+        slots_used: slotsUsed,
+        slots_cap: proxies.length * MAX_VMS_PER_PROXY,
+        bind_limit: MAX_VMS_PER_PROXY,
       },
       proxies: proxies.map((p) => this.publicProxy(p)),
     }
   }
 
   publicProxy(p) {
+    const ids = boundVmIdsOf(p)
     return {
       id: p.id,
       host: p.host,
@@ -202,7 +273,10 @@ export class ProxyPool {
       has_auth: !!(p.username || p.password),
       status: p.status, // unknown | ok | fail | dead
       enabled: p.enabled,
-      bound_vm_id: p.bound_vm_id || null,
+      bound_vm_id: ids[0] || null,
+      bound_vm_ids: ids,
+      bound_count: ids.length,
+      bind_limit: MAX_VMS_PER_PROXY,
       consecutive_failures: p.consecutive_failures || 0,
       latency_ms: p.latency_ms ?? null,
       last_probe_at: p.last_probe_at || null,
@@ -255,6 +329,7 @@ export class ProxyPool {
         status: 'unknown',
         enabled: true,
         bound_vm_id: null,
+        bound_vm_ids: [],
         consecutive_failures: 0,
         latency_ms: null,
         last_probe_at: null,
@@ -283,55 +358,67 @@ export class ProxyPool {
     return this.allocateForVm(vmId)
   }
 
-  /** Allocate one free healthy (or unknown) proxy and bind to vmId */
+  /** Allocate one healthy proxy with remaining capacity and bind to vmId */
   allocateForVm(vmId) {
     if (!vmId) return null
-    // already bound?
-    const existing = this.state.proxies.find((p) => p.bound_vm_id === vmId && p.enabled)
+    const existing = this.state.proxies.find((p) => p.enabled && proxyHasVm(p, vmId))
     if (existing) return this.publicProxy(existing)
 
     const candidates = this.state.proxies.filter(
-      (p) => p.enabled && !p.bound_vm_id && p.status !== 'dead' && p.status !== 'fail',
+      (p) => p.enabled && p.status !== 'dead' && p.status !== 'fail' && boundVmIdsOf(p).length < MAX_VMS_PER_PROXY,
     )
-    // prefer ok, then unknown
     candidates.sort((a, b) => {
       const score = (x) => (x.status === 'ok' ? 0 : x.status === 'unknown' ? 1 : 2)
-      return score(a) - score(b)
+      if (score(a) !== score(b)) return score(a) - score(b)
+      return boundVmIdsOf(a).length - boundVmIdsOf(b).length
     })
     const pick = candidates[0]
     if (!pick) return null
-    pick.bound_vm_id = vmId
-    this.save()
-    return this.publicProxy(pick)
+    const bound = this.bind(pick.id, vmId)
+    return bound.ok ? bound.proxy : null
   }
 
   bind(proxyId, vmId) {
     const p = this.state.proxies.find((x) => x.id === proxyId)
     if (!p) return { ok: false, error: 'proxy_not_found' }
     if (!p.enabled || p.status === 'dead') return { ok: false, error: 'proxy_disabled' }
-    // unbind previous on this vm
+    const vm = String(vmId || '').trim()
+    if (!vm) return { ok: false, error: 'vm_id_required' }
     for (const x of this.state.proxies) {
-      if (x.bound_vm_id === vmId && x.id !== proxyId) x.bound_vm_id = null
+      if (x.id === proxyId) continue
+      const ids = boundVmIdsOf(x)
+      if (ids.includes(vm)) setBoundVmIds(x, ids.filter((id) => id !== vm))
     }
-    if (p.bound_vm_id && p.bound_vm_id !== vmId) {
-      return { ok: false, error: 'proxy_already_bound', bound_vm_id: p.bound_vm_id }
+    const ids = boundVmIdsOf(p)
+    if (ids.includes(vm)) {
+      this.save()
+      return { ok: true, proxy: this.publicProxy(p) }
     }
-    p.bound_vm_id = vmId
+    if (ids.length >= MAX_VMS_PER_PROXY) {
+      return { ok: false, error: 'proxy_bind_limit', max: MAX_VMS_PER_PROXY, bound_vm_ids: ids }
+    }
+    setBoundVmIds(p, [...ids, vm])
     this.save()
     return { ok: true, proxy: this.publicProxy(p) }
   }
 
-  unbind(proxyId) {
+  unbind(proxyId, vmId = null) {
     const p = this.state.proxies.find((x) => x.id === proxyId)
     if (!p) return { ok: false, error: 'proxy_not_found' }
-    p.bound_vm_id = null
+    const ids = boundVmIdsOf(p)
+    const target = vmId == null || vmId === '' ? null : String(vmId).trim()
+    const removed = target ? ids.filter((id) => id === target) : ids.slice()
+    setBoundVmIds(p, target ? ids.filter((id) => id !== target) : [])
     this.save()
-    return { ok: true, proxy: this.publicProxy(p) }
+    return { ok: true, proxy: this.publicProxy(p), unbound_vm_ids: removed }
   }
 
   unbindVm(vmId) {
+    const vm = String(vmId || '').trim()
+    if (!vm) return
     for (const p of this.state.proxies) {
-      if (p.bound_vm_id === vmId) p.bound_vm_id = null
+      const ids = boundVmIdsOf(p)
+      if (ids.includes(vm)) setBoundVmIds(p, ids.filter((id) => id !== vm))
     }
     this.save()
   }
@@ -395,7 +482,7 @@ export class ProxyPool {
       return { ok: true, skipped: true, reason: 'disconnect_on_error_disabled' }
     }
     if (!vmId) return { ok: false, error: 'vm_id_required' }
-    const p = this.state.proxies.find((x) => x.bound_vm_id === vmId)
+    const p = this.state.proxies.find((x) => proxyHasVm(x, vmId))
     if (!p) return { ok: false, error: 'no_bound_proxy' }
     this._applyProbeResult(p, {
       ok: false,
@@ -408,11 +495,11 @@ export class ProxyPool {
   }
 
   _cascadeDisconnectVm(proxy, reason) {
-    if (!proxy.bound_vm_id) return
     const cb = this.onDisconnectVm || this.onDisableVm
-    if (typeof cb === 'function') {
+    if (typeof cb !== 'function') return
+    for (const vmId of boundVmIdsOf(proxy)) {
       try {
-        cb(proxy.bound_vm_id, reason, proxy.id)
+        cb(vmId, reason, proxy.id)
       } catch {
         /* ignore */
       }
@@ -420,9 +507,8 @@ export class ProxyPool {
   }
 
   _cascadeDisableVm(proxy, reason) {
-    if (!proxy.bound_vm_id) return
-    const vmId = proxy.bound_vm_id
-    if (typeof this.onDisableVm === 'function') {
+    if (typeof this.onDisableVm !== 'function') return
+    for (const vmId of boundVmIdsOf(proxy)) {
       try {
         this.onDisableVm(vmId, reason, proxy.id)
       } catch {
@@ -553,7 +639,7 @@ export class ProxyPool {
 
   /** For upstream: get socks URL for a VM */
   getProxyForVm(vmId) {
-    const p = this.state.proxies.find((x) => x.bound_vm_id === vmId && x.enabled && x.status !== 'dead')
+    const p = this.state.proxies.find((x) => proxyHasVm(x, vmId) && x.enabled && x.status !== 'dead')
     if (!p) return null
     const auth =
       p.username != null
@@ -564,6 +650,8 @@ export class ProxyPool {
       url: `socks5://${auth}${p.host}:${p.port}`,
       host: p.host,
       port: p.port,
+      username: p.username || null,
+      password: p.password == null ? null : p.password,
     }
   }
 }

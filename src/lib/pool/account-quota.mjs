@@ -10,6 +10,7 @@
 import { resolveStoreDb } from '../db/database.mjs'
 import { AccountsRepo } from '../db/repos/accounts-repo.mjs'
 import { computeWeeklySplit, weeklySplitConfig } from './weekly-split.mjs'
+import { applyEffectiveWindows, effectiveRateWindow, WINDOW_5H_MS, WINDOW_7D_MS } from './quota-window.mjs'
 
 export class AccountQuota {
   constructor({ dataDir, db, config, accounts }) {
@@ -149,6 +150,21 @@ export class AccountQuota {
     return saved
   }
 
+  recordLastProbe(accountId, probe = {}) {
+    if (!accountId) return null
+    const acc = this.ensure({ account_id: accountId })
+    acc.last_probe = {
+      at: probe.at || new Date().toISOString(),
+      ok: !!probe.ok,
+      source: probe.source || 'test-chat',
+      error: probe.error || null,
+      transport: !!probe.transport,
+      status: probe.status || null,
+    }
+    acc.unified.last_probe = acc.last_probe
+    return this.repo.save(acc)
+  }
+
   /**
    * CRS oauth/usage snapshot from the VM UID probe.
    * Fable weekly limit is stored separately and does not unschedulable the account.
@@ -182,7 +198,6 @@ export class AccountQuota {
     const oiNorm = oiUtil != null && Number.isFinite(oiUtil) ? (oiUtil > 1.5 ? oiUtil / 100 : oiUtil) : null
     const oiRejected = ['rejected', 'rate_limited'].includes(String(oi?.status || '').toLowerCase())
       || (oiNorm != null && oiNorm >= 1)
-      || (!!probe.fable?.limited && !fableTransport && oiNorm == null)
     if (oiNorm != null || oi?.status || oi?.resets_at || oi?.reset || oiRejected) {
       acc.unified['7d_oi'] = {
         utilization: oiNorm ?? (oiRejected ? 1 : acc.unified['7d_oi']?.utilization ?? null),
@@ -190,16 +205,20 @@ export class AccountQuota {
         status: oiRejected ? 'rejected' : (oi?.status || (oiNorm != null ? statusFromUtil(oiNorm) : acc.unified['7d_oi']?.status || null)),
       }
     }
+    const usageOk = probe.ok === true || (probe.usage_status > 0 && probe.usage_status < 400)
     if (probe.fable && !fableTransport) {
+      const fableRevokeNoise = usageOk && (probe.fable.banned || probe.fable.status === 401
+        || /revoked|oauth|authentication/i.test(String(probe.fable.error || '')))
       acc.unified.fable = {
         limited: oiRejected,
-        banned: !!probe.fable.banned,
+        banned: !!probe.fable.banned && !usageOk && (probe.usage_status === 401 || probe.usage_status === 403),
+        plan_denied: !!probe.fable.plan_denied || fableRevokeNoise,
         ok: !!probe.fable.ok && !oiRejected,
         status: probe.fable.status || 0,
         reset: probe.fable.reset_at || acc.unified['7d_oi']?.reset || null,
         utilization: oiNorm ?? probe.fable.utilization ?? acc.unified['7d_oi']?.utilization ?? null,
         model: probe.fable.model || 'claude-fable-5',
-        error: probe.fable.error || null,
+        error: fableRevokeNoise ? 'plan_denied' : (probe.fable.error || null),
         probed_at: probe.probed_at || new Date().toISOString(),
       }
     }
@@ -209,7 +228,7 @@ export class AccountQuota {
       at: probe.probed_at || new Date().toISOString(),
       ok: !!probe.ok,
       source: probe.source || 'vm-oauth-usage',
-      error: probe.error || probe.usage_error || probe.fable?.error || null,
+      error: probe.error || probe.usage_error || (usageOk ? null : probe.fable?.error) || null,
       transport: fableTransport,
     }
     acc.unified.last_probe = acc.last_probe
@@ -285,10 +304,21 @@ export class AccountQuota {
       }
     }
 
-    const u5 = Number(acc.unified['5h'].utilization || 0)
-    const u7 = Number(acc.unified['7d'].utilization || 0)
-    const s5 = String(acc.unified['5h'].status || '')
-    const s7 = String(acc.unified['7d'].status || '')
+    const lastUsedAt = this._lastUsedAt(accountId)
+    const w5 = effectiveRateWindow(acc.unified['5h'], {
+      lastUsedAt,
+      source: acc.unified.source,
+      durationMs: WINDOW_5H_MS,
+    })
+    const w7 = effectiveRateWindow(acc.unified['7d'], {
+      lastUsedAt,
+      source: acc.unified.source,
+      durationMs: WINDOW_7D_MS,
+    })
+    const u5 = Number(w5.utilization || 0)
+    const u7 = Number(w7.utilization || 0)
+    const s5 = String(w5.status || '')
+    const s7 = String(w7.status || '')
 
     if (this.config.block_on_5h && (s5 === 'rejected' || s5 === 'rate_limited')) {
       acc.last_blocked = { at: new Date().toISOString(), window: '5h', status: s5, source: 'claude_cli' }
@@ -298,7 +328,7 @@ export class AccountQuota {
         reason: 'quota_5h_cli',
         detail: {
           status: s5,
-          reset: acc.unified['5h'].reset,
+          reset: w5.reset,
           message: `Official Claude Code rate_limit_event blocked 5h (${s5})`,
         },
       }
@@ -312,7 +342,7 @@ export class AccountQuota {
         reason: 'quota_7d_cli',
         detail: {
           status: s7,
-          reset: acc.unified['7d'].reset,
+          reset: w7.reset,
           message: `Official Claude Code rate_limit_event blocked 7d (${s7})`,
         },
       }
@@ -327,7 +357,7 @@ export class AccountQuota {
         detail: {
           utilization: u5,
           safety_ratio: ratio,
-          reset: acc.unified['5h'].reset,
+          reset: w5.reset,
           message: `5h usage ${(u5 * 100).toFixed(1)}% ≥ safety ${(ratio * 100).toFixed(0)}%; request blocked to protect quota`,
         },
       }
@@ -342,13 +372,25 @@ export class AccountQuota {
         detail: {
           utilization: u7,
           safety_ratio: ratio,
-          reset: acc.unified['7d'].reset,
+          reset: w7.reset,
           message: `7d usage ${(u7 * 100).toFixed(1)}% ≥ safety ${(ratio * 100).toFixed(0)}%; request blocked to protect weekly quota`,
         },
       }
     }
 
     return { ok: true, warn_5h: u5 >= (this.config.warn_ratio || 0.85), warn_7d: u7 >= (this.config.warn_ratio || 0.85) }
+  }
+  tryAcquire(accountId) {
+    const gate = this.canAccept(accountId)
+    if (!gate.ok) return gate
+    const acc = this.ensure({ account_id: accountId })
+    const inflight = this.inflight.get(accountId) || 0
+    const limit = this.limitFor(acc)
+    if (inflight >= limit) {
+      return { ok: false, reason: 'concurrency_limit', detail: { inflight, max: limit, source: 'quota-reservation' } }
+    }
+    this.inflight.set(accountId, inflight + 1)
+    return { ok: true }
   }
 
   /** sub2api 7d_oi: Fable-only window. Does not unschedulable the account. */
@@ -400,24 +442,43 @@ export class AccountQuota {
     return n
   }
 
+  _lastUsedAt(accountId) {
+    try {
+      const ms = Number(this.runtimeRepo?.get(accountId)?.last_used_at)
+      if (Number.isFinite(ms) && ms > 0) return ms
+    } catch {}
+    try {
+      const row = this.repo.recentAllocations(accountId, 1)?.[0]
+      if (!row?.at) return null
+      const parsed = Date.parse(row.at)
+      return Number.isFinite(parsed) ? parsed : null
+    } catch {
+      return null
+    }
+  }
+
   snapshot() {
     return {
       safety_ratio: this.config.safety_ratio,
-      accounts: this.repo.list().map((a) => ({
-        account_id: a.account_id,
-        vm_id: a.vm_id,
-        email: a.email,
-        inflight: this.inflight.get(a.account_id) || 0,
-        max_concurrency: a.max_concurrency,
-        requests: a.requests,
-        tokens_in: a.tokens_in,
-        tokens_out: a.tokens_out,
-        cache_read_tokens: a.cache_read_tokens || 0,
-        cache_creation_tokens: a.cache_creation_tokens || 0,
-        unified: a.unified,
-        last_blocked: a.last_blocked,
-        recent_allocations: this.repo.recentAllocations(a.account_id, 5),
-      })),
+      accounts: this.repo.list().map((a) => {
+        const lastUsedAt = this._lastUsedAt(a.account_id)
+        return {
+          account_id: a.account_id,
+          vm_id: a.vm_id,
+          email: a.email,
+          inflight: this.inflight.get(a.account_id) || 0,
+          max_concurrency: a.max_concurrency,
+          requests: a.requests,
+          tokens_in: a.tokens_in,
+          tokens_out: a.tokens_out,
+          cache_read_tokens: a.cache_read_tokens || 0,
+          cache_creation_tokens: a.cache_creation_tokens || 0,
+          last_used_at: lastUsedAt,
+          unified: applyEffectiveWindows(a.unified, { lastUsedAt, source: a.unified?.source }),
+          last_blocked: a.last_blocked,
+          recent_allocations: this.repo.recentAllocations(a.account_id, 5),
+        }
+      }),
     }
   }
 
@@ -448,6 +509,39 @@ export class AccountQuota {
       return this.repo.save(acc)
     }
     return acc
+  }
+
+  /**
+   * A successful OAuth refresh proves the grant is live.
+   * Drop leftover Fable / last_probe revoke strings so the panel resyncs.
+   */
+  clearGrantRevokeLeftover(accountId) {
+    if (!accountId) return null
+    const acc = this.repo.get(accountId)
+    if (!acc) return null
+    const revoke = /access token has been revoked|token has been revoked|oauth_revoked/i
+    const u = acc.unified || {}
+    const lp = u.last_probe || acc.last_probe || null
+    const fb = u.fable || null
+    let changed = false
+    if (lp && revoke.test(String(lp.error || lp.message || ''))) {
+      acc.last_probe = { ...lp, ok: true, error: null }
+      u.last_probe = acc.last_probe
+      changed = true
+    }
+    if (fb && (fb.banned || revoke.test(String(fb.error || '')))) {
+      u.fable = {
+        ...fb,
+        banned: false,
+        plan_denied: true,
+        error: revoke.test(String(fb.error || '')) ? 'plan_denied' : (fb.error || null),
+      }
+      changed = true
+    }
+    if (!changed) return acc
+    acc.unified = u
+    acc.unified.updated_at = new Date().toISOString()
+    return this.repo.save(acc)
   }
 
   setMaxConcurrency(accountId, n) {

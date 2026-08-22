@@ -1,12 +1,15 @@
 import { getVm, listVms, setVmSchedulable } from '../vm/vm-registry.mjs'
 import { vmCliHomePath, vmJsonPath } from '../vm/execution-context.mjs'
+import { readSlotCredentialIdentity } from '../oauth/oauth-credentials.mjs'
 import { mirrorWorkerCredentialsToVm } from '../oauth/oauth-credentials.mjs'
 import { FABLE_FAMILY_KEY, isFableModel, modelCooldownKeys } from './upstream-error-policy.mjs'
 import {
   evaluateCredentialEligibility,
   evaluateSlotGate,
+  evaluateProxySync,
   isCredentialRuntimeBlocked,
 } from './schedule-eligibility.mjs'
+import { isSlotProxyDesynced, readWorkerProxyEndpoint } from '../vm/vm-runtime.mjs'
 import { splitBlocksModel } from './weekly-split.mjs'
 
 const DEFAULT_CONFIG = {
@@ -20,7 +23,11 @@ const DEFAULT_CONFIG = {
   default_max_per_account: 20,
 }
 
-function accountIdOf(vm) {
+function accountIdOf(vm, projectRoot = null) {
+  if (projectRoot && vm?.id) {
+    const slot = readSlotCredentialIdentity(vmCliHomePath(projectRoot, vm.id))
+    if (slot?.account_uuid) return slot.account_uuid
+  }
   return vm?.claude?.account_uuid || vm?.id || null
 }
 
@@ -146,7 +153,7 @@ export class PoolScheduler {
       if (signal?.aborted) throw makeAbortError()
       const vm = getVm(this.projectRoot, summary.id)
       if (!vm) continue
-      const accountId = accountIdOf(vm)
+      const accountId = accountIdOf(vm, this.projectRoot)
       if (!accountId || excluded.has(accountId) || excluded.has(vm.id)) continue
       const state = this.runtimeRepo?.get?.(accountId) || null
       const eligibility = await this.checkEligibility({ vm, accountId, state, model, now, signal })
@@ -178,10 +185,18 @@ export class PoolScheduler {
 
   async checkEligibility({ vm, accountId, state, model, now, signal }) {
     const gate = evaluateSlotGate(vm)
-    if (!gate.ok) return gate
-    const expired = evaluateCredentialEligibility({ vm, now })
-    if (!expired.ok && expired.reason === 'oauth_expired') return expired
-    if (!expired.ok && expired.reason === 'no_credential') return expired
+    if (!gate.ok && gate.reason !== 'no_credential') return gate
+    const workerProxyEndpoint = this.projectRoot
+      ? readWorkerProxyEndpoint(this.projectRoot, vm.id)
+      : null
+    const proxySync = evaluateProxySync({ vm, workerProxyEndpoint })
+    if (!proxySync.ok) {
+      if (this.projectRoot && isSlotProxyDesynced(vm, this.projectRoot)
+        && vm.schedule_disabled_reason !== 'proxy_desynced') {
+        setVmSchedulable(this.projectRoot, vm.id, false, 'proxy_desynced')
+      }
+      return proxySync
+    }
     if (isCredentialRuntimeBlocked(state, now)) return { ok: false, reason: 'credential_blocked' }
     const fallbackCap = parseConcurrency(this.config.default_max_per_account, 20)
     const maxConcurrency = maxConcurrencyOf(vm, fallbackCap)
@@ -241,17 +256,19 @@ export class PoolScheduler {
   }
 
   executionContext(vm, accountId) {
+    const homeDir = vmCliHomePath(this.projectRoot, vm.id)
+    const slot = readSlotCredentialIdentity(homeDir)
     return {
       vmId: vm.id,
       accountId,
       vm,
       vmPath: vmJsonPath(this.projectRoot, vm.id),
-      homeDir: vmCliHomePath(this.projectRoot, vm.id),
+      homeDir,
       oauth: {
-        email: vm.claude?.email || null,
-        account_uuid: vm.claude?.account_uuid || null,
-        org_uuid: vm.claude?.org_uuid || null,
-        expires_at: vm.claude?.expires_at || null,
+        email: slot?.email || vm.claude?.email || null,
+        account_uuid: slot?.account_uuid || accountId || vm.claude?.account_uuid || null,
+        org_uuid: slot?.org_uuid || vm.claude?.org_uuid || null,
+        expires_at: slot?.expires_at || vm.claude?.expires_at || null,
       },
       proxyUrl: vm.proxy?.url || null,
       timezone: vm.timezone || 'UTC',
@@ -280,21 +297,22 @@ export class PoolScheduler {
       const prev = this.runtimeRepo.get?.(exec.accountId)
       const prevGen = Number(prev?.credential_generation) || 0
       const nextGen = Number(value?.credential?.generation) || 0
+      const effectiveGen = Math.max(prevGen, nextGen)
       this.runtimeRepo.upsert({
         account_id: exec.accountId,
         vm_id: exec.vmId,
         status: value?.ok ? 'ready' : 'worker_unhealthy',
         worker_heartbeat_at: now,
         worker_status: value,
-        credential_generation: nextGen,
-        refresh_status: value?.credential?.needs_refresh ? 'needed' : 'fresh',
+        credential_generation: effectiveGen,
+        refresh_status: value?.credential?.credential_state || (value?.credential?.needs_refresh ? 'needed' : 'fresh'),
       })
       if (
-        value?.ok &&
-        value?.credential?.has_access &&
-        nextGen > prevGen &&
-        exec.homeDir &&
-        exec.vmId
+        value?.ok
+        && (value?.credential?.has_access || value?.credential?.has_refresh)
+        && nextGen > prevGen
+        && exec.homeDir
+        && exec.vmId
       ) {
         try {
           const vmPath = String(exec.homeDir).replace(/\/cli-home\/?$/, '.json')
@@ -306,10 +324,9 @@ export class PoolScheduler {
         } catch {}
       }
       if (
-        value?.ok &&
-        value?.credential?.has_access &&
-        !value?.credential?.needs_refresh &&
-        exec.vmId
+        value?.ok
+        && (value?.credential?.has_access || value?.credential?.has_refresh)
+        && exec.vmId
       ) {
         try {
           const live = getVm(this.projectRoot, exec.vmId)
@@ -428,9 +445,10 @@ export class PoolScheduler {
     if (family && Number.isFinite(fableCap) && fableCap > 0 && this.familyInflight(candidate.accountId, family) >= fableCap) {
       return null
     }
+    const quotaReservation = this.accountQuota?.tryAcquire?.(candidate.accountId)
+    if (quotaReservation && !quotaReservation.ok) return null
     this.inflight.set(candidate.accountId, current + 1)
     this.bumpFamily(candidate.accountId, family, 1)
-    this.accountQuota?.acquire?.(candidate.accountId)
     let released = false
     return {
       reserved: true,

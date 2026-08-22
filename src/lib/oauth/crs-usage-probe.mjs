@@ -96,16 +96,20 @@ export function parseFableProbe({ status, body, transportError, headers } = {}) 
     || /SOCKS|transport|connection reset|worker_error|upstream_transport|refusing SOCKS/i.test(msg)
     || /SOCKS|transport/i.test(typ)
     || (status === 502 && /SOCKS|greeting|reset by peer/i.test(msg))
-  const limited = !transport && (status === 429 || /rate.?limit/i.test(typ) || /rate.?limit/i.test(msg))
-  const banned = !transport && (status === 401 || status === 403 || /oauth|authentication|permission/i.test(typ))
+  const planDenied = !transport && (status === 403 || (/permission/i.test(typ) && status !== 401))
+  const limited = !transport && !planDenied && (status === 429 || /rate.?limit/i.test(typ) || /rate.?limit/i.test(msg))
+  // 401 / oauth 才是整号吊销。403 permission 是 Pro 无 Fable，不是封号。
+  const banned = !transport && !planDenied && (status === 401 || /oauth|authentication/i.test(typ))
   const oi = windowFromRateLimitHeaders(headers)
-  const utilization = oi?.utilization ?? (limited ? 1 : null)
+  // 不要把无 7d_oi 窗的 429 写成 100%——Pro 探测 Fable 也会 429。
+  const utilization = oi?.utilization ?? null
   return {
     model: FABLE_PROBE_MODEL,
     status: status || 0,
-    ok: status === 200 && !limited && !banned && !transport,
+    ok: status === 200 && !limited && !banned && !transport && !planDenied,
     limited,
     banned,
+    plan_denied: planDenied,
     transport,
     utilization,
     reset_at: body?.error?.resets_at || body?.resets_at || oi?.resets_at || null,
@@ -115,8 +119,18 @@ export function parseFableProbe({ status, body, transportError, headers } = {}) 
       resets_at: body?.error?.resets_at || body?.resets_at || null,
       status: limited ? 'rejected' : statusFromUtilization(utilization),
     } : null),
-    error: limited || banned || transport || status >= 400 ? (msg || typ || `http_${status}`) : null,
+    error: limited || banned || planDenied || transport || status >= 400 ? (msg || typ || `http_${status}`) : null,
   }
+}
+
+/** Fable 403/permission = 套餐没有 Fable（Pro），不是账号吊销。 */
+export function isFablePlanDenied(fb = {}) {
+  if (!fb || typeof fb !== 'object') return false
+  if (fb.plan_denied) return true
+  const st = Number(fb.status || 0)
+  const err = String(fb.error || fb.type || '')
+  if (st === 401 || /oauth|authentication/i.test(err)) return false
+  return st === 403 || /permission/i.test(err)
 }
 
 function mockUsage() {
@@ -186,9 +200,20 @@ export async function probeVmUsage({
         max_tokens: 1,
         messages: [{ role: 'user', content: 'hi' }],
       },
-      reqHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+      // Do not send inbound anthropic-beta — unofficial probes must replay
+      // the slot's stored Claude Code betas, not overwrite them.
     })
     fable = parseFableProbe(fableRes)
+    // Usage API succeeding means the slot grant is not revoked.
+    // A Fable-only 401 is Pro / format noise, not 整号吊销.
+    if (usageRes.ok && fable && (fable.banned || fable.status === 401 || /revoked|oauth|authentication/i.test(String(fable.error || '')))) {
+      fable = {
+        ...fable,
+        banned: false,
+        plan_denied: true,
+        error: fable.plan_denied || fable.status === 403 ? fable.error : 'plan_denied',
+      }
+    }
   }
 
   const sevenDayOi = parsed.seven_day_oi || fable?.seven_day_oi || null

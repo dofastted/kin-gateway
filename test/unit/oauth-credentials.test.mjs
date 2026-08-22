@@ -9,6 +9,9 @@ import {
   normalizeOauth,
   applyOauthToCfg,
   persistOauthToVm,
+  restoreScheduleAfterLiveCredential,
+  readWorkerCredentialFile,
+  readSlotCredentialIdentity,
   REFRESH_SKEW_MS,
 } from '../../src/lib/oauth/oauth-credentials.mjs'
 
@@ -66,4 +69,79 @@ test('persist + apply keep other vm fields', () => {
 
 test('persistOauthToVm returns null for a missing vm file', () => {
   assert.equal(persistOauthToVm('/nonexistent/vm.json', { access_token: 'x' }), null)
+})
+
+test('persistOauthToVm clears leftover oauth_cleared after a live credential', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
+  const vmPath = path.join(dir, 'vm-02.json')
+  fs.writeFileSync(vmPath, JSON.stringify({
+    id: 'vm-02',
+    status: 'stopped',
+    schedulable: false,
+    schedule_disabled_reason: 'oauth_cleared',
+    claude: {},
+  }))
+  persistOauthToVm(vmPath, { access_token: 'new', refresh_token: 'newrt', expires_at: 99 })
+  const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+  assert.equal(vm.status, 'running')
+  assert.equal(vm.schedulable, true)
+  assert.equal(vm.schedule_disabled_reason, null)
+  assert.equal(vm.claude.has_access, true)
+  assert.equal(vm.claude.has_refresh, true)
+})
+
+test('persistOauthToVm does not reopen an operator-disabled slot', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-oauth-'))
+  const vmPath = path.join(dir, 'vm-02.json')
+  fs.writeFileSync(vmPath, JSON.stringify({
+    id: 'vm-02',
+    status: 'paused',
+    schedulable: false,
+    schedule_disabled_reason: 'disabled',
+    claude: {},
+  }))
+  persistOauthToVm(vmPath, { access_token: 'new', refresh_token: 'newrt', expires_at: 99 })
+  const vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+  assert.equal(vm.schedulable, false)
+  assert.equal(vm.schedule_disabled_reason, 'disabled')
+  assert.equal(vm.status, 'paused')
+})
+
+test('restoreScheduleAfterLiveCredential ignores operator stopped', () => {
+  const vm = {
+    status: 'stopped',
+    schedulable: false,
+    schedule_disabled_reason: 'stopped',
+    claude: { has_access: true, has_refresh: true },
+  }
+  restoreScheduleAfterLiveCredential(vm)
+  assert.equal(vm.schedulable, false)
+  assert.equal(vm.schedule_disabled_reason, 'stopped')
+})
+
+test('slot identity only reads worker credentials.json, never leftover dotfile', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-slot-cred-'))
+  const claude = path.join(home, '.claude')
+  fs.mkdirSync(claude, { recursive: true })
+  fs.writeFileSync(path.join(claude, '.credentials.json'), JSON.stringify({
+    claudeAiOauth: { accountUuid: 'wrong-leftover', accessToken: 'old', refreshToken: 'oldrt' },
+  }))
+  assert.equal(readWorkerCredentialFile(home), null)
+  assert.equal(readSlotCredentialIdentity(home), null)
+  fs.writeFileSync(path.join(claude, 'credentials.json'), JSON.stringify({
+    claudeAiOauth: {
+      accountUuid: 'slot-account',
+      orgUuid: 'slot-org',
+      email: 'slot@example.com',
+      accessToken: 'live',
+      refreshToken: 'livert',
+    },
+  }))
+  const id = readSlotCredentialIdentity(home)
+  assert.equal(id.account_uuid, 'slot-account')
+  assert.equal(id.org_uuid, 'slot-org')
+  assert.equal(id.email, 'slot@example.com')
+  assert.equal(id.source, 'slot-credentials.json')
+  assert.equal(id.has_access, true)
+  assert.ok(!Object.prototype.hasOwnProperty.call(id, 'access_token'))
 })

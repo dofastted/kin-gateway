@@ -91,17 +91,14 @@ test('scheduler skips a slot whose access is expired and has no refresh', async 
   selected.release()
 })
 
-test('scheduler still selects a slot whose access is expired but refresh remains', async (t) => {
+test('scheduler keeps a slot whose access is expired but refresh remains', async (t) => {
   const root = project()
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const vm1 = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-01.json'), 'utf8'))
   vm1.claude.expires_at = Math.floor(Date.now() / 1000) - 3600
   fs.writeFileSync(path.join(root, 'vms', 'vm-01.json'), JSON.stringify(vm1))
   const pool = scheduler(root)
-  const selected = await pool.selectAndReserve({
-    model: 'claude-test',
-    allowWait: false,
-  })
+  const selected = await pool.selectAndReserve({ model: 'claude-test', allowWait: false })
   assert.equal(selected.ok, true)
   assert.equal(selected.vmId, 'vm-01')
   selected.release()

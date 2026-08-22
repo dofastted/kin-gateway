@@ -159,6 +159,18 @@ test('sanitize is a no-op when the body has no context_management', () => {
   assert.equal(sanitizeAnthropicBodyForBetaTokens(body, CONTEXT_MANAGEMENT_BETA), body)
 })
 
+test('thinking.enabled preserves caller budget and max_tokens', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 256,
+    thinking: { type: 'enabled', budget_tokens: 200 },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'ok' }] }],
+  })
+  assert.equal(body.thinking.type, 'enabled')
+  assert.equal(body.thinking.budget_tokens, 200)
+  assert.equal(body.max_tokens, 256)
+})
+
 test('Haiku thinking.enabled does not inject context_management', () => {
   const body = prepareAnthropicRequest({
     model: 'claude-haiku-4-5-20251001',

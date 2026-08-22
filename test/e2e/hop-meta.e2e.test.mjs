@@ -20,7 +20,7 @@ test('CRS default keeps thinking + max_tokens + temperature in official body', a
     const tr = readTrace(gw)
     assert.equal(tr?.via, 'go-worker')
     assert.equal(tr.body.max_tokens, 99)
-    assert.equal(tr.body.temperature, 0.2)
+    assert.equal(tr.body.temperature, 1)
     assert.equal(tr.body.thinking.budget_tokens, 512)
   } finally {
     await gw.stop()
@@ -66,7 +66,7 @@ test('legacy CLI selector cannot drop HTTP request parameters', async () => {
     const trace = readTrace(gw)
     assert.equal(trace.argv, undefined)
     assert.equal(trace.body.max_tokens, 99)
-    assert.equal(trace.body.temperature, 0.2)
+    assert.equal(trace.body.temperature, 1)
     assert.equal(trace.body.thinking.budget_tokens, 512)
   } finally {
     await gw.stop()

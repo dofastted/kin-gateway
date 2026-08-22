@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { atomicWriteJson, writeJsonIfChanged } from '../vm/vm-file.mjs'
+import { readSlotCredentialIdentity } from '../oauth/oauth-credentials.mjs'
 
 export function readJsonSafe(p, fallback = null) {
   try {
@@ -43,8 +44,11 @@ export function loadVmIdentity(exec = {}) {
     ? machineId
     : sha256Hex(fp.device_id || exec.vmId || 'kin-vm')
   const sessionId = fp.session_id || crypto.randomUUID()
-  const accountUuid = oauth.account_uuid || claudeJson.oauthAccount?.accountUuid || ''
-  const orgUuid = oauth.org_uuid || claudeJson.oauthAccount?.organizationUuid || ''
+  const slotCred = readSlotCredentialIdentity(home)
+  // Slot worker credentials.json is the only credential location.
+  // Do not take account identity from leftover .claude.json / client inbound.
+  const accountUuid = slotCred?.account_uuid || oauth.account_uuid || ''
+  const orgUuid = slotCred?.org_uuid || oauth.org_uuid || ''
   const cliVersion = exec.vm?.claude_code_version || '2.1.233'
 
   const env = {
@@ -74,7 +78,7 @@ export function loadVmIdentity(exec = {}) {
     timezone: exec.timezone || 'UTC',
     locale: exec.locale || 'en_US.UTF-8',
     kernel: exec.kernel || null,
-    email: oauth.email || claudeJson.oauthAccount?.emailAddress || null,
+    email: slotCred?.email || oauth.email || claudeJson.oauthAccount?.emailAddress || null,
     accountUuid,
     orgUuid,
     deviceId,
