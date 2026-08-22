@@ -69,7 +69,10 @@ function cacheCreationBreakdown(usage) {
   let five = Number(nested?.ephemeral_5m_input_tokens) || 0
   let hour = Number(nested?.ephemeral_1h_input_tokens) || 0
   const total = Number(usage.cache_creation_input_tokens ?? usage.cache_creation_tokens) || 0
-  if (five === 0 && hour === 0 && total > 0) five = total
+  if (five === 0 && hour === 0 && total > 0) {
+    if (String(usage.cache_ttl || '').toLowerCase() === '1h') hour = total
+    else five = total
+  }
   if (five === 0 && hour === 0) {
     return { cache_creation_5m_tokens: null, cache_creation_1h_tokens: null }
   }
