@@ -7,11 +7,13 @@ import {
   resolveCatalogModel,
   setModelCatalog,
   ingestWorkerModels,
-  listOfficialModels,
   validateOfficialModel,
   clearModelsCache,
   gatewayModelCatalog,
+  SEED_MODEL_IDS,
+  getCatalogIds,
 } from '../../src/lib/protocol/models.mjs'
+import { seedDefaultPolicy } from '../../src/lib/protocol/model-policy.mjs'
 
 test('isCatalogModelId rejects fragments', () => {
   assert.equal(isCatalogModelId('claude-sonnet-5'), true)
@@ -63,29 +65,46 @@ test('validateOfficialModel only accepts the loaded catalog', () => {
   clearModelsCache()
 })
 
-test('empty catalog accepts only well-formed Claude IDs while worker catalog loads', () => {
+test('empty catalog rejects unresolved ids; validate seeds from model-policy', () => {
   clearModelsCache()
   const r = resolveCatalogModel('claude-sonnet-5', [])
   assert.equal(r.ok, false)
   assert.equal(r.reason, 'catalog_unavailable')
   assert.equal(validateOfficialModel('claude-sonnet-5').ok, true)
+  assert.equal(validateOfficialModel('claude-opus-5').ok, true)
   assert.equal(validateOfficialModel('claude-made-up-99').ok, false)
+  clearModelsCache()
 })
 
 test('ingestWorkerModels merges worker list responses into the catalog', () => {
   clearModelsCache()
   ingestWorkerModels({ object: 'list', data: [{ id: 'claude-sonnet-5' }, { id: 'not-a-model' }] })
   ingestWorkerModels({ data: ['claude-opus-4-6'] })
-  const ids = listOfficialModels().map((m) => m.id).sort()
-  assert.deepEqual(ids, ['claude-opus-4-6', 'claude-sonnet-5'])
+  assert.deepEqual(getCatalogIds().sort(), ['claude-opus-4-6', 'claude-sonnet-5'])
   assert.equal(validateOfficialModel('claude-made-up-99').ok, false)
+  clearModelsCache()
+})
+
+test('seed catalog matches the console model-policy matrix including opus-5', () => {
+  const expected = Object.keys(seedDefaultPolicy().models || {}).sort()
+  assert.deepEqual([...SEED_MODEL_IDS].sort(), expected)
+  assert.ok(SEED_MODEL_IDS.includes('claude-opus-5'))
+  assert.ok(SEED_MODEL_IDS.includes('claude-sonnet-5'))
+  assert.ok(SEED_MODEL_IDS.includes('claude-fable-5'))
+  clearModelsCache()
+  const cat = gatewayModelCatalog()
+  const ids = cat.data.map((m) => m.id)
+  assert.ok(ids.includes('claude-opus-5'))
+  assert.equal(validateOfficialModel('claude-opus-5').ok, true)
+  assert.equal(validateOfficialModel('opus').ok, true)
+  assert.equal(validateOfficialModel('opus').model, 'claude-opus-5')
   clearModelsCache()
 })
 
 test('gatewayModelCatalog stays local and never hops', () => {
   clearModelsCache()
   const cat = gatewayModelCatalog()
-  assert.equal(cat.source, 'gateway-catalog')
+  assert.equal(cat.source, 'model-policy')
   assert.equal(cat.object, 'list')
   assert.ok(Array.isArray(cat.data))
   assert.ok(cat.data.length > 0)

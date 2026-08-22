@@ -84,12 +84,13 @@ func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
 	if err != nil {
 		s.setLastError(err)
 	}
+	usable := err == nil && (current.Valid() || strings.TrimSpace(current.RefreshToken) != "")
 	status := "ready"
-	if err != nil || !current.Valid() {
+	if !usable {
 		status = "degraded"
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"ok":               status == "ready",
+		"ok":               usable,
 		"status":           status,
 		"vm_id":            s.Config.VMID,
 		"proxy_configured": strings.TrimSpace(s.Config.ProxyURL) != "",
@@ -98,6 +99,7 @@ func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
 		"delivery_mode":    s.Config.DeliveryMode,
 		"uptime_seconds":   int64(time.Since(s.started()).Seconds()),
 		"last_error":       s.getLastError(),
+		"last_error_class": classifyRefreshError(s.getLastError()),
 	})
 }
 
@@ -107,7 +109,10 @@ func (s *Server) credentialStatus(writer http.ResponseWriter, _ *http.Request) {
 		writeWorkerError(writer, http.StatusServiceUnavailable, "credential_unavailable", err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{"ok": current.Valid(), "credential": publicCredential(current)})
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"ok":         current.Valid() || strings.TrimSpace(current.RefreshToken) != "",
+		"credential": publicCredential(current),
+	})
 }
 
 func (s *Server) credentialImport(writer http.ResponseWriter, request *http.Request) {
@@ -388,21 +393,51 @@ func (s *Server) getLastError() string {
 	return s.lastError
 }
 
+func classifyRefreshError(message string) string {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "invalid_grant"), strings.Contains(lower, "refresh_token_missing"), strings.Contains(lower, "revoked"):
+		return "fatal"
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "network"), strings.Contains(lower, "transport"), strings.Contains(lower, "429"):
+		return "retryable"
+	case strings.TrimSpace(lower) == "":
+		return ""
+	default:
+		return "failed"
+	}
+}
+
 func publicCredential(current credential.Credential) map[string]any {
 	ttl := int64(0)
 	if current.ExpiresAt > 0 {
 		ttl = int64(time.Until(time.UnixMilli(current.ExpiresAt)).Seconds())
 	}
+	state := "missing"
+	switch {
+	case strings.TrimSpace(current.RefreshToken) != "" && !current.Valid():
+		state = "refreshable"
+	case current.ExpiresAt > 0 && current.ExpiresAt <= time.Now().UnixMilli():
+		if strings.TrimSpace(current.RefreshToken) != "" {
+			state = "expired_refreshable"
+		} else {
+			state = "expired"
+		}
+	case current.NeedsRefresh(time.Now(), 5*time.Minute):
+		state = "refresh_window"
+	case current.Valid():
+		state = "fresh"
+	}
 	return map[string]any{
-		"has_access":    current.AccessToken != "",
-		"has_refresh":   current.RefreshToken != "",
-		"expires_at":    current.ExpiresAt,
-		"ttl_seconds":   ttl,
-		"generation":    current.Generation,
-		"email":         current.Email,
-		"account_uuid":  current.AccountUUID,
-		"org_uuid":      current.OrgUUID,
-		"needs_refresh": current.NeedsRefresh(time.Now(), 5*time.Minute),
+		"has_access":       current.AccessToken != "",
+		"has_refresh":      current.RefreshToken != "",
+		"expires_at":       current.ExpiresAt,
+		"ttl_seconds":      ttl,
+		"generation":       current.Generation,
+		"email":            current.Email,
+		"account_uuid":     current.AccountUUID,
+		"org_uuid":         current.OrgUUID,
+		"needs_refresh":    current.NeedsRefresh(time.Now(), 5*time.Minute),
+		"credential_state": state,
 	}
 }
 

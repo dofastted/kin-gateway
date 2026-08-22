@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   parseOAuthUsage,
   parseFableProbe,
+  isFablePlanDenied,
   normUtilization,
   FABLE_PROBE_MODEL,
   probeVmUsage,
@@ -56,8 +57,20 @@ test('fable 429 is isolated weekly limit, not account ban', () => {
   assert.equal(r.model, FABLE_PROBE_MODEL)
   assert.equal(r.limited, true)
   assert.equal(r.banned, false)
+  assert.equal(r.plan_denied, false)
   assert.equal(r.ok, false)
-  assert.equal(r.utilization, 1)
+  assert.equal(r.utilization, null)
+})
+
+test('fable 403 permission is plan denied, not account ban', () => {
+  const r = parseFableProbe({
+    status: 403,
+    body: { error: { type: 'permission_error', message: 'Your organization does not have access' } },
+  })
+  assert.equal(r.banned, false)
+  assert.equal(r.plan_denied, true)
+  assert.equal(r.limited, false)
+  assert.equal(r.ok, false)
 })
 
 test('fable probe reads 7d_oi utilization from response headers', () => {
@@ -74,6 +87,12 @@ test('fable probe reads 7d_oi utilization from response headers', () => {
   assert.equal(r.utilization, 0.21)
   assert.equal(r.seven_day_oi.utilization, 0.21)
   assert.equal(r.reset_at, '2026-08-24T00:00:00Z')
+})
+
+test('isFablePlanDenied treats 403 permission as Pro, not revoke', () => {
+  assert.equal(isFablePlanDenied({ status: 403, error: 'permission_error' }), true)
+  assert.equal(isFablePlanDenied({ plan_denied: true }), true)
+  assert.equal(isFablePlanDenied({ status: 401, error: 'authentication_error' }), false)
 })
 
 test('fable 401 is banned / rejected, not weekly limit', () => {

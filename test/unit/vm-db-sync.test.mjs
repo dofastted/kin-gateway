@@ -93,6 +93,16 @@ test('vm-registry writes are mirrored (setVmSchedulable)', () => {
   assert.equal(row.vm.schedule_disabled_reason, 'test-reason')
 })
 
+test('setVmSchedulable preserveStatus keeps running when operator disables', () => {
+  seedVmFile('vm-t3c')
+  initVmDbSync(project, { watch: false })
+  setVmSchedulable(project, 'vm-t3c', false, 'disabled', { preserveStatus: true })
+  const off = JSON.parse(fs.readFileSync(path.join(project, 'vms', 'vm-t3c.json'), 'utf8'))
+  assert.equal(off.status, 'running')
+  assert.equal(off.schedulable, false)
+  assert.equal(off.schedule_disabled_reason, 'disabled')
+})
+
 test('setVmSchedulable(true) restores soft-paused status to running', () => {
   seedVmFile('vm-t3b')
   initVmDbSync(project, { watch: false })

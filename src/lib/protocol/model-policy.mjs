@@ -3,9 +3,9 @@
  * Persisted in settings key "model_policy"; hot-reloaded on PUT.
  *
  * catalog_mode:
- *   worker_intersect_policy — worker catalog ∩ enabled policy entries (default)
+ *   policy_only             — console #/models (model-policy) is the catalog (default)
+ *   worker_intersect_policy — cache ids ∩ enabled policy entries
  *   worker_only             — ignore policy enabled flags for listing
- *   policy_only             — only policy models (still must look like Claude ids)
  */
 
 import { SettingsRepo } from "../db/repos/settings-repo.mjs"
@@ -283,7 +283,7 @@ export function seedDefaultPolicy() {
       "claude-3-5-haiku-latest": "claude-haiku-4-5-20251001",
       fable: "claude-fable-5",
     },
-    catalog_mode: "worker_intersect_policy",
+    catalog_mode: "policy_only",
   }
 }
 
@@ -515,6 +515,24 @@ export function getModelParams(modelId = "") {
   return getModelEntry(modelId).params
 }
 
+export const MIN_THINKING_BUDGET = 1024
+
+/** Anthropic rejects thinking.enabled.budget_tokens < 1024. Raise max_tokens with it. */
+export function clampEnabledThinkingBudget(body = {}) {
+  const thinking = body?.thinking
+  if (!thinking || typeof thinking !== "object") return body
+  if (String(thinking.type || "").toLowerCase() !== "enabled") return body
+  const fallback = Number(getModelParams(body.model || "").thinking_fallback_budget) || 4096
+  let budget = Number(thinking.budget_tokens)
+  if (!Number.isFinite(budget) || budget <= 0) budget = fallback
+  if (Number(thinking.budget_tokens) !== budget) {
+    body.thinking = { ...thinking, type: 'enabled', budget_tokens: budget }
+  }
+  // max_tokens is the caller's total thinking budget; never silently replace it.
+  // The worker/provider is responsible for rejecting an incompatible budget.
+  return body
+}
+
 export function normalizeThinkingByPolicy(body = {}) {
   if (!loaded) loadModelPolicy()
   if (!body || typeof body !== "object") return body
@@ -539,7 +557,7 @@ export function normalizeThinkingByPolicy(body = {}) {
         ? Number(thinking.budget_tokens)
         : (params.thinking_fallback_budget || policy.defaults.thinking_fallback_budget || 4096)
       body.thinking = { type: "enabled", budget_tokens: budget }
-      return body
+      return clampEnabledThinkingBudget(body)
     }
   }
 
@@ -552,7 +570,7 @@ export function normalizeThinkingByPolicy(body = {}) {
     }
   }
 
-  return body
+  return clampEnabledThinkingBudget(body)
 }
 
 function stripTokens(header, tokens) {
@@ -573,13 +591,14 @@ export function applyBetaPolicyToHeader(existingBeta = "", modelId = "", { isOff
         strip: policy.defaults.strip_context_1m !== false,
       })
       : shouldPassContext1mByPolicy(modelId)
-    const beta = String(existingBeta || "").trim()
+    let beta = String(existingBeta || "").trim()
       ? ensureOauthBeta(existingBeta)
       : defaultOfficialBetaHeader(modelId)
     if (!pass) return stripTokens(beta, [CONTEXT_1M])
     return beta
   }
   // Unofficial / OAuth mimic. Client/stored betas are ignored. Never context-1m.
+  // Haiku (and any model that cannot take context_management) uses the short CLI set.
   return unofficialMimicryBetaHeader(modelId)
 }
 
@@ -591,25 +610,23 @@ export function unofficialMimicryBetaHeader(modelId = "") {
   return joinBetas(fullClaudeCodeMimicryBetas().filter((t) => t !== CONTEXT_1M))
 }
 
+/** All policy model ids that look like Claude catalog ids (disabled included). */
+export function getPolicyCatalogIds({ enabledOnly = false } = {}) {
+  if (!loaded) loadModelPolicy()
+  return Object.entries(policy.models || {})
+    .filter(([id, cfg]) => isCatalogModelId(id) && (!enabledOnly || cfg.enabled !== false))
+    .map(([id]) => id)
+}
+
 export function filterPublicModelIds(workerIds = []) {
   if (!loaded) loadModelPolicy()
-  const mode = policy.catalog_mode || "worker_intersect_policy"
+  const mode = policy.catalog_mode || "policy_only"
   const ids = [...new Set((workerIds || []).filter(Boolean))]
 
   if (mode === "worker_only") return ids
 
-  if (mode === "policy_only") {
-    return Object.entries(policy.models)
-      .filter(([, cfg]) => cfg.enabled !== false)
-      .map(([id]) => id)
-      .filter((id) => isCatalogModelId(id))
-  }
-
-  return ids.filter((id) => {
-    const key = resolvePolicyModelId(id)
-    if (policy.models[key]) return policy.models[key].enabled !== false
-    return policy.defaults.enabled !== false
-  })
+  // policy_only and legacy worker_intersect_policy: #/models is the catalog.
+  return getPolicyCatalogIds({ enabledOnly: true })
 }
 
 export function listPolicyModels() {

@@ -7,6 +7,7 @@
  */
 import { getVm, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
 import { vmJsonPath, vmCliHomePath } from '../vm/execution-context.mjs'
+import { readSlotCredentialIdentity } from '../oauth/oauth-credentials.mjs'
 import { streamGoWorker } from '../transport/go-worker-client.mjs'
 import { loadVmIdentity } from '../identity/vm-identity.mjs'
 import { claudeCodeInboundBody, claudeCodeInboundHeaders, CLAUDE_CLI_UA } from '../protocol/claude-code-inbound.mjs'
@@ -44,7 +45,10 @@ export function listTestableModels() {
 }
 
 function buildExec(projectRoot, vm) {
-  const accountId = vm.claude?.account_uuid || vm.account_uuid || vm.id
+  const slot = projectRoot && vm?.id
+    ? readSlotCredentialIdentity(vmCliHomePath(projectRoot, vm.id))
+    : null
+  const accountId = slot?.account_uuid || vm.claude?.account_uuid || vm.account_uuid || vm.id
   return {
     vmId: vm.id,
     accountId,
@@ -52,10 +56,10 @@ function buildExec(projectRoot, vm) {
     vmPath: vmJsonPath(projectRoot, vm.id),
     homeDir: vmCliHomePath(projectRoot, vm.id),
     oauth: {
-      email: vm.claude?.email || null,
-      account_uuid: vm.claude?.account_uuid || null,
-      org_uuid: vm.claude?.org_uuid || null,
-      expires_at: vm.claude?.expires_at || null,
+      email: slot?.email || vm.claude?.email || null,
+      account_uuid: slot?.account_uuid || vm.claude?.account_uuid || null,
+      org_uuid: slot?.org_uuid || vm.claude?.org_uuid || null,
+      expires_at: slot?.expires_at || vm.claude?.expires_at || null,
     },
     proxyUrl: vm.proxy?.url || null,
     timezone: vm.timezone || 'UTC',
@@ -332,6 +336,16 @@ export async function runVmTestChat(opts = {}) {
     const errObj = extractError(result)
     push('error', `失败 status=${result?.status || 0}: ${errObj.message}`)
     if (errObj.request_id) push('info', `request_id=${errObj.request_id}`)
+    if (result?.status === 401 && /revoked/i.test(String(errObj.message || errObj.upstream_message || ''))) {
+      try {
+        opts.accountQuota?.recordLastProbe?.(exec.accountId, {
+          ok: false,
+          source: 'test-chat',
+          error: errObj.message,
+          status: 401,
+        })
+      } catch {}
+    }
   }
 
   return done({

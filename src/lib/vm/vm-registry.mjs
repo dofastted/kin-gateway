@@ -51,7 +51,9 @@ export function summarizeVm(vm) {
     weight: vm.policy?.weight ?? 1,
     timezone: vm.timezone || null,
     locale: vm.locale || null,
-    proxy: vm.proxy || null,
+    proxy: vm.proxy
+      ? { ...vm.proxy, password: vm.proxy.password ? '***' : (vm.proxy.password ?? null) }
+      : null,
     claude_code_version: vm.claude_code_version || null,
     stats: vm.stats || {},
     fingerprint: vm.fingerprint || null,
@@ -94,10 +96,10 @@ export function vmHasClaudeCredential(vm) {
  * If schedulable is back on, the account must remain selectable.
  * Empty inventory slots (no Claude token) stay out of the pool.
  */
-export function isVmScheduleReady(vm) {
+export function isVmScheduleReady(vm, { allowMissingCredential = false } = {}) {
   if (!vm) return false
   if (vm.schedulable === false) return false
-  if (!vmHasClaudeCredential(vm)) return false
+  if (!allowMissingCredential && !vmHasClaudeCredential(vm)) return false
   const status = String(vm.status || '').toLowerCase()
   if (HARD_UNAVAILABLE.has(status)) return false
   return true
@@ -132,6 +134,8 @@ export function bindVmProxy(projectRoot, id, proxyInfo) {
         port: proxyInfo.port,
         scheme: 'socks5',
         url: proxyInfo.url || null,
+        username: proxyInfo.username || null,
+        password: proxyInfo.password == null ? null : proxyInfo.password,
       }
     : null
   if (proxyInfo) vm.proxy_cli_enabled = true

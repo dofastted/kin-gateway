@@ -125,6 +125,16 @@ test('billingStats aggregates official cost per account and today', () => {
   assert.equal(bill.accounts[0].window_5h_cost, 5)
   assert.ok(bill.window_5h)
   assert.equal(bill.window_5h.total_cost, 5)
+  assert.equal(bill.accounts[0].today.total_cost, 5)
+  assert.equal(bill.accounts[0].today.input_tokens, 1_000_000)
+  assert.equal(bill.accounts[0].window_5h.requests, 1)
+  assert.equal(bill.accounts[0].window_7d_cost, 5)
+  assert.ok(bill.window_7d)
+  const models = store.costByModel({ vmId: 'vm-01' })
+  assert.equal(models.length, 1)
+  assert.equal(models[0].model, 'claude-opus-5')
+  assert.equal(models[0].total_cost, 5)
+  assert.equal(models[0].input_tokens, 1_000_000)
 })
 
 test('finish prices OpenAI-shaped usage from third-party clients', () => {

@@ -12,14 +12,15 @@
 | GET | `/vms` | 列表（含 `has_token`、`cred_status`、`proxy_configured`、`can_import_credential`） |
 | GET | `/vms/:id` | 详情（合并代理池健康 + `proxy_pool`） |
 | POST | `/vms/:id/probe` | 对应 Go worker 经槽位 SOCKS5 探测 usage + fable |
-| POST | `/vms/:id/oauth/refresh` | 对应 Go worker ensure/force refresh |
+| POST | `/vms/:id/schedulable` | `{ schedulable: bool }` 开关是否参与调度（对齐 sub2api；不改容器状态） |
+| POST | `/vms/:id/oauth/refresh` | 仅传 VM ID；由 Go worker 经槽位代理执行 ensure refresh。成功返回 `{ ok: true, data: { refresh_owner, refresh_class, refreshed, shared, credential: { has_access, has_refresh, needs_refresh, expires_at, ttl_seconds, generation } } }`；不返回 token。失败返回 502 `{ ok: false, error: { code, message }, data: { refresh_class } }`。`fatal` 表示凭证被拒绝，`retryable` 表示可稍后重试。
 | POST | `/probe` | 全量探测 |
 | GET | `/usage` | 用量汇总 |
 | GET | `/models` | 健康 Go worker 的模型目录 |
 | GET | `/routing` | sticky / pool / failover / 并发 / 额度 / logging |
 | PUT | `/routing` | 热更新 pool/failover；`logging.mode` = off\|normal\|debug |
 
-`cred_status`：`无凭证` / `可用` / `5h 限制` / `7d 限制` / `Fable 限制` / `不可用`。
+`cred_status`：`无凭证` / `可用` / `5h 限制` / `7d 限制` / `不可用`。Fable 不可用（Pro）/ 7d_oi / 冷却不抬账号级限制。
 
 ## 密钥 / 日志
 

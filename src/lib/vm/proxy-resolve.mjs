@@ -9,7 +9,12 @@ function poolHitForVm(proxyPool, vm) {
   const list = proxyPool.snapshot()?.proxies || []
   const id = vm?.proxy?.id || vm?.proxy_id
   const vmId = vm?.id
-  return list.find((p) => (id && p.id === id) || (vmId && p.bound_vm_id === vmId)) || null
+  return list.find((p) => {
+    if (id && p.id === id) return true
+    if (!vmId) return false
+    if (p.bound_vm_id === vmId) return true
+    return Array.isArray(p.bound_vm_ids) && p.bound_vm_ids.includes(vmId)
+  }) || null
 }
 
 function socksUrlFromVm(vm) {

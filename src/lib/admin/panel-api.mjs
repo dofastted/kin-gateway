@@ -12,7 +12,10 @@ import { listVms, getVm, summarizeVm, getActiveVmId, vmHasClaudeCredential } fro
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 import { computeWeeklySplit, publicWeeklySplit, weeklySplitConfig } from '../pool/weekly-split.mjs'
-import { credPanelUnavailable } from '../pool/schedule-eligibility.mjs'
+import { applyEffectiveWindows } from '../pool/quota-window.mjs'
+import { credPanelUnavailable, isLiveAccess } from '../pool/schedule-eligibility.mjs'
+import { isFablePlanDenied } from '../oauth/crs-usage-probe.mjs'
+import { proxyHasVm } from '../vm/proxy-pool.mjs'
 
 export function ok(data, meta) {
   const out = { ok: true, data }
@@ -157,33 +160,17 @@ export function buildVmDetail({ cfg, accountQuota, id, routingConfig = {}, poolS
   const acc = findAccount(accountQuota, summary)
   const billing = (() => { try { return requestLog?.billingStats?.() || null } catch { return null } })()
   const cost = lookupBilling(indexBillingAccounts(billing), acc || summary)
-  if (cost) {
-    summary.today_cost = cost.today_cost || 0
-    summary.total_cost = cost.total_cost || 0
-    summary.today_requests = cost.today_requests || 0
-    summary.today_tokens = (cost.today_input_tokens || 0) + (cost.today_output_tokens || 0)
-    summary.window_5h_cost = cost.window_5h_cost || 0
-    summary.window_5h_requests = cost.window_5h_requests || 0
-    summary.window_5h_tokens = cost.window_5h_tokens || 0
-  }
+  applyCostFields(summary, cost)
+  const detail = buildAccountBilling(cost, billing, {
+    vmId: summary.id,
+    accountId: acc?.account_id || summary.account_uuid,
+    requestLog,
+  })
   return ok({
     vm: summary,
     proxy: summary.proxy || null,
     proxy_pool: summarizeProxyPool(proxyPool),
-    billing: cost
-      ? {
-          source: billing?.source || 'anthropic-official',
-          currency: billing?.currency || 'USD',
-          today_cost: cost.today_cost || 0,
-          total_cost: cost.total_cost || 0,
-          window_5h_cost: cost.window_5h_cost || 0,
-          today_requests: cost.today_requests || 0,
-          requests: cost.requests || 0,
-          input_cost: cost.input_cost || 0,
-          output_cost: cost.output_cost || 0,
-          cache_cost: (cost.cache_read_cost || 0) + (cost.cache_creation_cost || 0),
-        }
-      : null,
+    billing: detail,
     account: acc
       ? {
           account_id: acc.account_id,
@@ -198,6 +185,7 @@ export function buildVmDetail({ cfg, accountQuota, id, routingConfig = {}, poolS
           today_cost: cost?.today_cost || 0,
           total_cost: cost?.total_cost || 0,
           window_5h_cost: cost?.window_5h_cost || 0,
+          window_7d_cost: cost?.window_7d_cost || 0,
           last_blocked: acc.last_blocked,
           recent: (acc.recent_allocations || []).slice(-10),
           runtime_window: runtimeWindow(accountQuota, acc.account_id),
@@ -317,9 +305,15 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
       window_5h_cost: cost?.window_5h_cost || 0,
       window_5h_requests: cost?.window_5h_requests || 0,
       window_5h_tokens: cost?.window_5h_tokens || 0,
+      window_7d_cost: cost?.window_7d_cost || 0,
+      window_7d_requests: cost?.window_7d_requests || 0,
+      window_7d_tokens: cost?.window_7d_tokens || 0,
       input_cost: cost?.input_cost || 0,
       output_cost: cost?.output_cost || 0,
       cache_cost: (cost?.cache_read_cost || 0) + (cost?.cache_creation_cost || 0),
+      today: cost?.today || null,
+      window_5h: cost?.window_5h || null,
+      window_7d: cost?.window_7d || null,
       near_limit:
         Number(a.unified?.['5h']?.utilization || 0) >= (snap.safety_ratio || 0.95) ||
         Number(a.unified?.['7d']?.utilization || 0) >= (snap.safety_ratio || 0.95),
@@ -385,7 +379,10 @@ function hostStats() {
 
 
 function quotaFromAccount(acc, quotaConfig) {
-  const u = acc?.unified || {}
+  const u = applyEffectiveWindows(acc?.unified || {}, {
+    lastUsedAt: acc?.last_used_at,
+    source: acc?.unified?.source,
+  })
   const w5 = u['5h'] || {}
   const w7 = u['7d'] || {}
   const sonnet = u.seven_day_sonnet || {}
@@ -445,6 +442,23 @@ function fablePoolFields(acc, runtime, pool = {}, routingConfig = {}, vm = {}) {
 
 
 
+/** Claude-only: Fable 套餐拒绝=Pro，有 7d_oi / Fable 探测成功=Max。 */
+export function inferClaudeTier(vm = {}, quota = {}) {
+  const hasToken = !!(vm.has_token || vm.has_access)
+  if (!hasToken) return { key: 'none', label: null }
+  const fb = quota.fable || vm.fable || {}
+  if (isFablePlanDenied(fb)) return { key: 'pro', label: 'Pro' }
+  if (fb.ok || quota.utilization_7d_oi != null || vm.utilization_7d_oi != null || quota.reset_7d_oi || vm.reset_7d_oi || quota.status_7d_oi || vm.status_7d_oi) {
+    return { key: 'max', label: 'Max' }
+  }
+  return { key: 'unknown', label: null }
+}
+
+export function normalizePanelExpiresAt(expiresAt, workerExpiresAt = null) {
+  const best = Math.max(expiresAtToMs(expiresAt), expiresAtToMs(workerExpiresAt))
+  return best || null
+}
+
 function expiresAtToMs(expiresAt) {
   if (expiresAt == null || expiresAt === '') return 0
   if (typeof expiresAt === 'number' && Number.isFinite(expiresAt)) {
@@ -468,9 +482,14 @@ export function credStatusFromQuota(hasToken, q = {}, expiresAt = null, extras =
   const probeAt = Date.parse(fb.probed_at || lastProbe.at || '')
   const refreshedAt = Date.parse(extras.refreshed_at || extras.oauth_refreshed_at || '')
   const probeStale = Number.isFinite(probeAt) && Number.isFinite(refreshedAt) && probeAt < refreshedAt
-  if (credPanelUnavailable(extras, expiresAt)) return { key: 'bad', text: '不可用', tone: 'bad' }
-  // Ignore fable.banned from a probe that ran before the current token was written.
-  if (fb.banned && !probeStale) return { key: 'bad', text: '被吊销', tone: 'bad' }
+  if (credPanelUnavailable({ ...extras, last_probe: extras.last_probe || lastProbe, fable: extras.fable || fb }, expiresAt)) {
+    return { key: 'bad', text: '不可用', tone: 'bad' }
+  }
+  // Ignore leftover fable.banned unless the grant is actually revoked.
+  // Fable 403/permission 是 Pro 无 Fable。
+  if (fb.banned && !probeStale && !isFablePlanDenied(fb) && !isLiveAccess({ extras, expiresAt })) {
+    return { key: 'bad', text: '被吊销', tone: 'bad' }
+  }
   const utilPct = (u) => {
     if (u == null) return 0
     const n = Number(u)
@@ -492,13 +511,7 @@ export function credStatusFromQuota(hasToken, q = {}, expiresAt = null, extras =
   if (warn(q.status_7d, p7)) return { key: 'caution', text: '7d 警告', tone: 'caution' }
   const split = q.weekly_split
   if (split?.enabled && split.mode === 'fable_only') return { key: 'warn', text: '普通限制', tone: 'warn' }
-  if (split?.enabled && split.mode === 'regular_only') return { key: 'warn', text: 'Fable 限制', tone: 'warn' }
-  // Real Anthropic fable 429 beats a later SOCKS transport failure.
-  if (limited(q.status_7d_oi, utilPct(q.utilization_7d_oi))) return { key: 'warn', text: 'Fable 限制', tone: 'warn' }
-  if (fb.limited && !fb.transport && q.utilization_7d_oi == null) return { key: 'warn', text: 'Fable 限制', tone: 'warn' }
-  if (extras.fable_cooldown_until && Number(extras.fable_cooldown_until) > Date.now()) {
-    return { key: 'warn', text: 'Fable 冷却', tone: 'warn' }
-  }
+  // Fable 不可用 / 7d_oi / 冷却只影响 Fable 轨。Pro 无 Fable，账号仍是可用。
   const transportFail = !!(lastProbe.transport || fb.transport)
     || (lastProbe.ok === false && /SOCKS|transport|greeting|reset by peer|worker_error/i.test(String(lastProbe.error || fb.error || '')))
   if (transportFail) return { key: 'warn', text: '探测失败', tone: 'warn' }
@@ -509,7 +522,7 @@ function poolProxyForVm(v, poolSnap) {
   const list = poolSnap?.proxies || []
   if (!list.length) return null
   const id = v.proxy_id || v.proxy?.id
-  return list.find((p) => (id && p.id === id) || p.bound_vm_id === v.id) || null
+  return list.find((p) => (id && p.id === id) || proxyHasVm(p, v.id)) || null
 }
 
 function proxyConfigured(v, hit) {
@@ -553,19 +566,18 @@ function enrichVm(v, accountQuota, active, extras = {}) {
   const acc = findAccount(accountQuota, v)
   const runtime = findRuntime(accountQuota, v)
   const workerCred = runtime?.worker_status?.credential || null
-  const q = quotaFromAccount(acc, accountQuota?.config)
+  const q = quotaFromAccount({
+    ...acc,
+    last_used_at: acc?.last_used_at || runtime?.last_used_at || null,
+  }, accountQuota?.config)
   const fablePool = fablePoolFields(acc, runtime, extras.pool || {}, extras.routingConfig || {}, v)
   const u5 = q.utilization_5h
   const u7 = q.utilization_7d
   const safety = Number(accountQuota?.config?.safety_ratio || 0.95)
   const merged = mergeVmProxy(v, extras.poolSnap || null)
-  // Align display expires_at with the Go worker when it has a newer TTL.
-  let expiresAt = v.expires_at || null
-  if (workerCred?.expires_at != null) {
-    const wMs = expiresAtToMs(workerCred.expires_at)
-    const vMs = expiresAtToMs(v.expires_at)
-    if (wMs > vMs) expiresAt = workerCred.expires_at
-  }
+  // Always emit milliseconds. Seconds (1.7e9) look like Jan 1970 to old consoles
+  // and get painted as 不可用 even when the slot ticket is live.
+  const expiresAt = normalizePanelExpiresAt(v.expires_at, workerCred?.expires_at)
   const hasToken = !!(v.has_token || workerCred?.has_access)
   return {
     id: v.id,
@@ -622,11 +634,15 @@ function enrichVm(v, accountQuota, active, extras = {}) {
           has_access: !!workerCred.has_access,
           has_refresh: !!workerCred.has_refresh,
           needs_refresh: !!workerCred.needs_refresh,
+          credential_state: workerCred.credential_state || null,
           expires_at: workerCred.expires_at ?? null,
           ttl_seconds: workerCred.ttl_seconds ?? null,
           generation: workerCred.generation ?? null,
+          last_error_class: runtime?.worker_status?.last_error_class || null,
+          last_error: runtime?.worker_status?.last_error || runtime?.worker_status?.error || null,
         }
       : null,
+    account_tier: inferClaudeTier({ has_token: hasToken, fable: q.fable, utilization_7d_oi: q.utilization_7d_oi, reset_7d_oi: q.reset_7d_oi, status_7d_oi: q.status_7d_oi }, q).key,
     cred_status: credStatusFromQuota(hasToken, q, expiresAt, {
       refreshed_at: v.refreshed_at || null,
       worker_credential: workerCred,
@@ -634,6 +650,8 @@ function enrichVm(v, accountQuota, active, extras = {}) {
       fable_cooldown_until: fablePool.fable_cooldown_until,
       schedulable: v.schedulable !== false,
       schedule_disabled_reason: v.schedule_disabled_reason || null,
+      last_probe: q.last_probe || null,
+      fable: q.fable || null,
       runtime,
     }),
     inflight: acc?.inflight ?? 0,
@@ -651,6 +669,12 @@ function enrichVm(v, accountQuota, active, extras = {}) {
   }
 }
 
+function isLeftoverVmKeyedAccount(account, vm) {
+  if (!account || !vm) return false
+  const leftoverId = account.account_id === vm.id && account.account_id !== vm.account_uuid
+  return leftoverId && !account.email
+}
+
 function findAccount(accountQuota, vm) {
   if (!accountQuota || typeof accountQuota.snapshot !== 'function') return null
   const snap = accountQuota.snapshot()
@@ -659,7 +683,7 @@ function findAccount(accountQuota, vm) {
     const byUuid = accounts.find((a) => a.account_id === vm.account_uuid)
     if (byUuid) return byUuid
   }
-  return accounts.find((a) => a.vm_id === vm.id || a.account_id === vm.id)
+  return accounts.find((a) => (a.vm_id === vm.id || a.account_id === vm.id) && !isLeftoverVmKeyedAccount(a, vm))
 }
 
 function findRuntime(accountQuota, vm) {
@@ -670,10 +694,46 @@ function findRuntime(accountQuota, vm) {
     const keys = [vm.account_uuid, acc?.account_id, vm.id].filter(Boolean)
     for (const key of keys) {
       const state = repo.get(key)
-      if (state) return state
+      if (!state) continue
+      const cred = state.worker_status?.credential || {}
+      const err = String(state.worker_status?.last_error || state.last_error || '')
+      const leftoverKey = key === vm.id && vm.account_uuid && key !== vm.account_uuid
+      const leftover = leftoverKey && (
+        !cred.has_access
+        || /refresh_token_missing|invalid_grant|worker_unhealthy/.test(err + String(state.status || ''))
+      )
+      const live = !!(vm.has_refresh || vm.has_token || vm.account_uuid)
+      if (leftover && live) continue
+      return freshenRuntimeState(state, vm)
     }
   } catch {}
   return null
+}
+
+/** Drop stale worker TTL / last_error when vm.json already has a newer live ticket. */
+function freshenRuntimeState(state, vm) {
+  if (!state) return state
+  const cred = state.worker_status?.credential
+  if (!cred) return state
+  const wMs = expiresAtToMs(cred.expires_at)
+  const vMs = expiresAtToMs(vm.expires_at)
+  if (!vMs || !wMs || vMs <= wMs) return state
+  return {
+    ...state,
+    refresh_status: 'fresh',
+    worker_status: {
+      ...state.worker_status,
+      ok: true,
+      last_error: null,
+      credential: {
+        ...cred,
+        expires_at: vm.expires_at,
+        needs_refresh: false,
+        has_access: !!(cred.has_access || vm.has_token),
+        has_refresh: !!(cred.has_refresh || vm.has_refresh),
+      },
+    },
+  }
 }
 
 function indexBillingAccounts(billing) {
@@ -726,14 +786,110 @@ function stampVmBilling(vms, billing) {
   if (!billing) return null
   const index = indexBillingAccounts(billing)
   for (const vm of vms || []) {
-    const cost = lookupBilling(index, vm)
-    vm.today_cost = cost?.today_cost || 0
-    vm.total_cost = cost?.total_cost || 0
-    vm.today_requests = cost?.today_requests || 0
-    vm.today_tokens = (cost?.today_input_tokens || 0) + (cost?.today_output_tokens || 0)
-    vm.window_5h_cost = cost?.window_5h_cost || 0
-    vm.window_5h_requests = cost?.window_5h_requests || 0
-    vm.window_5h_tokens = cost?.window_5h_tokens || 0
+    applyCostFields(vm, lookupBilling(index, vm))
   }
   return billing
+}
+
+function cacheCostOf(row) {
+  return Number(row?.cache_read_cost || 0) + Number(row?.cache_creation_cost || 0)
+}
+
+function periodView(row) {
+  if (!row || typeof row !== 'object') return null
+  return {
+    requests: Number(row.requests || 0),
+    input_tokens: Number(row.input_tokens || 0),
+    output_tokens: Number(row.output_tokens || 0),
+    cache_read_tokens: Number(row.cache_read_tokens || 0),
+    cache_creation_tokens: Number(row.cache_creation_tokens || 0),
+    input_cost: Number(row.input_cost || 0),
+    output_cost: Number(row.output_cost || 0),
+    cache_read_cost: Number(row.cache_read_cost || 0),
+    cache_creation_cost: Number(row.cache_creation_cost || 0),
+    cache_cost: cacheCostOf(row),
+    total_cost: Number(row.total_cost || 0),
+  }
+}
+
+function applyCostFields(target, cost) {
+  if (!target) return
+  target.today_cost = cost?.today_cost || 0
+  target.total_cost = cost?.total_cost || 0
+  target.today_requests = cost?.today_requests || 0
+  target.today_tokens = (cost?.today_input_tokens || 0) + (cost?.today_output_tokens || 0)
+  target.window_5h_cost = cost?.window_5h_cost || 0
+  target.window_5h_requests = cost?.window_5h_requests || 0
+  target.window_5h_tokens = cost?.window_5h_tokens || 0
+  target.window_7d_cost = cost?.window_7d_cost || 0
+  target.window_7d_requests = cost?.window_7d_requests || 0
+  target.window_7d_tokens = cost?.window_7d_tokens || 0
+}
+
+function buildAccountBilling(cost, billing, { vmId, accountId, requestLog } = {}) {
+  if (!cost && !vmId && !accountId) return null
+  const today = periodView(cost?.today) || {
+    requests: Number(cost?.today_requests || 0),
+    input_tokens: Number(cost?.today_input_tokens || 0),
+    output_tokens: Number(cost?.today_output_tokens || 0),
+    cache_read_tokens: Number(cost?.today_cache_read_tokens || 0),
+    cache_creation_tokens: Number(cost?.today_cache_creation_tokens || 0),
+    input_cost: Number(cost?.today_input_cost || 0),
+    output_cost: Number(cost?.today_output_cost || 0),
+    cache_cost: Number(cost?.today_cache_cost || 0),
+    cache_read_cost: 0,
+    cache_creation_cost: 0,
+    total_cost: Number(cost?.today_cost || 0),
+  }
+  const window5h = periodView(cost?.window_5h) || {
+    requests: Number(cost?.window_5h_requests || 0),
+    input_tokens: Number(cost?.window_5h_input_tokens || 0),
+    output_tokens: Number(cost?.window_5h_output_tokens || 0),
+    cache_read_tokens: Number(cost?.window_5h_cache_read_tokens || 0),
+    cache_creation_tokens: Number(cost?.window_5h_cache_creation_tokens || 0),
+    input_cost: Number(cost?.window_5h_input_cost || 0),
+    output_cost: Number(cost?.window_5h_output_cost || 0),
+    cache_cost: Number(cost?.window_5h_cache_cost || 0),
+    cache_read_cost: 0,
+    cache_creation_cost: 0,
+    total_cost: Number(cost?.window_5h_cost || 0),
+  }
+  const window7d = periodView(cost?.window_7d) || {
+    requests: Number(cost?.window_7d_requests || 0),
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    input_cost: 0,
+    output_cost: 0,
+    cache_cost: 0,
+    cache_read_cost: 0,
+    cache_creation_cost: 0,
+    total_cost: Number(cost?.window_7d_cost || 0),
+  }
+  const total = periodView(cost)
+  let byModel = []
+  try { byModel = requestLog?.costByModel?.({ vmId, accountId }) || [] } catch { byModel = [] }
+  if (!cost && !byModel.length) return null
+  return {
+    source: billing?.source || 'anthropic-official',
+    currency: billing?.currency || 'USD',
+    today_start: billing?.today_start || null,
+    window_5h_start: billing?.window_5h_start || null,
+    window_7d_start: billing?.window_7d_start || null,
+    today,
+    window_5h: window5h,
+    window_7d: window7d,
+    total,
+    by_model: byModel,
+    today_cost: today?.total_cost || 0,
+    total_cost: total?.total_cost || 0,
+    window_5h_cost: window5h?.total_cost || 0,
+    window_7d_cost: window7d?.total_cost || 0,
+    today_requests: today?.requests || 0,
+    requests: total?.requests || 0,
+    input_cost: total?.input_cost || 0,
+    output_cost: total?.output_cost || 0,
+    cache_cost: total?.cache_cost || 0,
+  }
 }

@@ -55,6 +55,20 @@ function timeCond(since, until) {
   return { cond: where.length ? `WHERE ${where.join(' AND ')}` : '', params }
 }
 
+function filterCond({ since = null, until = null, vmId = null, accountId = null } = {}) {
+  const { cond, params } = timeCond(since, until)
+  const parts = cond ? [cond.replace(/^WHERE /, '')] : []
+  if (vmId) {
+    parts.push('vm_id = ?')
+    params.push(vmId)
+  }
+  if (accountId) {
+    parts.push('(account_id = ? OR final_account_id = ?)')
+    params.push(accountId, accountId)
+  }
+  return { cond: parts.length ? `WHERE ${parts.join(' AND ')}` : '', params }
+}
+
 /** Same percentile pick as concurrent-test / sub2api ops cards. */
 export function percentile(sorted, p) {
   if (!sorted.length) return null
@@ -337,6 +351,41 @@ export class RequestLogsRepo {
     }))
   }
 
+  /** Official-standard cost grouped by upstream model for one credential / slot. */
+  costByModel({ vmId = null, accountId = null, since = null, until = null } = {}) {
+    const { cond, params } = filterCond({ since, until, vmId, accountId })
+    const rows = this.db.prepare(`
+      SELECT COALESCE(NULLIF(upstream_model, ''), NULLIF(model, ''), NULLIF(requested_model, ''), '—') AS model,
+             COUNT(*) AS requests,
+             COALESCE(SUM(input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+             COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+             COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
+             COALESCE(SUM(input_cost), 0) AS input_cost,
+             COALESCE(SUM(output_cost), 0) AS output_cost,
+             COALESCE(SUM(cache_read_cost), 0) AS cache_read_cost,
+             COALESCE(SUM(cache_creation_cost), 0) AS cache_creation_cost,
+             COALESCE(SUM(total_cost), 0) AS total_cost
+      FROM request_logs ${cond}
+      GROUP BY 1
+      ORDER BY total_cost DESC, requests DESC
+      LIMIT 24
+    `).all(...params)
+    return rows.map((r) => ({
+      model: r.model,
+      requests: Number(r.requests || 0),
+      input_tokens: Number(r.input_tokens || 0),
+      output_tokens: Number(r.output_tokens || 0),
+      cache_read_tokens: Number(r.cache_read_tokens || 0),
+      cache_creation_tokens: Number(r.cache_creation_tokens || 0),
+      input_cost: Number(r.input_cost || 0),
+      output_cost: Number(r.output_cost || 0),
+      cache_read_cost: Number(r.cache_read_cost || 0),
+      cache_creation_cost: Number(r.cache_creation_cost || 0),
+      total_cost: Number(r.total_cost || 0),
+    }))
+  }
+
   /** Official-standard totals: all-time + Shanghai calendar today + per account. */
   billingStats() {
     try { this.backfillMissingCosts() } catch {}
@@ -344,24 +393,46 @@ export class RequestLogsRepo {
     const total = this._costSelect('', [])
     const today = this._costSelect('WHERE ts >= ?', [todayStart])
     const fiveHStart = new Date(Date.now() - 5 * 3600_000).toISOString()
+    const sevenDStart = new Date(Date.now() - 7 * 86400_000).toISOString()
     const accountsTotal = this.costByAccount()
     const accountsToday = this.costByAccount({ since: todayStart })
     const accounts5h = this.costByAccount({ since: fiveHStart })
+    const accounts7d = this.costByAccount({ since: sevenDStart })
     const keyOf = (a) => a.account_id + '\0' + (a.vm_id || '')
     const todayById = new Map(accountsToday.map((a) => [keyOf(a), a]))
     const fiveById = new Map(accounts5h.map((a) => [keyOf(a), a]))
+    const sevenById = new Map(accounts7d.map((a) => [keyOf(a), a]))
     const accounts = accountsTotal.map((a) => {
       const t = todayById.get(keyOf(a)) || emptyCostBucket()
       const w = fiveById.get(keyOf(a)) || emptyCostBucket()
+      const w7 = sevenById.get(keyOf(a)) || emptyCostBucket()
       return {
         ...a,
+        today: { ...t },
+        window_5h: { ...w },
+        window_7d: { ...w7 },
         today_cost: Number(t.total_cost || 0),
         today_requests: Number(t.requests || 0),
         today_input_tokens: Number(t.input_tokens || 0),
         today_output_tokens: Number(t.output_tokens || 0),
+        today_cache_read_tokens: Number(t.cache_read_tokens || 0),
+        today_cache_creation_tokens: Number(t.cache_creation_tokens || 0),
+        today_input_cost: Number(t.input_cost || 0),
+        today_output_cost: Number(t.output_cost || 0),
+        today_cache_cost: Number(t.cache_read_cost || 0) + Number(t.cache_creation_cost || 0),
         window_5h_cost: Number(w.total_cost || 0),
         window_5h_requests: Number(w.requests || 0),
         window_5h_tokens: Number(w.input_tokens || 0) + Number(w.output_tokens || 0),
+        window_5h_input_tokens: Number(w.input_tokens || 0),
+        window_5h_output_tokens: Number(w.output_tokens || 0),
+        window_5h_cache_read_tokens: Number(w.cache_read_tokens || 0),
+        window_5h_cache_creation_tokens: Number(w.cache_creation_tokens || 0),
+        window_5h_input_cost: Number(w.input_cost || 0),
+        window_5h_output_cost: Number(w.output_cost || 0),
+        window_5h_cache_cost: Number(w.cache_read_cost || 0) + Number(w.cache_creation_cost || 0),
+        window_7d_cost: Number(w7.total_cost || 0),
+        window_7d_requests: Number(w7.requests || 0),
+        window_7d_tokens: Number(w7.input_tokens || 0) + Number(w7.output_tokens || 0),
       }
     })
     return {
@@ -369,8 +440,10 @@ export class RequestLogsRepo {
       currency: 'USD',
       today_start: todayStart,
       window_5h_start: fiveHStart,
+      window_7d_start: sevenDStart,
       today,
       window_5h: this._costSelect('WHERE ts >= ?', [fiveHStart]),
+      window_7d: this._costSelect('WHERE ts >= ?', [sevenDStart]),
       total,
       accounts,
     }

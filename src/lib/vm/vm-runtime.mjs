@@ -189,6 +189,70 @@ function workerProxyUrl(vm) {
   return `socks5h://${auth}${vm.proxy.host}:${vm.proxy.port}`
 }
 
+/** host:port only — never include userinfo. */
+export function proxyEndpointFromUrl(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  try {
+    const u = new URL(s.replace(/^socks5h:/i, 'socks5:'))
+    if (!u.hostname || !u.port) return null
+    return `${u.hostname}:${u.port}`
+  } catch {
+    return null
+  }
+}
+
+export function proxyEndpointFromVm(vm) {
+  const p = vm?.proxy || {}
+  if (p.host && p.port) return `${p.host}:${Number(p.port)}`
+  return proxyEndpointFromUrl(p.url)
+}
+
+export function readWorkerProxyEndpoint(projectRoot, vmId) {
+  if (!projectRoot || !vmId) return null
+  try {
+    const doc = JSON.parse(fs.readFileSync(workerPaths(projectRoot, vmId).config, 'utf8'))
+    return proxyEndpointFromUrl(doc.proxy_url)
+  } catch {
+    return null
+  }
+}
+
+/** Worker still dials a different SOCKS5 than vm.json — hop would refresh through the old exit. */
+export function isSlotProxyDesynced(vm, projectRoot) {
+  const want = proxyEndpointFromVm(vm)
+  const have = readWorkerProxyEndpoint(projectRoot, vm?.id)
+  if (!want || !have) return false
+  return want !== have
+}
+
+/**
+ * Rewrite worker.json from the current vm proxy and bounce the process.
+ * Never docker rm — killing a live worker mid-refresh can invalidate the grant.
+ */
+export function reloadSlotWorker(vm, projectRoot) {
+  if (!vm?.id) return { ok: false, error: 'vm required' }
+  if (!workerProxyUrl(vm)) return { ok: false, error: 'slot SOCKS5 proxy is required' }
+  let worker
+  try {
+    worker = writeWorkerFiles(vm, projectRoot)
+  } catch (error) {
+    return { ok: false, error: String(error.message || error) }
+  }
+  const name = containerName(vm.id)
+  const existing = inspectContainer(name)
+  if (!existing) return startVmRuntime(vm, projectRoot, { recreate: false })
+  const cmd = existing.running ? ['docker', 'restart', name] : ['docker', 'start', name]
+  const r = sh(cmd, { timeout: 60_000 })
+  if (!r.ok) return { ok: false, error: r.stderr || `${cmd.join(' ')} failed` }
+  runtimePatch(vm, inspectContainer(name), {
+    worker_socket: worker.socket,
+    worker_run_dir: worker.runDir,
+    worker_token_file: worker.token,
+  })
+  return { ok: true, action: existing.running ? 'reloaded' : 'started', runtime: vm.runtime }
+}
+
 function writeWorkerFiles(vm, projectRoot) {
   const paths = workerPaths(projectRoot, vm.id)
   const uid = runtimeUidNum(vm)

@@ -108,7 +108,7 @@ test('HTTP worker preserves thinking, sampling and max_tokens', async () => {
     const tr = readTrace(gw)
     assert.deepEqual(tr.body.thinking, { type: 'enabled', budget_tokens: 1234 })
     assert.equal(tr.body.max_tokens, 99)
-    assert.equal(tr.body.temperature, 0.2)
+    assert.equal(tr.body.temperature, 1)
   } finally {
     await gw.stop()
   }
