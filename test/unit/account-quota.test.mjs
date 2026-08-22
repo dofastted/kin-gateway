@@ -215,7 +215,7 @@ test('fable 429 without 7d_oi window does not invent a full Fable quota', () => 
   })
   const acc = q.repo.get('acc-pro')
   assert.equal(acc.unified.fable.limited, false)
-  assert.equal(acc.unified.fable.plan_denied, false)
+  assert.equal(acc.unified.fable.plan_denied, true)
   assert.equal(acc.unified['7d_oi']?.status || null, null)
   assert.equal(q.canAccept('acc-pro').ok, true)
   assert.equal(q.fableWindowLimited('acc-pro'), false)

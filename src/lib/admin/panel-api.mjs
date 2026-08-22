@@ -8,13 +8,13 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { listVms, getVm, summarizeVm, getActiveVmId, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
+import { listVms, getVm, summarizeVm, getActiveVmId, vmHasClaudeCredential, persistAccountTier } from '../vm/vm-registry.mjs'
 import { probeAccount } from '../oauth/usage-probe.mjs'
 import { makeError, ErrorType, ErrorCode } from '../core/errors.mjs'
 import { computeWeeklySplit, publicWeeklySplit, weeklySplitConfig } from '../pool/weekly-split.mjs'
 import { applyEffectiveWindows } from '../pool/quota-window.mjs'
 import { credPanelUnavailable, isLiveAccess } from '../pool/schedule-eligibility.mjs'
-import { isFablePlanDenied } from '../oauth/crs-usage-probe.mjs'
+import { isFablePlanDenied, isFableUnavailablePro, shouldProbeFable } from '../oauth/crs-usage-probe.mjs'
 import { proxyHasVm } from '../vm/proxy-pool.mjs'
 
 export function ok(data, meta) {
@@ -240,7 +240,6 @@ export async function buildProbeOne({ cfg, accountQuota, id }) {
     oauth: vm.claude,
     vm,
   }
-  const result = await probeAccount({ exec, vm, includeFable: true })
   const accountId = vm.claude?.account_uuid || vm.id
   accountQuota.ensure({
     account_id: accountId,
@@ -248,8 +247,31 @@ export async function buildProbeOne({ cfg, accountQuota, id }) {
     email: vm.claude?.email,
     max_concurrency: vm.policy?.maxConcurrency,
   })
+  const acc = accountQuota.repo.get(accountId)
+  const q = quotaFromAccount(acc)
+  const storedTier = vm.claude?.account_tier || acc?.unified?.account_tier || q.account_tier || null
+  const includeFable = shouldProbeFable({
+    fable: q.fable || acc?.unified?.fable || {},
+    quota: { ...acc?.unified, ...q },
+    storedTier,
+  })
+  const result = await probeAccount({ exec, vm, includeFable })
   if (result.five_hour || result.seven_day || result.seven_day_oi || result.fable) {
     accountQuota.ingestOAuthUsage(accountId, result)
+  }
+  const after = accountQuota.repo.get(accountId)
+  const qAfter = quotaFromAccount(after)
+  const tier = inferClaudeTier({
+    has_token: true,
+    account_tier: storedTier,
+    fable: qAfter.fable,
+    utilization_7d_oi: qAfter.utilization_7d_oi,
+    reset_7d_oi: qAfter.reset_7d_oi,
+    status_7d_oi: qAfter.status_7d_oi,
+  }, qAfter).key
+  if (tier === 'pro' || tier === 'max') {
+    accountQuota.setAccountTier(accountId, tier)
+    persistAccountTier(cfg.paths.project, id, tier)
   }
   return ok({
     vm_id: id,
@@ -261,7 +283,9 @@ export async function buildProbeOne({ cfg, accountQuota, id }) {
     seven_day_sonnet: result.seven_day_sonnet || null,
     seven_day_oi: result.seven_day_oi || null,
     extra_usage: result.extra_usage || null,
-    fable: result.fable || null,
+    fable: result.fable || q.fable || after?.unified?.fable || null,
+    fable_probed: includeFable,
+    account_tier: tier,
     probed_at: result.probed_at,
     ok: result.ok,
     error: result.error || result.usage_error || null,
@@ -406,6 +430,7 @@ function quotaFromAccount(acc, quotaConfig) {
     fable: fable,
     last_probe: acc?.last_probe || u.last_probe || null,
     probe_source: u.source || acc?.last_probe?.source || null,
+    account_tier: u.account_tier || null,
   }
   const cfg = weeklySplitConfig(quotaConfig || {})
   const split = publicWeeklySplit(computeWeeklySplit({
@@ -442,13 +467,20 @@ function fablePoolFields(acc, runtime, pool = {}, routingConfig = {}, vm = {}) {
 
 
 
-/** Claude-only: Fable 套餐拒绝=Pro，有 7d_oi / Fable 探测成功=Max。 */
+/** Claude-only: Fable 套餐拒绝/429 无窗=Pro，Fable 探测成功或真实 7d_oi=Max。 */
 export function inferClaudeTier(vm = {}, quota = {}) {
   const hasToken = !!(vm.has_token || vm.has_access)
   if (!hasToken) return { key: 'none', label: null }
   const fb = quota.fable || vm.fable || {}
-  if (isFablePlanDenied(fb)) return { key: 'pro', label: 'Pro' }
-  if (fb.ok || quota.utilization_7d_oi != null || vm.utilization_7d_oi != null || quota.reset_7d_oi || vm.reset_7d_oi || quota.status_7d_oi || vm.status_7d_oi) {
+  const q = {
+    utilization_7d_oi: quota.utilization_7d_oi ?? vm.utilization_7d_oi,
+    reset_7d_oi: quota.reset_7d_oi || vm.reset_7d_oi,
+    status_7d_oi: quota.status_7d_oi || vm.status_7d_oi,
+    '7d_oi': quota['7d_oi'],
+  }
+  const stored = String(vm.account_tier || quota.account_tier || '').toLowerCase()
+  if (isFableUnavailablePro(fb, q) || stored === 'pro') return { key: 'pro', label: 'Pro' }
+  if (fb.ok || q.utilization_7d_oi != null || q.reset_7d_oi || q.status_7d_oi) {
     return { key: 'max', label: 'Max' }
   }
   return { key: 'unknown', label: null }
@@ -642,7 +674,14 @@ function enrichVm(v, accountQuota, active, extras = {}) {
           last_error: runtime?.worker_status?.last_error || runtime?.worker_status?.error || null,
         }
       : null,
-    account_tier: inferClaudeTier({ has_token: hasToken, fable: q.fable, utilization_7d_oi: q.utilization_7d_oi, reset_7d_oi: q.reset_7d_oi, status_7d_oi: q.status_7d_oi }, q).key,
+    account_tier: inferClaudeTier({
+      has_token: hasToken,
+      account_tier: v.account_tier || q.account_tier,
+      fable: q.fable,
+      utilization_7d_oi: q.utilization_7d_oi,
+      reset_7d_oi: q.reset_7d_oi,
+      status_7d_oi: q.status_7d_oi,
+    }, q).key,
     cred_status: credStatusFromQuota(hasToken, q, expiresAt, {
       refreshed_at: v.refreshed_at || null,
       worker_credential: workerCred,
