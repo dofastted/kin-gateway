@@ -65,7 +65,9 @@ import { runLegacyImport } from './lib/db/legacy-import.mjs'
 import { initVmDbSync, removeVmFromDb, stopVmWatch } from './lib/vm/vm-db-sync.mjs'
 import { BackupService } from './lib/admin/backup-service.mjs'
 import { applyCrsIdentityReplace } from './lib/identity/identity-rewrite.mjs'
-import { applyCrsUnofficialPersona, personaModeFromRoutingFile, isOfficialClaudeCodeTraffic } from './lib/identity/crs-persona.mjs'
+import { applyCrsUnofficialPersona, isOfficialClaudeCodeTraffic } from './lib/identity/crs-persona.mjs'
+import { hidePersonaUsageInSseLine, hidePersonaUsageOnMessage, personaHideInputTokens } from './lib/identity/crs-persona-usage.mjs'
+import { applyCacheTtlToUsage, resolveCacheTtl } from './lib/protocol/cache-ttl.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './lib/protocol/web-search.mjs'
 import { startVmRuntime, stopVmRuntime, reloadSlotWorker, OS_CATALOG, kernelForIndex, timezoneForIndex, normalizeUsTimezone, nextNumericIndex, padVm, STANDARD_LOCALE } from './lib/vm/vm-runtime.mjs'
 import {
@@ -698,10 +700,13 @@ async function handleProtocol(req, res, protocol, pathName) {
   ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: converted.claude })
   const officialClient = isOfficialClaudeClient(fp.client_class)
   const officialTraffic = isOfficialClaudeCodeTraffic(req.headers, inbound)
+  const personaIn = ctx.body
   ctx.body = applyCrsUnofficialPersona(ctx.body, {
     officialClient: officialTraffic,
-    mode: personaModeFromRoutingFile(routingConfigPath),
+    routingFile: routingConfigPath,
   })
+  const personaHideTokens = officialTraffic ? 0 : personaHideInputTokens(personaIn, ctx.body)
+  const cacheTtl = officialTraffic ? null : resolveCacheTtl({ headers: req.headers, routingFile: routingConfigPath })
   if (!officialClient) {
     ctx.body = ensureClaudeWebSearch(ctx.body, {
       enabled: shouldInjectClaudeWebSearch({ clientClass: fp.client_class, headers: req.headers }),
@@ -756,6 +761,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           stream: upstreamStream,
           cacheControlLimit: Number(routingConfig?.compatibility?.cache_control_limit) || 4,
           toolNameRewrite: routingConfig?.compatibility?.tool_name_rewrite !== false,
+          cacheTtl,
           reqHeaders: req.headers,
           homeDir: selected.exec?.homeDir || '',
         })
@@ -798,6 +804,7 @@ async function handleProtocol(req, res, protocol, pathName) {
           },
           onEvent: async (line) => {
             line = restoreToolNamesInSSELine(line, attemptMeta?.toolNames || {})
+            if (personaHideTokens) line = hidePersonaUsageInSseLine(line, personaHideTokens, cacheTtl)
             if (protocol === 'anthropic.messages') {
               if (!res.headersSent) writeSSEHeaders(res)
               res.write(String(line).endsWith('\n') ? String(line) : String(line) + '\n')
@@ -837,6 +844,7 @@ async function handleProtocol(req, res, protocol, pathName) {
   logBag.final_state = result?.finalState || result?.terminalState || null
   logBag.upstream_status = result?.status ?? null
   logBag.usage = result?.body?.usage || result?.usage || null
+  if (logBag.usage && cacheTtl) logBag.usage = applyCacheTtlToUsage(logBag.usage, cacheTtl)
   logBag.upstream_model = result?.body?.model || result?.model || null
   logBag.first_token_ms = result?.ttftMs ?? null
   logBag.stop_reason = result?.body?.stop_reason || result?.stopReason || null
@@ -886,8 +894,9 @@ async function handleProtocol(req, res, protocol, pathName) {
   }
 
   let output
+  const clientBody = hidePersonaUsageOnMessage(result.body, personaHideTokens, cacheTtl)
   if (protocol === 'anthropic.messages') {
-    output = { ...result.body }
+    output = { ...clientBody }
     if (String(req.headers['x-kin-debug'] || '') === '1') {
       output.kin = {
         vm_id: result.vmId,
@@ -897,11 +906,11 @@ async function handleProtocol(req, res, protocol, pathName) {
       }
     }
   } else if (protocol === 'openai.chat') {
-    output = fromClaudeToOpenAIChat(result.body, inbound.model, result.vmId, converted.mode)
+    output = fromClaudeToOpenAIChat(clientBody, inbound.model, result.vmId, converted.mode)
   } else if (protocol === 'openai.completions') {
-    output = fromClaudeToOpenAICompletions(result.body, inbound.model)
+    output = fromClaudeToOpenAICompletions(clientBody, inbound.model)
   } else {
-    output = fromClaudeToResponses(result.body, inbound.model, result.vmId, converted.mode)
+    output = fromClaudeToResponses(clientBody, inbound.model, result.vmId, converted.mode)
   }
   ctx = applyIntercept(cfg.intercept.rules, 'before_client', { ...ctx, body: output })
   return json(res, 200, ctx.body)

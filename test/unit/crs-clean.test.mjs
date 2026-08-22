@@ -139,7 +139,7 @@ test('normalizeAnthropicMessages is idempotent for legal turns', () => {
   ])
 })
 
-test('third-party persona rewrites to 3-block system and parks caller system', () => {
+test('third-party persona rewrites to official 3-block system and drops caller system', () => {
   const { claude } = toClaudeMessages('openai.chat', {
     model: 'claude-haiku-4-5-20251001',
     messages: [
@@ -153,7 +153,7 @@ test('third-party persona rewrites to 3-block system and parks caller system', (
   const cleaned = applyCrsUnofficialPersona(claude, { officialClient: false })
   assert.equal(cleaned.system.length, 3)
   assert.equal(cleaned.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.match(cleaned.messages[0].content[0].text, /you are a linter/)
+  assert.equal(cleaned.system.some((b) => JSON.stringify(b).includes('linter')), false)
 })
 
 test('empty unofficial system becomes the 3-block Claude Code shape', () => {
@@ -170,12 +170,13 @@ test('official Claude Code system is not replaced or appended', () => {
   assert.equal(out.system.length, 1)
 })
 
-test('Xcode unofficial system is parked and official 3-block system is written', () => {
+test('Xcode unofficial system is dropped and official 3-block system is written', () => {
   const body = { system: 'You are currently in Xcode. Help with Swift.', messages: [] }
   const out = applyCrsUnofficialPersona(body, { officialClient: false })
   assert.equal(out.system.length, 3)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
   assert.match(out.messages[0].content[0].text, /Xcode/)
+  assert.ok(!out.system.some((b) => String(b.text || '').includes('Xcode')))
 })
 
 test('legacy user_id: device becomes VM, session is CRS-hashed, account from OAuth', () => {

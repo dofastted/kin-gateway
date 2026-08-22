@@ -56,6 +56,18 @@ test('Fable 5 official: $10 / $50', () => {
   assert.equal(c.total_cost, 2)
 })
 
+test('cache creation marked cache_ttl=1h bills the 1h list price', () => {
+  const c = calculateCost({
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_tokens: 1_000_000,
+    cache_ttl: '1h',
+  }, 'claude-sonnet-5')
+  assert.equal(c.cache_creation_1h_tokens, 1_000_000)
+  assert.equal(c.cache_creation_5m_tokens, 0)
+  assert.equal(c.cache_creation_cost, 4)
+})
+
 test('cache creation without TTL breakdown bills as 5m (sub2api / official default)', () => {
   const c = calculateCost({
     input_tokens: 0,

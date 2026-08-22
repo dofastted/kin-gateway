@@ -54,6 +54,8 @@
   "compatibility": {
     "tool_name_rewrite": true,
     "cache_control_limit": 4,
-    "persona_inject": "rewrite"
+    "persona_inject": "rewrite",
+    "persona_park": true,
+    "cache_ttl": "5m"
   }
 }

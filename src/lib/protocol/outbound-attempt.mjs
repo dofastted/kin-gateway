@@ -10,6 +10,7 @@ import {
 } from './anthropic-policy.mjs'
 import { applyCrsIdentityReplace } from '../identity/identity-rewrite.mjs'
 import { resolveCrsHeaders } from '../identity/crs-headers.mjs'
+import { applyCacheTtlToBody } from './cache-ttl.mjs'
 
 export function prepareOutboundAttempt({
   canonicalBody,
@@ -19,16 +20,18 @@ export function prepareOutboundAttempt({
   stream = true,
   cacheControlLimit = 4,
   toolNameRewrite = true,
+  cacheTtl = null,
 } = {}) {
   const identified = applyCrsIdentityReplace(
     officialMessagesBody(canonicalBody, { stream }),
     identity,
     inbound,
   )
-  const cleaned = prepareAnthropicRequest(identified, {
+  let cleaned = prepareAnthropicRequest(identified, {
     cacheControlLimit,
     unofficial: !!unofficial,
   })
+  if (cacheTtl) cleaned = applyCacheTtlToBody(cleaned, cacheTtl)
   const tools = rewriteToolNames(cleaned, { enabled: toolNameRewrite !== false })
   return { body: tools.body, toolNames: tools.reverse }
 }
@@ -46,6 +49,7 @@ export function prepareOutboundEnvelope({
   stream = true,
   cacheControlLimit = 4,
   toolNameRewrite = true,
+  cacheTtl = null,
   reqHeaders = {},
   homeDir = '',
 } = {}) {
@@ -57,6 +61,7 @@ export function prepareOutboundEnvelope({
     stream,
     cacheControlLimit,
     toolNameRewrite,
+    cacheTtl,
   })
   const headers = prepareOutboundHeaders(
     reqHeaders,

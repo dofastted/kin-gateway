@@ -5,6 +5,7 @@
  * KIN is an OAuth proxy — this is the official standard cost of the tokens
  * that went through the gateway, not Claude Code included-quota or extra-usage.
  */
+import { normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
 
 export const PRICING_SOURCE = 'anthropic-official-2026-08'
 export const PRICING_CURRENCY = 'USD'
@@ -130,7 +131,13 @@ export function calculateCost(usage = {}, model = null) {
   let cache5m = n(u.cache_creation_5m_tokens ?? u.cache_creation?.ephemeral_5m_input_tokens)
   let cache1h = n(u.cache_creation_1h_tokens ?? u.cache_creation?.ephemeral_1h_input_tokens)
   const cacheCreate = n(u.cache_creation_tokens)
-  if (!cache5m && !cache1h && cacheCreate) cache5m = cacheCreate
+  if (!cache5m && !cache1h && cacheCreate) {
+    if (normalizeCacheTtl(u.cache_ttl) === '1h') cache1h = cacheCreate
+    else cache5m = cacheCreate
+  } else if (normalizeCacheTtl(u.cache_ttl) === '1h' && cache5m && !cache1h) {
+    cache1h = cache5m
+    cache5m = 0
+  }
 
   if (!rates) {
     return emptyCost({

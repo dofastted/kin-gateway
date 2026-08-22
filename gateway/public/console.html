@@ -952,7 +952,7 @@ const SETTINGS_TABS = [
   ['pool', '账号池', '选号策略与故障切换'],
   ['quota', '配额', '额度线 · 并发 · 周限实验'],
   ['logs', '日志', '记录模式与保留天数'],
-  ['protocol', '协议', '非官方 mimic / 人设'],
+  ['protocol', '协议', '非官方 3 块 / 缓存 TTL'],
   ['socks5', 'SOCKS5', '多条代理 · 一条最多绑 5 台'],
 ]
 
@@ -4178,13 +4178,22 @@ function renderSettings() {
     ${pane('protocol', `
       <p class="set-lead">只动非官方流量。官方 Claude Code（<code>claude-cli/x.y.z</code> + 合法 metadata.user_id）始终跳过。</p>
       <div class="set-list">
-        <div class="set-row"><span>非官方 mimic</span>
-          <select id="persona_inject" class="input">
-            ${[['append','默认：附加一句'],['rewrite','覆盖（3 块）'],['none','关闭']].map(([v,l]) => `<option value="${v}" ${((r.compatibility||{}).persona_inject || 'append')===v?'selected':''}>${l}</option>`).join('')}
+        <div class="set-row"><span>非官方人设</span>
+          <select id="persona_inject" class="input" onchange="document.getElementById('persona_park_row')?.classList.toggle('hidden', this.value!=='rewrite')">
+            ${[['rewrite','官方 3 块（默认）'],['append','附加一句'],['none','关闭']].map(([v,l]) => `<option value="${v}" ${((r.compatibility||{}).persona_inject || 'rewrite')===v?'selected':''}>${l}</option>`).join('')}
           </select>
         </div>
+        <div id="persona_park_row" class="set-row${((r.compatibility||{}).persona_inject || 'rewrite')==='rewrite' ? '' : ' hidden'}"><span>调用方提示词</span>
+          <label class="chip-check"><input id="persona_park" type="checkbox" ${(r.compatibility||{}).persona_park !== false ? 'checked' : ''}/> 写入 messages</label>
+        </div>
+        <div class="set-row"><span>缓存 TTL</span>
+          <div class="switch-row">
+            <label class="chip-check"><input type="radio" name="cache_ttl" value="5m" ${String((r.compatibility||{}).cache_ttl||'5m').toLowerCase()==='1h'?'':'checked'}/> 5 分钟</label>
+            <label class="chip-check"><input type="radio" name="cache_ttl" value="1h" ${String((r.compatibility||{}).cache_ttl||'').toLowerCase()==='1h'?'checked':''}/> 1 小时</label>
+          </div>
+        </div>
       </div>
-      <p class="text-xs faint" style="margin:10px 0 0">默认整包覆盖（billing / 身份 / 扩充，原文落到 messages）。可改附加一句或关闭。关闭时剥 system 上的 cache_control。保存即生效。</p>
+      <p class="text-xs faint" style="margin:10px 0 0">rewrite 出站固定官方 3 块（长扩充 + 默认 5m cache）。park 开：原 system 写成 <code>[System Instructions]</code> 假对话。5m 写入价 1.25× input，1h 是 2×，选 1h 按差价计费。单请求可用 <code>x-kin-cache-ttl: 1h</code> 覆盖。</p>
     `)}
     ${pane('socks5', renderSettingsSocks5())}
   </section>`
@@ -4279,11 +4288,13 @@ async function saveRouting() {
       },
       compatibility: {
         ...(state.routing?.compatibility || {}),
-        persona_inject: document.getElementById('persona_inject')?.value || 'append',
+        persona_inject: document.getElementById('persona_inject')?.value || 'rewrite',
+        persona_park: !!document.getElementById('persona_park')?.checked,
+        cache_ttl: document.querySelector('input[name="cache_ttl"]:checked')?.value || state.routing?.compatibility?.cache_ttl || '5m',
       },
     }
     await api('/api/panel/routing', { method: 'PUT', body: JSON.stringify(body) })
-    toast('已保存')
+    toast('已保存 · 人设=' + (body.compatibility.persona_inject || 'rewrite') + ' · 缓存=' + (body.compatibility.cache_ttl || '5m'))
     await refresh()
   } catch (e) { toast(e.message) }
 }

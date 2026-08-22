@@ -17,6 +17,8 @@ import {
   normalizePersonaMode,
   personaModeFromRouting,
   personaModeFromRoutingFile,
+  personaParkFromRouting,
+  personaParkFromRoutingFile,
   SYSTEM_INSTRUCTIONS_ACK,
   SYSTEM_INSTRUCTIONS_PREFIX,
 } from '../../src/lib/identity/crs-persona.mjs'
@@ -49,12 +51,14 @@ test('empty unofficial system becomes exactly 3 blocks and does not insert messa
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
   assert.equal(out.system[1].cache_control, undefined)
   assert.equal(out.system[2].text, CRS_SYSTEM_EXPANSION)
-  assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral' })
+  assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '5m' })
+  assert.match(out.system[2].text, /# Doing tasks/)
+  assert.match(out.system[2].text, /# Output efficiency/)
   assert.equal(out.messages.length, 1)
   assert.equal(out.messages[0].content, 'ping')
 })
 
-test('last-night style 3-block inbound becomes 3 outbound blocks and parks the 115KB persona', () => {
+test('last-night style 3-block inbound becomes official 3 blocks and drops caller persona', () => {
   const persona = 'security monitor persona ' + 'P'.repeat(115_000)
   const session = 'Session Context: conv-abc'
   const firstUser = 'heartbeat please reply ok now'
@@ -69,19 +73,15 @@ test('last-night style 3-block inbound becomes 3 outbound blocks and parks the 1
   const out = applyCrsUnofficialPersona(body, { officialClient: false })
   assert.equal(out.system.length, 3)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(out.system[2].text, CRS_SYSTEM_EXPANSION)
   assert.notEqual(out.system[0].text, body.system[0].text)
   assert.match(out.system[0].text, new RegExp(`cc_version=${DEFAULT_CLI_VERSION}\\.${expectedFp(firstUser)}`))
   assert.ok(!out.system.some((b) => (b.text || '').includes('security monitor persona')))
   assert.ok(!out.system.some((b) => (b.text || '').includes('Session Context')))
-
-  const parked = out.messages[0]
-  assert.equal(parked.role, 'user')
-  const parkedText = parked.content[0].text
-  assert.ok(parkedText.startsWith(SYSTEM_INSTRUCTIONS_PREFIX))
-  assert.ok(parkedText.includes(persona))
-  assert.ok(parkedText.includes(session))
-  assert.ok(parkedText.length > 115_000)
-  assert.equal(out.messages[1].role, 'assistant')
+  assert.equal(out.messages[0].role, 'user')
+  assert.match(out.messages[0].content[0].text, /^\[System Instructions\]\n/)
+  assert.match(out.messages[0].content[0].text, /security monitor persona/)
+  assert.match(out.messages[0].content[0].text, /Session Context: conv-abc/)
   assert.equal(out.messages[1].content[0].text, SYSTEM_INSTRUCTIONS_ACK)
   assert.equal(out.messages[2].content, firstUser)
 })
@@ -108,7 +108,7 @@ test('fingerprint is stable for the same first user text and cli version', () =>
   assert.equal(a, `x-anthropic-billing-header: cc_version=2.1.234.${expectedFp(user)}; cc_entrypoint=cli;`)
 })
 
-test('fingerprint uses first user text before parking system instructions', () => {
+test('fingerprint uses first user text, not discarded caller system', () => {
   const firstUser = 'original first user text xx'
   const out = applyCrsUnofficialPersona({
     system: 'keep this persona',
@@ -161,6 +161,8 @@ test('spoofed claude-cli UA without valid user_id still gets default mimic', () 
   assert.equal(out.system.length, 3)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
   assert.match(out.messages[0].content[0].text, /you are a linter/)
+  assert.equal(out.messages[1].content[0].text, SYSTEM_INSTRUCTIONS_ACK)
+  assert.equal(out.messages[2].content, 'hi')
 })
 
 test('official claude-cli UA plus valid user_id skips mimic', () => {
@@ -198,5 +200,53 @@ test('personaModeFromRoutingFile rereads disk so scp applies without restart', (
   assert.equal(personaModeFromRoutingFile(file), 'append')
   fs.writeFileSync(file, JSON.stringify({ compatibility: { persona_inject: 'rewrite' } }))
   assert.equal(personaModeFromRoutingFile(file), 'rewrite')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('rewrite park=false drops caller system and keeps user messages', () => {
+  const out = applyCrsUnofficialPersona({
+    system: 'you are a linter',
+    messages: [{ role: 'user', content: 'hi' }],
+  }, { mode: 'rewrite', park: false })
+  assert.equal(out.system.length, 3)
+  assert.equal(out.messages.length, 1)
+  assert.equal(out.messages[0].content, 'hi')
+  assert.ok(!JSON.stringify(out.messages).includes('linter'))
+})
+
+test('rewrite park=true parks leftover caller system as System Instructions', () => {
+  const out = applyCrsUnofficialPersona({
+    system: 'you are a linter',
+    messages: [{ role: 'user', content: 'hi' }],
+  }, { mode: 'rewrite', park: true })
+  assert.equal(out.system.length, 3)
+  assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(out.messages[0].role, 'user')
+  assert.equal(out.messages[0].content[0].text, `${SYSTEM_INSTRUCTIONS_PREFIX}you are a linter`)
+  assert.equal(out.messages[1].role, 'assistant')
+  assert.equal(out.messages[1].content[0].text, SYSTEM_INSTRUCTIONS_ACK)
+  assert.equal(out.messages[2].content, 'hi')
+})
+
+test('persona_park is read from routing.json with the rewrite mode', () => {
+  assert.equal(personaParkFromRouting({ compatibility: { persona_park: true } }), true)
+  assert.equal(personaParkFromRouting({ compatibility: {} }), true)
+  assert.equal(personaParkFromRouting({ compatibility: { persona_park: false } }), false)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-persona-park-'))
+  const file = path.join(dir, 'routing.json')
+  fs.writeFileSync(file, JSON.stringify({ compatibility: { persona_inject: 'rewrite', persona_park: true } }))
+  assert.equal(personaParkFromRoutingFile(file), true)
+  const out = applyCrsUnofficialPersona({
+    system: 'keep me',
+    messages: [{ role: 'user', content: 'hi' }],
+  }, { routingFile: file })
+  assert.match(out.messages[0].content[0].text, /keep me/)
+  fs.writeFileSync(file, JSON.stringify({ compatibility: { persona_inject: 'rewrite', persona_park: false } }))
+  const dropped = applyCrsUnofficialPersona({
+    system: 'keep me',
+    messages: [{ role: 'user', content: 'hi' }],
+  }, { routingFile: file })
+  assert.equal(dropped.messages.length, 1)
+  assert.equal(dropped.messages[0].content, 'hi')
   fs.rmSync(dir, { recursive: true, force: true })
 })
