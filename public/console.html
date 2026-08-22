@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
-  <meta name="kin-console-rev" content="20260822-cred-sync" />
+  <meta name="kin-console-rev" content="20260822-skip-fable" />
   <title>种核 KIN</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -1143,6 +1143,7 @@ function splitTracks(v) {
   return `<div class="vm-track">${track('普', rFill, `普通半仓 · 剩 ${((s.regular_remain_weekly || 0) * 100).toFixed(0)}% 周限`)}${track('Fb', fFill, `Fable 半仓 · 剩 ${((s.fable_remain_weekly || 0) * 100).toFixed(0)}% 周限`)}</div>`
 }
 function fableProbeLabel(fb, v) {
+  if (claudeTier(v).key === 'pro' || fablePlanDenied(fb)) return 'Pro 无 Fable'
   if (!fb) return '未探测'
   if (fb.banned) return '账号拒'
   if (fableWeeklyFull(fb, v)) return '周额度满'
@@ -1234,16 +1235,28 @@ function extraUsageText(ex) {
   return on + ' · ' + u + (ex.status ? ' · ' + ex.status : '')
 }
 /* Claude 账号等级：有 Fable 窗=Max，Fable 套餐拒绝=Pro。本项目只有 Claude。 */
+function inventedFableWindow(v) {
+  const fb = v?.fable || {}
+  const st = Number(fb.status || 0)
+  if (fb.ok) return false
+  if (st !== 429 && !fb.limited) return false
+  const oi = v?.utilization_7d_oi
+  const reset = v?.reset_7d_oi
+  if (oi == null && !reset) return true
+  const n = Number(oi)
+  const norm = Number.isFinite(n) ? (n > 1.5 ? n / 100 : n) : null
+  return norm != null && norm >= 1 && !reset
+}
 function claudeTier(v) {
-  const raw = String(v?.account_tier || '').toLowerCase()
-  if (raw === 'max' || raw === 'pro') return { key: raw, label: raw === 'max' ? 'Max' : 'Pro', cls: raw }
   if (!v || !v.has_token) return { key: 'none', label: '—', cls: 'none' }
   const fb = v.fable || {}
-  if (fablePlanDenied(fb)) return { key: 'pro', label: 'Pro', cls: 'pro' }
+  if (fablePlanDenied(fb) || inventedFableWindow(v)) return { key: 'pro', label: 'Pro', cls: 'pro' }
   // Refresh newer than a leftover Fable 401: Pro 无 Fable, not unknown / Max.
   if (probeOlderThanRefresh(v) && (fb.banned || Number(fb.status) === 401) && !fb.ok) {
     return { key: 'pro', label: 'Pro', cls: 'pro' }
   }
+  const raw = String(v?.account_tier || '').toLowerCase()
+  if (raw === 'max' || raw === 'pro') return { key: raw, label: raw === 'max' ? 'Max' : 'Pro', cls: raw }
   if (fb.ok || v.utilization_7d_oi != null || v.reset_7d_oi || v.status_7d_oi) {
     return { key: 'max', label: 'Max', cls: 'max' }
   }
