@@ -4,6 +4,8 @@ import {
   parseOAuthUsage,
   parseFableProbe,
   isFablePlanDenied,
+  isFableUnavailablePro,
+  shouldProbeFable,
   normUtilization,
   FABLE_PROBE_MODEL,
   probeVmUsage,
@@ -87,6 +89,20 @@ test('fable probe reads 7d_oi utilization from response headers', () => {
   assert.equal(r.utilization, 0.21)
   assert.equal(r.seven_day_oi.utilization, 0.21)
   assert.equal(r.reset_at, '2026-08-24T00:00:00Z')
+})
+
+test('Pro slots skip Fable model probe', () => {
+  assert.equal(shouldProbeFable({ storedTier: 'pro' }), false)
+  assert.equal(shouldProbeFable({ fable: { plan_denied: true, status: 403 } }), false)
+  assert.equal(shouldProbeFable({ fable: { ok: false, status: 429, error: 'Error' } }), false)
+  assert.equal(shouldProbeFable({ fable: { ok: true }, quota: { utilization_7d_oi: 0.21, reset_7d_oi: '2026-08-24T00:00:00Z' } }), true)
+  assert.equal(shouldProbeFable({ fable: {}, storedTier: 'max' }), true)
+})
+
+test('Fable 429 without a real 7d_oi window is Pro', () => {
+  assert.equal(isFableUnavailablePro({ ok: false, status: 429, error: 'Error' }, {}), true)
+  assert.equal(isFableUnavailablePro({ ok: false, status: 429, error: 'Error' }, { utilization_7d_oi: 1, status_7d_oi: 'rejected' }), true)
+  assert.equal(isFableUnavailablePro({ ok: false, status: 502 }, { utilization_7d_oi: 0.44, reset_7d_oi: '2026-08-24T00:00:00Z' }), false)
 })
 
 test('isFablePlanDenied treats 403 permission as Pro, not revoke', () => {

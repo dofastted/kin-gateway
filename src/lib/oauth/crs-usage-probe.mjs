@@ -133,6 +133,37 @@ export function isFablePlanDenied(fb = {}) {
   return st === 403 || /permission/i.test(err)
 }
 
+function normOiUtil(u) {
+  if (u == null || u === '') return null
+  const n = Number(u)
+  if (!Number.isFinite(n)) return null
+  return n > 1.5 ? n / 100 : n
+}
+
+/** 429 残渣写成的 100% 7d_oi，没有 usage 窗的 reset，不是 Max。 */
+export function isInventedFableWindow(fb = {}, quota = {}) {
+  const st = Number(fb.status || 0)
+  if (fb.ok) return false
+  if (st !== 429 && !fb.limited) return false
+  const oi = normOiUtil(quota.utilization_7d_oi ?? quota['7d_oi']?.utilization)
+  const reset = quota.reset_7d_oi || quota['7d_oi']?.reset || null
+  if (oi == null && !reset) return true
+  return oi != null && oi >= 1 && !reset
+}
+
+/** Pro：套餐没有 Fable。含 403、plan_denied、以及无真实 7d_oi 窗的 429。 */
+export function isFableUnavailablePro(fb = {}, quota = {}) {
+  if (isFablePlanDenied(fb)) return true
+  return isInventedFableWindow(fb, quota)
+}
+
+/** Already-Pro slots skip the Fable model hop. Usage 5h/7d still probes. */
+export function shouldProbeFable({ fable = {}, quota = {}, storedTier = null } = {}) {
+  const stored = String(storedTier || quota.account_tier || '').toLowerCase()
+  if (stored === 'pro') return false
+  return !isFableUnavailablePro(fable, quota)
+}
+
 function mockUsage() {
   return {
     five_hour: { utilization: 0.12, resets_at: '2026-08-18T20:00:00Z' },

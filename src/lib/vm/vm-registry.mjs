@@ -46,6 +46,7 @@ export function summarizeVm(vm) {
     refreshed_at: vm.claude?.refreshed_at || null,
     oauth_source: vm.claude?.source || null,
     has_refresh: hasRefreshPresence(vm.claude),
+    account_tier: vm.claude?.account_tier || null,
     has_session_key: false,
     max_concurrency: vm.policy?.maxConcurrency ?? 20,
     weight: vm.policy?.weight ?? 1,
@@ -76,6 +77,20 @@ export function getActiveVmId(projectRoot) {
   } catch {
     return null
   }
+}
+
+export function persistAccountTier(projectRoot, vmId, tier) {
+  const key = String(tier || '').toLowerCase()
+  if (key !== 'pro' && key !== 'max') return null
+  const file = path.join(projectRoot, 'vms', `${vmId}.json`)
+  if (!fs.existsSync(file)) return null
+  const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  vm.claude = vm.claude || {}
+  if (vm.claude.account_tier === key) return vm
+  vm.claude.account_tier = key
+  vm.updated_at = new Date().toISOString()
+  atomicWriteJson(file, vm, { mode: 0o600 })
+  return vm
 }
 
 export function setActiveVm(projectRoot, id) {

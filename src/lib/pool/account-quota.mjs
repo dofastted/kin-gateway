@@ -209,10 +209,12 @@ export class AccountQuota {
     if (probe.fable && !fableTransport) {
       const fableRevokeNoise = usageOk && (probe.fable.banned || probe.fable.status === 401
         || /revoked|oauth|authentication/i.test(String(probe.fable.error || '')))
+      const fable429Pro = usageOk && !oiNorm && !oi?.resets_at && !oi?.reset
+        && (Number(probe.fable.status) === 429 || !!probe.fable.limited)
       acc.unified.fable = {
         limited: oiRejected,
         banned: !!probe.fable.banned && !usageOk && (probe.usage_status === 401 || probe.usage_status === 403),
-        plan_denied: !!probe.fable.plan_denied || fableRevokeNoise,
+        plan_denied: !!probe.fable.plan_denied || fableRevokeNoise || fable429Pro,
         ok: !!probe.fable.ok && !oiRejected,
         status: probe.fable.status || 0,
         reset: probe.fable.reset_at || acc.unified['7d_oi']?.reset || null,
@@ -221,6 +223,8 @@ export class AccountQuota {
         error: fableRevokeNoise ? 'plan_denied' : (probe.fable.error || null),
         probed_at: probe.probed_at || new Date().toISOString(),
       }
+      if (acc.unified.fable.plan_denied) acc.unified.account_tier = 'pro'
+      else if (acc.unified.fable.ok) acc.unified.account_tier = 'max'
     }
     acc.unified.source = 'vm-oauth-usage'
     acc.unified.updated_at = new Date().toISOString()
@@ -540,6 +544,18 @@ export class AccountQuota {
     }
     if (!changed) return acc
     acc.unified = u
+    acc.unified.updated_at = new Date().toISOString()
+    return this.repo.save(acc)
+  }
+
+  setAccountTier(accountId, tier) {
+    const key = String(tier || '').toLowerCase()
+    if (!accountId || (key !== 'pro' && key !== 'max')) return null
+    const acc = this.repo.get(accountId)
+    if (!acc) return null
+    if (acc.unified?.account_tier === key) return acc
+    acc.unified = acc.unified || {}
+    acc.unified.account_tier = key
     acc.unified.updated_at = new Date().toISOString()
     return this.repo.save(acc)
   }
