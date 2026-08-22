@@ -4193,7 +4193,7 @@ function renderSettings() {
           </div>
         </div>
       </div>
-      <p class="text-xs faint" style="margin:10px 0 0">rewrite 出站固定官方 3 块（长扩充 + 默认 5m cache）。park 开：原 system 写成 <code>[System Instructions]</code> 假对话。5m 写入价 1.25× input，1h 是 2×，选 1h 按差价计费。单请求可用 <code>x-kin-cache-ttl: 1h</code> 覆盖。</p>
+      <p class="text-xs faint" style="margin:10px 0 0">rewrite 出站固定官方 3 块（sub2api 中性扩充 + 默认 5m cache）。park 开：原 system 插到第一个 user 之后，<code>role:system</code>（CLIProxy）。5m 写入价 1.25× input，1h 是 2×，选 1h 按差价计费。单请求可用 <code>x-kin-cache-ttl: 1h</code> 覆盖。</p>
     `)}
     ${pane('socks5', renderSettingsSocks5())}
   </section>`

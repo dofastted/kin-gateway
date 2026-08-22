@@ -142,7 +142,8 @@ export function sanitizeAnthropicBody(body, { strictPassthrough = false } = {}) 
 
 /**
  * Sub2API-style Messages repair before the Anthropic hop:
- *   - system / developer turns lift into the top-level system field
+ *   - leading system / developer turns (before the first user) lift into top-level system
+ *   - mid-conversation role:system after a user turn is kept (CLIProxy park)
  *   - unknown roles (admin, tool, function, …) become user
  *   - empty content is dropped
  *   - consecutive same-role turns are merged (Anthropic requires alternation)
@@ -153,18 +154,26 @@ export function normalizeAnthropicMessages(body) {
 
   const systemParts = []
   const mapped = []
+  let seenUser = false
   for (const message of body.messages) {
     if (!message || typeof message !== 'object') continue
     const role = String(message.role || '').trim().toLowerCase()
     if (role === 'system' || role === 'developer') {
-      const text = contentToPlainText(message.content)
-      if (text) systemParts.push(text)
+      if (!seenUser) {
+        const text = contentToPlainText(message.content)
+        if (text) systemParts.push(text)
+        continue
+      }
+      if (anthropicContentIsEmpty(message.content)) continue
+      mapped.push({ ...message, role: 'system' })
       continue
     }
     if (anthropicContentIsEmpty(message.content)) continue
+    const nextRole = role === 'assistant' ? 'assistant' : 'user'
+    if (nextRole === 'user') seenUser = true
     mapped.push({
       ...message,
-      role: role === 'assistant' ? 'assistant' : 'user',
+      role: nextRole,
     })
   }
 

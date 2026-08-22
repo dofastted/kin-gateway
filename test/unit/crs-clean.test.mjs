@@ -60,6 +60,26 @@ test('sanitize remaps unknown Anthropic roles to user (sub2api admin→user)', (
   assert.deepEqual(out.messages, [{ role: 'user', content: 'x' }])
 })
 
+test('sanitize keeps mid-conversation role:system after a user turn', () => {
+  const out = sanitizeAnthropicBody({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 32,
+    system: [
+      { type: 'text', text: 'billing' },
+      { type: 'text', text: 'official' },
+      { type: 'text', text: 'expansion' },
+    ],
+    messages: [
+      { role: 'user', content: '你好呀。' },
+      { role: 'system', content: [{ type: 'text', text: '你是一个高速收费员。' }] },
+    ],
+  })
+  assert.equal(out.system[0].text, 'billing')
+  assert.equal(out.messages[0].role, 'user')
+  assert.equal(out.messages[1].role, 'system')
+  assert.equal(out.messages[1].content[0].text, '你是一个高速收费员。')
+})
+
 test('sanitize lifts system/developer turns and merges consecutive users', () => {
   const out = sanitizeAnthropicBody({
     model: 'claude-haiku-4-5-20251001',
@@ -171,11 +191,16 @@ test('official Claude Code system is not replaced or appended', () => {
 })
 
 test('Xcode unofficial system is dropped and official 3-block system is written', () => {
-  const body = { system: 'You are currently in Xcode. Help with Swift.', messages: [] }
+  const body = {
+    system: 'You are currently in Xcode. Help with Swift.',
+    messages: [{ role: 'user', content: 'hi' }],
+  }
   const out = applyCrsUnofficialPersona(body, { officialClient: false })
   assert.equal(out.system.length, 3)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.match(out.messages[0].content[0].text, /Xcode/)
+  assert.equal(out.messages[0].content, 'hi')
+  assert.equal(out.messages[1].role, 'system')
+  assert.match(out.messages[1].content[0].text, /Xcode/)
   assert.ok(!out.system.some((b) => String(b.text || '').includes('Xcode')))
 })
 

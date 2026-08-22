@@ -179,7 +179,9 @@ test('HTTP path preserves long system without CLI argv truncation', async () => 
     })
     const tr = readTrace(gw)
     assert.equal(tr.body.system.length, 3)
-    const parked = tr.body.messages[0]
+    assert.equal(tr.body.messages[0].role, 'user')
+    const parked = tr.body.messages.find((message) => message?.role === 'system')
+    assert.ok(parked, 'caller system should be parked as mid-conversation role:system')
     const parkedText = Array.isArray(parked.content)
       ? parked.content.map((block) => block.text || '').join('')
       : String(parked.content || '')

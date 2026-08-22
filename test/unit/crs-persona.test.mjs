@@ -19,9 +19,8 @@ import {
   personaModeFromRoutingFile,
   personaParkFromRouting,
   personaParkFromRoutingFile,
-  SYSTEM_INSTRUCTIONS_ACK,
-  SYSTEM_INSTRUCTIONS_PREFIX,
 } from '../../src/lib/identity/crs-persona.mjs'
+import { officialMessagesBody } from '../../src/lib/protocol/anthropic-messages.mjs'
 
 function expectedFp(firstUserText, cliVersion = DEFAULT_CLI_VERSION) {
   const buf = Buffer.from(String(firstUserText), 'utf8')
@@ -52,8 +51,10 @@ test('empty unofficial system becomes exactly 3 blocks and does not insert messa
   assert.equal(out.system[1].cache_control, undefined)
   assert.equal(out.system[2].text, CRS_SYSTEM_EXPANSION)
   assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '5m' })
-  assert.match(out.system[2].text, /# Doing tasks/)
-  assert.match(out.system[2].text, /# Output efficiency/)
+  assert.match(out.system[2].text, /# Tone and style/)
+  assert.ok(!out.system[2].text.includes('# Doing tasks'))
+  assert.ok(!out.system[2].text.includes('# Output efficiency'))
+  assert.ok(!out.system[2].text.includes('/help'))
   assert.equal(out.messages.length, 1)
   assert.equal(out.messages[0].content, 'ping')
 })
@@ -79,11 +80,13 @@ test('last-night style 3-block inbound becomes official 3 blocks and drops calle
   assert.ok(!out.system.some((b) => (b.text || '').includes('security monitor persona')))
   assert.ok(!out.system.some((b) => (b.text || '').includes('Session Context')))
   assert.equal(out.messages[0].role, 'user')
-  assert.match(out.messages[0].content[0].text, /^\[System Instructions\]\n/)
-  assert.match(out.messages[0].content[0].text, /security monitor persona/)
-  assert.match(out.messages[0].content[0].text, /Session Context: conv-abc/)
-  assert.equal(out.messages[1].content[0].text, SYSTEM_INSTRUCTIONS_ACK)
-  assert.equal(out.messages[2].content, firstUser)
+  assert.equal(out.messages[0].content, firstUser)
+  assert.equal(out.messages[1].role, 'system')
+  assert.match(out.messages[1].content[0].text, /security monitor persona/)
+  assert.equal(out.messages[2].role, 'system')
+  assert.match(out.messages[2].content[0].text, /Session Context: conv-abc/)
+  assert.ok(!JSON.stringify(out.messages).includes('[System Instructions]'))
+  assert.ok(!JSON.stringify(out.messages).includes('Understood. I will follow these instructions.'))
 })
 
 test('standalone official line does not insert System Instructions', () => {
@@ -160,9 +163,9 @@ test('spoofed claude-cli UA without valid user_id still gets default mimic', () 
   })
   assert.equal(out.system.length, 3)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.match(out.messages[0].content[0].text, /you are a linter/)
-  assert.equal(out.messages[1].content[0].text, SYSTEM_INSTRUCTIONS_ACK)
-  assert.equal(out.messages[2].content, 'hi')
+  assert.equal(out.messages[0].content, 'hi')
+  assert.equal(out.messages[1].role, 'system')
+  assert.match(out.messages[1].content[0].text, /you are a linter/)
 })
 
 test('official claude-cli UA plus valid user_id skips mimic', () => {
@@ -214,7 +217,7 @@ test('rewrite park=false drops caller system and keeps user messages', () => {
   assert.ok(!JSON.stringify(out.messages).includes('linter'))
 })
 
-test('rewrite park=true parks leftover caller system as System Instructions', () => {
+test('rewrite park=true parks leftover caller system as mid-conversation role:system', () => {
   const out = applyCrsUnofficialPersona({
     system: 'you are a linter',
     messages: [{ role: 'user', content: 'hi' }],
@@ -222,10 +225,39 @@ test('rewrite park=true parks leftover caller system as System Instructions', ()
   assert.equal(out.system.length, 3)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
   assert.equal(out.messages[0].role, 'user')
-  assert.equal(out.messages[0].content[0].text, `${SYSTEM_INSTRUCTIONS_PREFIX}you are a linter`)
-  assert.equal(out.messages[1].role, 'assistant')
-  assert.equal(out.messages[1].content[0].text, SYSTEM_INSTRUCTIONS_ACK)
-  assert.equal(out.messages[2].content, 'hi')
+  assert.equal(out.messages[0].content, 'hi')
+  assert.equal(out.messages[1].role, 'system')
+  assert.equal(out.messages[1].content[0].text, 'you are a linter')
+  assert.deepEqual(out.messages[1].content[0].cache_control, { type: 'ephemeral', ttl: '5m' })
+})
+
+test('parked mid-conversation system survives officialMessagesBody', () => {
+  const after = applyCrsUnofficialPersona({
+    system: '你是一个高速收费员。',
+    messages: [{ role: 'user', content: '你好呀。' }],
+  }, { mode: 'rewrite', park: true })
+  const canonical = officialMessagesBody(after)
+  assert.equal(canonical.system.length, 3)
+  assert.equal(canonical.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(canonical.messages[0].role, 'user')
+  assert.equal(canonical.messages[1].role, 'system')
+  assert.match(canonical.messages[1].content[0].text, /高速收费员/)
+})
+
+test('park inserts after consecutive leading user turns', () => {
+  const out = applyCrsUnofficialPersona({
+    system: 'stay in character',
+    messages: [
+      { role: 'user', content: 'one' },
+      { role: 'user', content: 'two' },
+      { role: 'assistant', content: 'ok' },
+    ],
+  }, { mode: 'rewrite', park: true })
+  assert.equal(out.messages[0].content, 'one')
+  assert.equal(out.messages[1].content, 'two')
+  assert.equal(out.messages[2].role, 'system')
+  assert.equal(out.messages[2].content[0].text, 'stay in character')
+  assert.equal(out.messages[3].role, 'assistant')
 })
 
 test('persona_park is read from routing.json with the rewrite mode', () => {
@@ -240,7 +272,8 @@ test('persona_park is read from routing.json with the rewrite mode', () => {
     system: 'keep me',
     messages: [{ role: 'user', content: 'hi' }],
   }, { routingFile: file })
-  assert.match(out.messages[0].content[0].text, /keep me/)
+  assert.equal(out.messages[1].role, 'system')
+  assert.match(out.messages[1].content[0].text, /keep me/)
   fs.writeFileSync(file, JSON.stringify({ compatibility: { persona_inject: 'rewrite', persona_park: false } }))
   const dropped = applyCrsUnofficialPersona({
     system: 'keep me',

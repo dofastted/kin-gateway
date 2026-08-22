@@ -11,7 +11,8 @@
 客户端 ──Bearer sk-kin-…──► server.mjs
                               │ 选槽 / sticky / 并发
                               │ 协议 → Messages
-                              │ 非官方：追加一行官方人设
+                              │ 非官方 rewrite：官方 3 块 + 中性扩写
+                              │ park：调用方 system → 对话中 role:system
                               ▼
                     Docker 槽位 Go worker
                               │ 唯一 OAuth refresh owner
@@ -44,7 +45,7 @@
 
 鉴权：`Authorization: Bearer <key>` 或 `x-api-key`。Master `KIN_API_KEY` 无限制；面板发的 `sk-kin-…` 只走协议口。
 
-非官方 system **只追加** `You are Claude Code, Anthropic's official CLI for Claude.`，不整段替换。官方 Claude Code 请求体不改业务内容。
+非官方 persona 由 `routing.compatibility.persona_inject` 决定（热读）。`append` 只追加官方一行；现网 `rewrite` 覆盖为官方 3 块（billing + 身份句 + sub2api 中性扩写，不含工具/`# Doing tasks`/`/help`）。`persona_park` 把调用方 system 插到第一个 user 之后，`role:system`（CLIProxy）。官方 Claude Code 请求体不改业务内容。Go worker 原样转发 JSON，不必因此重建槽位进程。
 
 ## 凭证
 
